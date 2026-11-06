@@ -1,0 +1,20 @@
+{
+  "id": "synth-03",
+  "fictional": true,
+  "domain": "school",
+  "raw_transcript": "So, um, for the imaginary Northbridge robotics class, our team tested a PID controller on the little cart. I was responsible for the encoder reader in C++. Niko Fern handled the motor driver. We did 8 trials over a 3.5 m track and the best stopping error was 12 mm, not 12 cm. I said centimeters during the demo and corrected myself right away. We still have oscillation when the battery drops below 7.2 V. The instructor asked us to plot the full error curve, not just the best run. I saved the CSV files but have not made that plot. The report is due on 2026-11-18, and I need to explain why the worst trial overshot.",
+  "reference_cleaned": "For the imaginary Northbridge robotics class, our team tested a PID controller on the little cart. I was responsible for the encoder reader in C++. Niko Fern handled the motor driver. We did 8 trials over a 3.5 m track, and the best stopping error was 12 mm, not 12 cm. I said centimeters during the demo and corrected myself right away. We still have oscillation when the battery drops below 7.2 V. The instructor asked us to plot the full error curve, not just the best run. I saved the CSV files but have not made that plot. The report is due on 2026-11-18, and I need to explain why the worst trial overshot.",
+  "key_facts": [
+    "Northbridge",
+    "PID",
+    "C++",
+    "Niko Fern",
+    "8 trials",
+    "3.5 m",
+    "12 mm",
+    "12 cm",
+    "7.2 V",
+    "CSV",
+    "2026-11-18"
+  ]
+}

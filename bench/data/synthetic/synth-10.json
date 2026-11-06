@@ -1,0 +1,17 @@
+{
+  "id": "synth-10",
+  "fictional": true,
+  "domain": "personal",
+  "raw_transcript": "Ah, for this invented family cooking night, my cousin Imani Cove and I made lentil stew. We used 300 g of dry lentils and 1.5 L of water. I set the timer for 25 minutes, no wait, 35 minutes; the first setting was too short. We added lemon after cooking and left the salt out of one small portion. The batch filled 6 containers, and 2 went into the freezer. Imani liked the texture, but I thought it needed more cumin. That is just taste, not a recipe failure. The ingredients cost around 12 dollars in total because some spices were already in the cupboard. I should label the frozen portions before I forget what they are.",
+  "reference_cleaned": "For this invented family cooking night, my cousin Imani Cove and I made lentil stew. We used 300 g of dry lentils and 1.5 L of water. I set the timer for 35 minutes after finding that the initial 25 minutes was too short. We added lemon after cooking and left the salt out of one small portion. The batch filled 6 containers, and 2 went into the freezer. Imani liked the texture, but I thought it needed more cumin. That is just taste, not a recipe failure. The ingredients cost around 12 dollars in total because some spices were already in the cupboard. I should label the frozen portions before I forget what they are.",
+  "key_facts": [
+    "Imani Cove",
+    "300 g",
+    "1.5 L",
+    "25 minutes",
+    "35 minutes",
+    "6 containers",
+    "2",
+    "12 dollars"
+  ]
+}

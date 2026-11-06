@@ -1,0 +1,20 @@
+{
+  "id": "synth-02",
+  "fictional": true,
+  "domain": "work",
+  "raw_transcript": "Okay, the fictional Harbor API service had a slow search path again. I used Python and PostgreSQL with Jules Reed, the backend engineer, and we, uh, compared the same 500 requests before and after adding an index. The median fell from 240 ms to 85 ms in staging. The 99th percentile did not improve; it stayed near 900 ms. I almost wrote that we fixed search, but no, no, that would be too strong. We only measured one query shape. I opened ticket HBR-42 and attached the EXPLAIN output. Tomorrow I want to measure write overhead and ask Jules to review the migration. Nobody has deployed the index to production.",
+  "reference_cleaned": "The fictional Harbor API service had a slow search path again. I used Python and PostgreSQL with Jules Reed, the backend engineer, and we compared the same 500 requests before and after adding an index. The median fell from 240 ms to 85 ms in staging. The 99th percentile did not improve; it stayed near 900 ms. Saying we fixed search would be too strong because we only measured one query shape. I opened ticket HBR-42 and attached the EXPLAIN output. Tomorrow I want to measure write overhead and ask Jules to review the migration. Nobody has deployed the index to production.",
+  "key_facts": [
+    "Harbor API",
+    "Python",
+    "PostgreSQL",
+    "Jules Reed",
+    "500 requests",
+    "240 ms",
+    "85 ms",
+    "99th",
+    "900 ms",
+    "HBR-42",
+    "EXPLAIN"
+  ]
+}

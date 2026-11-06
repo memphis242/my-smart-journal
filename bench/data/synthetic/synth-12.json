@@ -1,0 +1,16 @@
+{
+  "id": "synth-12",
+  "fictional": true,
+  "domain": "school",
+  "raw_transcript": "Okay, this fictional library workshop was, was smaller than expected. Only 5 people came, including Ren Alder, the student coordinator. I demonstrated Git branches using a toy repository with no private files. We made 2 commits, created a practice conflict, and resolved it together. Um, I accidentally said that rebase never changes commit IDs, then corrected myself: rebase can change commit IDs. Ren asked for a written checklist before the next session on Thursday. I have drafted 4 steps but have not sent them yet. One participant still could not authenticate over SSH, so the exercise was not complete for everyone. I need to arrange a follow-up and avoid claiming that all 5 finished successfully.",
+  "reference_cleaned": "This fictional library workshop was smaller than expected. Only 5 people came, including Ren Alder, the student coordinator. I demonstrated Git branches using a toy repository with no private files. We made 2 commits, created a practice conflict, and resolved it together. I accidentally said that rebase never changes commit IDs, then corrected myself: rebase can change commit IDs. Ren asked for a written checklist before the next session on Thursday. I have drafted 4 steps but have not sent them yet. One participant still could not authenticate over SSH, so the exercise was not complete for everyone. I need to arrange a follow-up and avoid claiming that all 5 finished successfully.",
+  "key_facts": [
+    "5 people",
+    "Ren Alder",
+    "Git",
+    "2 commits",
+    "Thursday",
+    "4 steps",
+    "SSH"
+  ]
+}

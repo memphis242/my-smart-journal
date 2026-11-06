@@ -1,0 +1,24 @@
+{
+  "id": "synth-05",
+  "fictional": true,
+  "domain": "work",
+  "raw_transcript": "Right, I, I worked on the fictional Quill desktop logger today. The v2 export format uses UTF-8 and keeps timestamps in UTC. Sora Finch from QA found that the name Zoë became broken text after a CSV round trip. I added a regression fixture and changed the decoder to reject invalid bytes instead of replacing them. All 17 export cases passed locally on Linux. We have not run them on Windows yet. It took about 45 minutes to find the bad decode call. I should not claim Unicode support is complete, because combining accents are still untested. On Friday I will ask Sora to try an imported file from the old v1 format. That is still a plan.",
+  "reference_cleaned": "I worked on the fictional Quill desktop logger today. The v2 export format uses UTF-8 and keeps timestamps in UTC. Sora Finch from QA found that the name Zoë became broken text after a CSV round trip. I added a regression fixture and changed the decoder to reject invalid bytes instead of replacing them. All 17 export cases passed locally on Linux. We have not run them on Windows yet. It took about 45 minutes to find the bad decode call. I should not claim Unicode support is complete because combining accents are still untested. On Friday I will ask Sora to try an imported file from the old v1 format. That is still a plan.",
+  "key_facts": [
+    "Quill",
+    "v2",
+    "UTF-8",
+    "UTC",
+    "Sora Finch",
+    "QA",
+    "Zoë",
+    "CSV",
+    "17",
+    "Linux",
+    "Windows",
+    "45 minutes",
+    "Unicode",
+    "Friday",
+    "v1"
+  ]
+}
