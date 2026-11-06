@@ -86,3 +86,10 @@ def test_guard_number_formatting_and_words() -> None:
     source = "At 115200 baud we saw 2 errors in 10000 bytes. Nineteen reconnects passed."
     output = "At 115,200 baud: 2 errors in 10,000 bytes; 19 reconnects passed, 21 total."
     assert faithfulness_guard(source, output)["unsupported_numbers_dates"] == ["21"]
+
+
+def test_guard_ignores_json_field_initial_words_and_contractions() -> None:
+    from msj_bench.metrics import faithfulness_guard
+    source = "i will review the ring buffer and i am testing it"
+    output = '{"actions": ["Reviewed ring buffer", "Testing it"], "note": "I’ll test; I’m done"}'
+    assert faithfulness_guard(source, output)["unsupported_names"] == []

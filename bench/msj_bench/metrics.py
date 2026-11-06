@@ -64,8 +64,8 @@ def _canonical_number(text: str) -> str:
     return THOUSANDS_SEP_RE.sub("", text).casefold()
 
 
-POSSESSIVE_RE: Final = re.compile(r"(?:'|\u2019)s$", re.IGNORECASE)
-SENTENCE_START_RE: Final = re.compile(r"(?:^|[.!?:;]\s+|\n\s*)$")
+POSSESSIVE_RE: Final = re.compile(r"(?:'|\u2019)(?:s|ll|m|re|ve|d|t)$", re.IGNORECASE)
+SENTENCE_START_RE: Final = re.compile(r"(?:^|[.!?:;]\s+|\n\s*|[\"\u201c\u2018\[(]\s*)$")
 
 
 def _unsupported_names(output: str, source_words: set[str]) -> set[str]:
