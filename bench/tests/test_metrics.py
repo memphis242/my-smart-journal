@@ -79,3 +79,10 @@ def test_guard_ignores_possessives_and_sentence_initial_words() -> None:
     names = faithfulness_guard(source, output)["unsupported_names"]
     # Known limitation: a new name that only appears sentence-initially ("Taylor") is not flagged.
     assert names == ["Morgan"]
+
+
+def test_guard_number_formatting_and_words() -> None:
+    from msj_bench.metrics import faithfulness_guard
+    source = "At 115200 baud we saw 2 errors in 10000 bytes. Nineteen reconnects passed."
+    output = "At 115,200 baud: 2 errors in 10,000 bytes; 19 reconnects passed, 21 total."
+    assert faithfulness_guard(source, output)["unsupported_numbers_dates"] == ["21"]

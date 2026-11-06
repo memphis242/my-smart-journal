@@ -51,6 +51,19 @@ def content_terms(text: str) -> frozenset[str]:
     return frozenset(word for word in normalize(text).split() if word not in STOPWORDS)
 
 
+NUMBER_WORDS: Final = {w: i for i, w in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
+    "sixteen seventeen eighteen nineteen twenty".split())} | {
+    "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+    "hundred": 100, "thousand": 1000}
+THOUSANDS_SEP_RE: Final = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+
+
+def _canonical_number(text: str) -> str:
+    """Compare numbers independent of thousands separators and case ("10,000" == "10000")."""
+    return THOUSANDS_SEP_RE.sub("", text).casefold()
+
+
 POSSESSIVE_RE: Final = re.compile(r"(?:'|\u2019)s$", re.IGNORECASE)
 SENTENCE_START_RE: Final = re.compile(r"(?:^|[.!?:;]\s+|\n\s*)$")
 
@@ -75,11 +88,12 @@ def _unsupported_names(output: str, source_words: set[str]) -> set[str]:
 def faithfulness_guard(source: str, output: str) -> dict[str, Any]:
     source = unicodedata.normalize("NFKC", source)
     output = unicodedata.normalize("NFKC", output)
-    source_numbers = {m.group().casefold() for m in NUMBER_RE.finditer(source)}
+    source_numbers = {_canonical_number(m.group()) for m in NUMBER_RE.finditer(source)}
+    source_numbers |= {str(NUMBER_WORDS[w.casefold()]) for w in WORD_RE.findall(source) if w.casefold() in NUMBER_WORDS}
     source_versions = {m.group().casefold() for m in VERSION_RE.finditer(source)}
     source_dates = {m.group().casefold() for m in DATE_WORD_RE.finditer(source)}
     source_words = {token.casefold() for token in WORD_RE.findall(source)}
-    numbers = sorted({m.group() for m in NUMBER_RE.finditer(output) if m.group().casefold() not in source_numbers})
+    numbers = sorted({m.group() for m in NUMBER_RE.finditer(output) if _canonical_number(m.group()) not in source_numbers})
     dates = {m.group() for m in DATE_WORD_RE.finditer(output) if m.group().casefold() not in source_dates}
     versions = sorted({m.group() for m in VERSION_RE.finditer(output) if m.group().casefold() not in source_versions})
     names = sorted(_unsupported_names(output, source_words))
