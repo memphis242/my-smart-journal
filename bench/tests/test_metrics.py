@@ -70,3 +70,12 @@ def test_summary_review_and_performance():
     assert result["estimated_cost_usd"] == pytest.approx(5 * .58 / 3600)
     assert performance_metrics(Generation("", None, 0), .58)["tokens_per_s"] is None
     assert performance_metrics(Generation("local", "cpu", 2, completion_tokens=10), None)["estimated_cost_usd"] is None
+
+
+def test_guard_ignores_possessives_and_sentence_initial_words() -> None:
+    from msj_bench.metrics import faithfulness_guard
+    source = "Jules Reed and I opened ticket HBR-42."
+    output = "Consequently, Jules's ticket HBR-42 is open and Morgan approved it. Taylor agreed."
+    names = faithfulness_guard(source, output)["unsupported_names"]
+    # Known limitation: a new name that only appears sentence-initially ("Taylor") is not flagged.
+    assert names == ["Morgan"]

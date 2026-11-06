@@ -51,6 +51,27 @@ def content_terms(text: str) -> frozenset[str]:
     return frozenset(word for word in normalize(text).split() if word not in STOPWORDS)
 
 
+POSSESSIVE_RE: Final = re.compile(r"(?:'|\u2019)s$", re.IGNORECASE)
+SENTENCE_START_RE: Final = re.compile(r"(?:^|[.!?:;]\s+|\n\s*)$")
+
+
+def _unsupported_names(output: str, source_words: set[str]) -> set[str]:
+    """Capitalized tokens absent from the source, ignoring possessives and ordinary sentence-initial words."""
+    found: set[str] = set()
+    for match in WORD_RE.finditer(output):
+        token = POSSESSIVE_RE.sub("", match.group())
+        if not token or token.isnumeric() or not any(c.isupper() for c in token):
+            continue
+        folded = token.casefold()
+        if folded in source_words or folded in STOPWORDS:
+            continue
+        sentence_initial = SENTENCE_START_RE.search(output[: match.start()]) is not None
+        if sentence_initial and token[1:].islower():
+            continue
+        found.add(token)
+    return found
+
+
 def faithfulness_guard(source: str, output: str) -> dict[str, Any]:
     source = unicodedata.normalize("NFKC", source)
     output = unicodedata.normalize("NFKC", output)
@@ -61,9 +82,7 @@ def faithfulness_guard(source: str, output: str) -> dict[str, Any]:
     numbers = sorted({m.group() for m in NUMBER_RE.finditer(output) if m.group().casefold() not in source_numbers})
     dates = {m.group() for m in DATE_WORD_RE.finditer(output) if m.group().casefold() not in source_dates}
     versions = sorted({m.group() for m in VERSION_RE.finditer(output) if m.group().casefold() not in source_versions})
-    names = sorted({token for token in WORD_RE.findall(output)
-                    if any(c.isupper() for c in token) and token.casefold() not in source_words
-                    and token.casefold() not in STOPWORDS and not token.isnumeric()})
+    names = sorted(_unsupported_names(output, source_words))
     numbers_dates = sorted(set(numbers) | dates)
     flags = sorted(set(numbers_dates + versions + names))
     return {"unsupported_numbers_dates": numbers_dates, "unsupported_versions": versions,
