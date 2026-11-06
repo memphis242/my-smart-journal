@@ -39,6 +39,7 @@ bodies and HTTP request headers are never printed. `OPENAI_API_KEY` is optional
 for a local server that requires authentication.
 
 ```sh
+# Smoke first: python -m msj_bench llm --set synthetic --limit 1 --tasks cleanup --label <label>
 python -m msj_bench llm --set synthetic \
   --tasks cleanup,summarize,extract,review --backend runpod \
   --label qwen3.5-4b-q4-k-m

@@ -32,6 +32,7 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--label", required=True, help="User-supplied model/run label")
         sub.add_argument("--config", type=Path, default=BENCH_ROOT / "config.toml")
         sub.add_argument("--out-dir", type=Path, help="Results root outside the source tree")
+        sub.add_argument("--limit", type=int, help="Run only the first N items (smoke/acceptance runs)")
         sub.add_argument("--model", help="Request model ID; server-reported model is recorded separately")
         if command == "llm":
             sub.add_argument("--tasks", default=",".join(TASK_NAMES), help="Comma-separated cleanup,summarize,extract,review")
@@ -73,6 +74,11 @@ def _fingerprint(items: tuple[JournalItem, ...]) -> str:
 def benchmark(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     items = load_dataset(args.dataset, mode=args.command)
+    if args.limit is not None:
+        if args.limit <= 0:
+            raise BenchmarkError("--limit must be positive")
+        items = items[: args.limit]
+    assert items, "dataset loading must yield at least one item"
     tasks = ("stt",)
     max_tokens = config.max_tokens
     if args.command == "llm":
