@@ -58,3 +58,10 @@ def test_whisper_file_base64_and_url(tmp_path):
 def test_malformed_chat_is_error(data):
     with pytest.raises(BenchmarkError):
         parse_chat(data, 1)
+
+
+def test_parse_chat_unwraps_runpod_list_output() -> None:
+    from msj_bench.backends import parse_chat
+    data = [{"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+             "model": "m", "usage": {"prompt_tokens": 3, "completion_tokens": 1}}]
+    assert parse_chat(data, 0.1).text == "ok"

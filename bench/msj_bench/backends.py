@@ -61,6 +61,9 @@ def parse_chat(data: Any, wall_time_s: float, job: JobResult | None = None) -> G
             data = json.loads(data)
         except ValueError:
             raise BenchmarkError("LLM worker returned invalid JSON") from None
+    # The RunPod llama.cpp worker returns its (non-streamed) output as a one-element list.
+    if isinstance(data, list) and len(data) == 1:
+        return parse_chat(data[0], wall_time_s, job)
     # Some passthrough worker releases wrap the HTTP response in a body field.
     if isinstance(data, dict) and "choices" not in data and "body" in data:
         return parse_chat(data["body"], wall_time_s, job)
