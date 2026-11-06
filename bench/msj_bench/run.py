@@ -38,6 +38,7 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--tasks", default=",".join(TASK_NAMES), help="Comma-separated cleanup,summarize,extract,review")
             sub.add_argument("--backend", choices=("runpod", "openai"), default="runpod")
             sub.add_argument("--base-url", help="OpenAI-compatible base URL including /v1")
+            sub.add_argument("--expect-model", help="Fail items whose server-reported model lacks this substring")
             sub.add_argument("--max-tokens", type=int, help="Positive output token cap for each request")
     report = commands.add_parser("report", help="Compare runs and create blind rating sheets")
     report.add_argument("results_dirs", nargs="+", type=Path)
@@ -148,6 +149,9 @@ def benchmark(args: argparse.Namespace) -> int:
                                     record["review_candidate_origin"] = "cleanup" if "cleanup" in tasks else "reference_cleaned"
                                 generation = llm.generate(messages_for(task, item.raw_transcript, candidate=candidate),
                                                           max_tokens=max_tokens, schema=task_schema(task))
+                                if args.expect_model and args.expect_model.casefold() not in (generation.model or "").casefold():
+                                    raise BenchmarkError(f"Server model {generation.model!r} does not match "
+                                                         f"--expect-model {args.expect_model!r} (stale worker?)")
                                 if task == "cleanup":
                                     cleanup_output = generation.text
                                 metrics = llm_metrics(task, item.raw_transcript, generation.text,
