@@ -23,3 +23,18 @@ Cost excludes cold starts. Total RunPod serverless spend for the day (billing re
   summarizers (key-fact recall 0.86-0.88). 8-bit Qwen improves on 4-bit modestly.
 - The summary prompt is too lenient: summaries are 80-92% of source length. Tighten before the next round.
 - Next: human blind ratings (ratings-*.csv in each results dir), user recordings for STT, prompt tuning.
+
+## 9. Summary prompt iterations (Gemma-4-E2B Q8_0, synthetic set, 12 items)
+
+| Prompt | Style | Length vs source | Key-fact recall | Flags/entry |
+|---|---|---|---|---|
+| v1 (baseline) | short paragraph | 0.81 | 0.88 | 0 |
+| v2 | 2-4 sentences, <= 1/3 length | 0.58 | 0.86 | 0 |
+| v3 | ~1/4 length, dense | 0.58 | 0.85 | 0.08 |
+| v4 | 3-5 terse bullets | 0.32 | 0.72 | 0.42 |
+| **v5 (kept)** | ~half length, explicit must-keep list | 0.69 | **0.94** | 0 |
+
+- The model does not follow numeric length targets; v2 and v3 land at the same length.
+- Bullets compress hard but drop names, units and acronyms.
+- v5's must-keep list (full names, acronyms, numbers with units, weekdays) raised recall. Some remaining misses are metric artifacts: "five" vs "5", and "12 cm" is the value the speaker corrected away from.
+- Synthetic entries are ~115 words; real entries will be longer, so recheck length on the user's recordings.
