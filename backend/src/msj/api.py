@@ -15,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
 from starlette.requests import Request as StarletteRequest
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .auth import verify_token
 from .config import Settings
@@ -111,6 +112,43 @@ async def _body(request: Request, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+class _PrivateErrorMiddleware:
+    """Prevent unhandled exception values from reaching server traceback logs."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = False
+        complete = False
+
+        async def track_send(message: Message) -> None:
+            nonlocal started, complete
+            match message["type"]:
+                case "http.response.start":
+                    started = True
+                case "http.response.body":
+                    complete = not message.get("more_body", False)
+            await send(message)
+
+        try:
+            await self.app(scope, receive, track_send)
+        except Exception as exc:
+            _logger.error("Request failed (%s); check service configuration", type(exc).__name__)
+            if not started:
+                response = _problem(
+                    500,
+                    "Internal Server Error",
+                    "The request failed unexpectedly; check service logs.",
+                )
+                await response(scope, receive, send)
+            elif not complete:
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     from .config import load_settings
 
@@ -124,6 +162,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.store = store
     app.state.runner = runner
     app.state.settings = actual_settings
+    app.add_middleware(_PrivateErrorMiddleware)
 
     @app.exception_handler(APIProblem)
     async def api_problem_handler(_request: Request, exc: APIProblem) -> JSONResponse:
@@ -143,7 +182,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(Exception)
     async def internal_error_handler(_request: Request, _exc: Exception) -> JSONResponse:
-        _logger.error("Request failed; check storage and service configuration", exc_info=_exc)
+        _logger.error("Request failed (%s); check storage configuration", type(_exc).__name__)
         return _problem(
             500, "Internal Server Error", "The request failed unexpectedly; check service logs."
         )
@@ -341,8 +380,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     yield (
                         json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
                     ).encode()
-            except Exception:
-                _logger.exception("Search failed; check storage and search index")
+            except Exception as exc:
+                _logger.error(
+                    "Search failed (%s); check storage and search index", type(exc).__name__
+                )
                 yield (
                     json.dumps(
                         {

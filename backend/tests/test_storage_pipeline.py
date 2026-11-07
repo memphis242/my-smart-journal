@@ -24,6 +24,7 @@ class ScriptedProvider:
         *,
         candidate: str | None = None,
         audio: bytes | None = None,
+        messages: Any = None,
     ) -> Generation:
         if kind == "transcribe":
             assert audio is not None
@@ -70,12 +71,7 @@ def valid_extraction() -> str:
 def test_text_pipeline_dependencies_artifacts_and_searchable_projection(tmp_path: Path) -> None:
     store, config = make_store(tmp_path)
     entry = store.create_entry(text="I completed a journal milestone.")
-    assert {job["kind"] for job in store.list_jobs()} == {
-        "cleanup",
-        "review",
-        "summarize",
-        "extract",
-    }
+    assert {job["kind"] for job in store.list_jobs()} == {"cleanup", "summarize", "extract"}
     runner = Runner(
         store,
         config,
@@ -88,7 +84,7 @@ def test_text_pipeline_dependencies_artifacts_and_searchable_projection(tmp_path
             }
         ),
     )
-    assert runner.run_batch() == {"done": 4, "failed": 0, "discarded": 0}
+    assert runner.run_batch() == {"done": 6, "failed": 0, "discarded": 0}
     latest = store.get_entry(entry["id"])
     assert {artifact["kind"] for artifact in latest["artifacts"]} == {
         "user_text",
@@ -121,7 +117,7 @@ def test_audio_pipeline_orders_transcription_before_dependent_tasks(tmp_path: Pa
             }
         ),
     )
-    assert runner.run_batch() == {"done": 5, "failed": 0, "discarded": 0}
+    assert runner.run_batch() == {"done": 7, "failed": 0, "discarded": 0}
     kinds = [job["kind"] for job in store.list_jobs() if job["entry_id"] == entry["id"]]
     assert kinds[0] == "transcribe"
     assert store.list_jobs("queued") == []
@@ -135,10 +131,31 @@ def test_audio_pipeline_orders_transcription_before_dependent_tasks(tmp_path: Pa
 def test_review_flags_cleaned_artifact_and_invalid_extraction_reports_path(tmp_path: Path) -> None:
     store, config = make_store(tmp_path)
     entry = store.create_entry(text="I planned a release.")
+
+    class TargetedReviewProvider(ScriptedProvider):
+        def generate(
+            self,
+            kind: TaskKind,
+            route: TaskRoute,
+            source: str,
+            *,
+            candidate: str | None = None,
+            audio: bytes | None = None,
+            messages: Any = None,
+        ) -> Generation:
+            if kind == "review":
+                claims = ["shipped"] if candidate == "I shipped a release." else []
+                return Generation(json.dumps({"unsupported_claims": claims}), "fake")
+            if messages is not None:
+                return Generation(source, "fake")
+            return super().generate(
+                kind, route, source, candidate=candidate, audio=audio, messages=messages
+            )
+
     result = Runner(
         store,
         config,
-        ScriptedProvider(
+        TargetedReviewProvider(
             {
                 "cleanup": "I shipped a release.",
                 "review": '{"unsupported_claims": ["shipped"]}',
@@ -147,18 +164,15 @@ def test_review_flags_cleaned_artifact_and_invalid_extraction_reports_path(tmp_p
             }
         ),
     ).run_batch()
-    assert result == {"done": 3, "failed": 1, "discarded": 0}
+    assert result == {"done": 6, "failed": 1, "discarded": 0}
     latest = store.get_entry(entry["id"])
-    cleaned = next(item for item in latest["artifacts"] if item["kind"] == "cleaned")
-    assert cleaned["needs_attention"] is True
+    cleanup_session = latest["review_sessions"]["cleanup"]
+    assert cleanup_session["status"] == "accepted"
+    assert cleanup_session["turns_used"] == 2
+    cleaned = cleanup_session["final_artifact"]
+    assert cleaned["content"] == "I planned a release."
     extract_job = get_job(store, entry["id"], "extract")
     assert extract_job["status"] == "queued"
-    with store.connect() as db:
-        _ = db.execute(
-            "UPDATE jobs SET not_before=? WHERE id=?", (time.time() - 1, extract_job["id"])
-        )
-    retried = Runner(store, config, ScriptedProvider({"extract": '{"projects": []}'})).run_batch()
-    assert retried == {"done": 0, "failed": 1, "discarded": 0}
     assert "validation failed at $" in get_job(store, entry["id"], "extract")["last_error"]
 
 
@@ -197,7 +211,7 @@ def test_patch_invalidates_claim_and_versions_artifacts(tmp_path: Path) -> None:
         "summarize": "revised summary",
         "extract": valid_extraction(),
     }
-    assert Runner(store, config, ScriptedProvider(outputs)).run_batch()["done"] == 4
+    assert Runner(store, config, ScriptedProvider(outputs)).run_batch()["done"] == 6
     history = store.get_entry(entry["id"], history=True)["artifacts"]
     old_text = next(
         item for item in history if item["kind"] == "user_text" and item["revision"] == 1
@@ -214,11 +228,15 @@ def test_expired_lease_is_recovered_on_claim(tmp_path: Path) -> None:
     store, _ = make_store(tmp_path)
     entry = store.create_entry(text="lease test")
     job_id = get_job(store, entry["id"], "cleanup")["id"]
-    assert store.claim({job_id}) is not None
+    original = store.claim({job_id})
+    assert original is not None
     with store.connect() as db:
         _ = db.execute("UPDATE jobs SET lease_until=? WHERE id=?", (time.time() - 1, job_id))
     recovered = store.claim({job_id})
     assert recovered is not None and recovered["attempts"] == 2
+    assert recovered["claim_protocol"] == 4
+    assert recovered["claim_token"] != original["claim_token"]
+    assert store.finish_job(original, "stale result", "fake", "sha") is False
     assert "lease expired" in recovered["last_error"]
 
 
@@ -293,9 +311,10 @@ def test_batch_groups_all_entries_by_task_endpoint(tmp_path: Path) -> None:
                 *,
                 candidate: str | None = None,
                 audio: bytes | None = None,
+                messages: Any = None,
             ) -> Generation:
                 seen.append(route.model)
                 return delegate.generate(kind, route, source, candidate=candidate, audio=audio)
 
-        assert Runner(store, config, RecordingProvider()).run_batch()["done"] == 14
-    assert seen == ["whisper"] * 2 + ["phi"] * 3 + ["gemma"] * 9
+        assert Runner(store, config, RecordingProvider()).run_batch()["done"] == 20
+    assert seen == ["whisper"] * 2 + ["phi"] * 3 + ["gemma"] * 15

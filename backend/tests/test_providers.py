@@ -146,9 +146,13 @@ def test_openai_transcription_uses_multipart() -> None:
 
 def test_wrong_or_missing_model_is_rejected() -> None:
     route = TaskRoute(model="expected", expect_model="expected")
+    private = "private journal phrase must not reach a job error"
     for generation in (Generation("text", "other"), Generation("text", None)):
         with pytest.raises(ProviderError, match="Stale worker or wrong model"):
             ensure_model(generation, route)
+    with pytest.raises(ProviderError) as failure:
+        ensure_model(Generation("text", private), route)
+    assert private not in str(failure.value)
 
 
 def test_fake_extraction_is_valid_json() -> None:

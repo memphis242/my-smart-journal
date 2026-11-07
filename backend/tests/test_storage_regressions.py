@@ -20,23 +20,22 @@ def test_failed_parent_is_exposed_on_dependent_job_and_entry_then_retry_unblocks
 ) -> None:
     store = store_at(tmp_path)
     entry = store.create_entry(text="Entry with an inference failure")
-    jobs = {job["kind"]: job for job in store.list_jobs()}
+    jobs = {job["target"]: job for job in store.list_jobs()}
     cleanup = store.claim({jobs["cleanup"]["id"]})
     assert cleanup is not None
     assert store.fail_job(cleanup, "permanent model failure", retryable=False)
 
-    children = {job["kind"]: job for job in store.list_jobs()}
-    assert children["review"]["blocked_by"][0]["kind"] == "cleanup"
-    assert children["review"]["blocked_by"][0]["message"] == (
+    children = {job["target"]: job for job in store.list_jobs()}
+    assert children["summarize"]["blocked_by"][0]["kind"] == "cleanup"
+    assert children["summarize"]["blocked_by"][0]["message"] == (
         f"blocked by failed cleanup job {jobs['cleanup']['id']}"
     )
     entry_view = store.get_entry(entry["id"])
-    entry_jobs = {job["kind"]: job for job in entry_view["jobs"]}
+    entry_jobs = {job["target"]: job for job in entry_view["jobs"]}
     assert entry_jobs["extract"]["blocked_by"][0]["kind"] == "cleanup"
 
     _ = store.retry_job(jobs["cleanup"]["id"])
-    unblocked = {job["kind"]: job for job in store.list_jobs()}
-    assert unblocked["review"]["blocked_by"] == []
+    unblocked = {job["target"]: job for job in store.list_jobs()}
     assert unblocked["summarize"]["blocked_by"] == []
 
 

@@ -1,49 +1,50 @@
 """Bounded batch execution with schema validation and transactional publication."""
 
-import hashlib
 import json
 import logging
 from dataclasses import dataclass
 from importlib.resources import files
-from typing import Any, Protocol
+from typing import Any, cast
 
 import httpx
 from jsonschema import Draft202012Validator
 
-from .config import Settings, TaskKind, TaskRoute
-from .providers import Generation, InferenceProvider, ProviderError
+from .config import Settings, TaskKind
+from .providers import (
+    InferenceProvider,
+    Provider,
+    ProviderError,
+    SafeProviderError,
+    prompt_digest,
+    revision_messages,
+)
 from .storage import Store
 
 _logger = logging.getLogger(__name__)
 
 
-class Provider(Protocol):
-    def generate(
-        self,
-        kind: TaskKind,
-        route: TaskRoute,
-        source: str,
-        *,
-        candidate: str | None = None,
-        audio: bytes | None = None,
-    ) -> Generation: ...
-
-
 @dataclass(frozen=True)
 class ValidationResult:
-    needs_attention: bool = False
+    unsupported_claims: tuple[str, ...] = ()
+
+    @property
+    def needs_attention(self) -> bool:
+        return bool(self.unsupported_claims)
 
 
-def validate_output(kind: str, content: str) -> ValidationResult:
+def validate_output(kind: str, content: str, *, retryable: bool = True) -> ValidationResult:
     if not content.strip():
-        raise ProviderError("Inference returned empty text; check model and token limit")
+        raise SafeProviderError(
+            "Inference returned empty text; check model and token limit", retryable=retryable
+        )
     if kind not in {"extract", "review"}:
         return ValidationResult()
     try:
         data = json.loads(content)
     except ValueError, RecursionError:
-        raise ProviderError(
-            f"{kind} returned invalid JSON at $; retry with a schema-capable model"
+        raise SafeProviderError(
+            f"{kind} returned invalid JSON at $; retry with a schema-capable model",
+            retryable=retryable,
         ) from None
     schema: dict[str, Any]
     if kind == "extract":
@@ -63,11 +64,12 @@ def validate_output(kind: str, content: str) -> ValidationResult:
             f"[{part}]" if isinstance(part, int) else f".{part}" for part in error.absolute_path
         )
         # Avoid storing provider output or journal text in job errors.
-        raise ProviderError(
+        raise SafeProviderError(
             f"{kind} validation failed at {path}: schema {error.validator} "
-            "constraint violated; check the configured model"
+            "constraint violated; check the configured model",
+            retryable=retryable,
         )
-    return ValidationResult(kind == "review" and bool(data["unsupported_claims"]))
+    return ValidationResult(tuple(data["unsupported_claims"]) if kind == "review" else ())
 
 
 class Runner:
@@ -77,43 +79,72 @@ class Runner:
         self._provider = provider
 
     def run_batch(self) -> dict[str, Any]:
-        # A snapshot bounds the batch and prevents hot retries from looping indefinitely.
-        eligible = {
-            job["id"] for job in self.store.list_jobs() if job["status"] in {"queued", "running"}
+        # Session follow-ups stay in the batch; new entry revisions wait for another pass.
+        snapshot = {
+            (job["entry_id"], job["revision"])
+            for job in self.store.list_jobs()
+            if job["status"] in {"queued", "running"}
         }
+        attempted: set[str] = set()
         stats = {"done": 0, "failed": 0, "discarded": 0}
         with httpx.Client() as http:
             provider = self._provider or InferenceProvider(self.settings, http)
-            while (job := self.store.claim(eligible)) is not None:
-                eligible.remove(job["id"])
+            while True:
+                eligible = {
+                    job["id"]
+                    for job in self.store.list_jobs()
+                    if (job["entry_id"], job["revision"]) in snapshot
+                    and job["status"] in {"queued", "running"}
+                    and job["id"] not in attempted
+                }
+                job = self.store.claim(eligible)
+                if job is None:
+                    break
+                attempted.add(job["id"])
                 try:
                     source, candidate, audio = self.store.job_inputs(job)
-                    kind = job["kind"]
-                    route = self.settings.tasks[kind]
-                    output = provider.generate(
-                        kind, route, source, candidate=candidate, audio=audio
-                    )
-                    validation = validate_output(kind, output.text)
+                    kind = cast(TaskKind, job["target"] if job["kind"] == "revise" else job["kind"])
+                    route = self.store.job_route(job)
                     digest = (
                         None
                         if kind == "transcribe"
-                        else hashlib.sha256(
-                            files("msj").joinpath(f"resources/{kind}.txt").read_bytes()
-                        ).hexdigest()
+                        else prompt_digest(kind, revision=job["kind"] == "revise")
+                    )
+                    if job["kind"] == "revise":
+                        assert candidate is not None
+                        messages = revision_messages(
+                            kind, source, candidate, self.store.revision_claims(job)
+                        )
+                        output = provider.generate(kind, route, source, messages=messages)
+                    else:
+                        output = provider.generate(
+                            kind, route, source, candidate=candidate, audio=audio
+                        )
+                    validation = validate_output(
+                        kind, output.text, retryable=job["kind"] != "revise"
                     )
                     published = self.store.finish_job(
-                        job, output.text, output.model, digest, validation.needs_attention
+                        job,
+                        output.text,
+                        output.model,
+                        digest,
+                        unsupported_claims=validation.unsupported_claims,
+                        producer_route=route,
                     )
                     stats["done" if published else "discarded"] += 1
                 except (ProviderError, OSError, KeyError) as exc:
-                    message = (
-                        str(exc)
-                        if isinstance(exc, ProviderError)
-                        else (
-                            "Cannot read job input; check entry artifacts "
-                            "and data directory permissions"
-                        )
-                    )
+                    match exc:
+                        case SafeProviderError():
+                            message = str(exc)
+                        case ProviderError():
+                            message = (
+                                "Inference failed; check provider configuration and retry the job"
+                            )
+                        case _:
+                            message = (
+                                "Cannot read job input; check entry artifacts "
+                                "and data directory permissions"
+                            )
                     recorded = self.store.fail_job(
                         job,
                         message,

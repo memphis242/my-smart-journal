@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .config import Settings
+from .config import Settings, TaskRoute
 
 _logger = logging.getLogger(__name__)
 
@@ -81,7 +81,94 @@ class Store:
                             statement = ""
                     assert not statement.strip()
                     _ = db.execute("INSERT INTO schema_migrations VALUES (?)", (resource.name,))
+            self._reconcile_review_sessions(db)
         self._drain_deletions()
+
+    def _reconcile_review_sessions(self, db: sqlite3.Connection) -> None:
+        rows = db.execute(
+            "SELECT j.* FROM jobs j "
+            "JOIN entries e ON e.id=j.entry_id WHERE j.kind IN ('cleanup','summarize','extract') "
+            "AND j.revision=e.revision AND j.status!='superseded' ORDER BY j.created_at,j.id"
+        ).fetchall()
+        for row in rows:
+            target = str(row["kind"])
+            exists = db.execute(
+                "SELECT 1 FROM review_sessions WHERE entry_id=? AND revision=? AND target=?",
+                (row["entry_id"], row["revision"], target),
+            ).fetchone()
+            if exists is not None:
+                continue
+            source_id = self._find_source_id(db, row, target)
+            artifact_kind = {"cleanup": "cleaned", "summarize": "summary", "extract": "extraction"}[
+                target
+            ]
+            candidate = db.execute(
+                "SELECT id FROM artifacts WHERE entry_id=? AND revision=? AND kind=? "
+                "AND superseded_by IS NULL ORDER BY created_at DESC,id DESC LIMIT 1",
+                (row["entry_id"], row["revision"], artifact_kind),
+            ).fetchone()
+            enabled = target in self.settings.review.enabled_for
+            completed = row["status"] == "done" and candidate is not None and source_id is not None
+            status = "pending" if enabled else "disabled"
+            _ = db.execute(
+                "INSERT INTO review_sessions (entry_id,revision,target,enabled,max_turns,status,"
+                "source_artifact_id,candidate_artifact_id,final_artifact_id,producer_route) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row["entry_id"],
+                    row["revision"],
+                    target,
+                    int(enabled),
+                    self.settings.review.max_turns,
+                    status,
+                    source_id,
+                    candidate["id"] if candidate is not None else None,
+                    candidate["id"] if candidate is not None else None,
+                    self.settings.tasks[row["kind"]].model_dump_json() if completed else None,
+                ),
+            )
+            if enabled and completed:
+                review_id = self._insert_session_job(
+                    db,
+                    dict(row),
+                    "review",
+                    target,
+                    1,
+                    input_artifact_id=str(candidate["id"]),
+                    depends_on=str(row["id"]),
+                )
+                if target == "cleanup":
+                    self._gate_cleanup_children(db, dict(row), review_id)
+        cleanup_session = db.execute(
+            "SELECT * FROM review_sessions WHERE revision=(SELECT revision FROM entries "
+            "WHERE id=review_sessions.entry_id) AND target='cleanup' AND status='pending'"
+        ).fetchall()
+        for session in cleanup_session:
+            gate = db.execute(
+                "SELECT id FROM jobs WHERE entry_id=? AND revision=? AND target='cleanup' "
+                "AND kind IN ('review','revise') AND status IN ('queued','running','failed') "
+                "ORDER BY turn DESC,created_at DESC LIMIT 1",
+                (session["entry_id"], session["revision"]),
+            ).fetchone()
+            if gate is not None:
+                self._gate_cleanup_children(
+                    db,
+                    {"entry_id": session["entry_id"], "revision": session["revision"]},
+                    str(gate["id"]),
+                )
+
+    @staticmethod
+    def _find_source_id(db: sqlite3.Connection, job: sqlite3.Row, target: str) -> str | None:
+        kinds = ("raw_transcript", "user_text") if target == "cleanup" else ("cleaned",)
+        for kind in kinds:
+            row = db.execute(
+                "SELECT id FROM artifacts WHERE entry_id=? AND revision=? AND kind=? "
+                "AND superseded_by IS NULL ORDER BY created_at DESC,id DESC LIMIT 1",
+                (job["entry_id"], job["revision"], kind),
+            ).fetchone()
+            if row is not None:
+                return str(row["id"])
+        return None
 
     @staticmethod
     def _entry(db: sqlite3.Connection, entry_id: str) -> dict[str, Any]:
@@ -102,17 +189,33 @@ class Store:
         *,
         model: str | None = None,
         prompt_sha256: str | None = None,
+        target: str | None = None,
+        turn: int = 0,
+        reviewed_artifact_id: str | None = None,
     ) -> str:
         artifact_id = identifier()
         previous = db.execute(
-            "SELECT id FROM artifacts WHERE entry_id=? AND kind=? AND superseded_by IS NULL",
-            (entry_id, kind),
+            "SELECT id FROM artifacts WHERE entry_id=? AND kind=? AND superseded_by IS NULL "
+            "AND COALESCE(target,'')=COALESCE(?,'')",
+            (entry_id, kind, target),
         ).fetchall()
         _ = db.execute(
             "INSERT INTO artifacts "
-            "(id,entry_id,kind,content,model,prompt_sha256,created_at,revision) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (artifact_id, entry_id, kind, content, model, prompt_sha256, timestamp(), revision),
+            "(id,entry_id,kind,content,model,prompt_sha256,created_at,revision,target,turn,"
+            "reviewed_artifact_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                artifact_id,
+                entry_id,
+                kind,
+                content,
+                model,
+                prompt_sha256,
+                timestamp(),
+                revision,
+                target,
+                turn,
+                reviewed_artifact_id,
+            ),
         )
         for row in previous:
             _ = db.execute(
@@ -120,28 +223,42 @@ class Store:
             )
         return artifact_id
 
-    @staticmethod
-    def _queue(db: sqlite3.Connection, entry_id: str, revision: int, audio: bool) -> None:
-        kinds = (
-            ["transcribe", "cleanup", "review", "summarize", "extract"]
-            if audio
-            else ["cleanup", "review", "summarize", "extract"]
-        )
-        ids = {kind: identifier() for kind in kinds}
-        for kind, job_id in ids.items():
+    def _queue(self, db: sqlite3.Connection, entry_id: str, revision: int, audio: bool) -> None:
+        kinds = (["transcribe"] if audio else []) + ["cleanup", "summarize", "extract"]
+        ids = {
+            (kind, kind if kind in {"cleanup", "summarize", "extract"} else ""): identifier()
+            for kind in kinds
+        }
+        for (kind, target), job_id in ids.items():
             _ = db.execute(
-                "INSERT INTO jobs (id,entry_id,kind,not_before,created_at,revision) "
-                "VALUES (?,?,?,?,?,?)",
-                (job_id, entry_id, kind, time.time(), timestamp(), revision),
+                "INSERT INTO jobs (id,entry_id,kind,target,turn,not_before,created_at,revision) "
+                "VALUES (?,?,?,?,0,?,?,?)",
+                (job_id, entry_id, kind, target, time.time(), timestamp(), revision),
             )
-            parent = {
-                "cleanup": "transcribe",
-                "review": "cleanup",
-                "summarize": "cleanup",
-                "extract": "cleanup",
-            }.get(kind)
-            if parent in ids:
-                _ = db.execute("INSERT INTO job_dependencies VALUES (?,?)", (job_id, ids[parent]))
+        for child in ("summarize", "extract"):
+            _ = db.execute(
+                "INSERT INTO job_dependencies VALUES (?,?)",
+                (ids[(child, child)], ids[("cleanup", "cleanup")]),
+            )
+        if audio:
+            _ = db.execute(
+                "INSERT INTO job_dependencies VALUES (?,?)",
+                (ids[("cleanup", "cleanup")], ids[("transcribe", "")]),
+            )
+        for target in ("cleanup", "summarize", "extract"):
+            enabled = target in self.settings.review.enabled_for
+            _ = db.execute(
+                "INSERT INTO review_sessions (entry_id,revision,target,enabled,max_turns,status) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    entry_id,
+                    revision,
+                    target,
+                    int(enabled),
+                    self.settings.review.max_turns,
+                    "pending" if enabled else "disabled",
+                ),
+            )
 
     @staticmethod
     def _canonical_date(value: str) -> str:
@@ -230,7 +347,9 @@ class Store:
             dict(row) | {"needs_attention": bool(row["needs_attention"])} for row in rows
         ]
         entry["needs_attention"] = any(
-            row["needs_attention"] for row in rows if row["revision"] == entry["revision"]
+            row["needs_attention"]
+            for row in rows
+            if row["revision"] == entry["revision"] and row["superseded_by"] is None
         )
         job_rows = db.execute(
             "SELECT * FROM jobs WHERE entry_id=? "
@@ -239,6 +358,38 @@ class Store:
             (entry_id,) if history else (entry_id, entry["revision"]),
         ).fetchall()
         entry["jobs"] = Store._job_views(db, job_rows)
+        sessions = db.execute(
+            "SELECT * FROM review_sessions WHERE entry_id=? AND revision=? ORDER BY target",
+            (entry_id, entry["revision"]),
+        ).fetchall()
+        session_views: dict[str, Any] = {}
+        for session in sessions:
+            final_id = session["final_artifact_id"] or session["candidate_artifact_id"]
+            final_row = (
+                db.execute("SELECT * FROM artifacts WHERE id=?", (final_id,)).fetchone()
+                if final_id is not None
+                else None
+            )
+            review_rows = db.execute(
+                "SELECT * FROM artifacts WHERE entry_id=? AND revision=? AND kind='review' "
+                "AND target=? AND turn>0 ORDER BY turn,created_at,id",
+                (entry_id, entry["revision"], session["target"]),
+            ).fetchall()
+            session_views[session["target"]] = {
+                "final_artifact": (
+                    dict(final_row) | {"needs_attention": bool(final_row["needs_attention"])}
+                    if final_row is not None
+                    else None
+                ),
+                "turns_used": session["turns_used"],
+                "status": session["status"],
+                "remaining_claims": json.loads(session["remaining_claims"]),
+                "history": [
+                    dict(row) | {"needs_attention": bool(row["needs_attention"])}
+                    for row in review_rows
+                ],
+            }
+        entry["review_sessions"] = session_views
         return entry
 
     def get_entry(self, entry_id: str, history: bool = False) -> dict[str, Any]:
@@ -287,7 +438,8 @@ class Store:
                 _ = db.execute(
                     "UPDATE jobs SET status='superseded',"
                     "last_error='Entry text revised; use current jobs',"
-                    "finished_at=?,claim_token=NULL,lease_until=NULL WHERE entry_id=? "
+                    "finished_at=?,claim_token=NULL,lease_until=NULL,claim_protocol=0 "
+                    "WHERE entry_id=? "
                     "AND status IN ('queued','running','failed')",
                     (timestamp(), entry_id),
                 )
@@ -408,7 +560,7 @@ class Store:
                 raise Conflict("Only failed jobs for the current entry revision can be retried")
             _ = db.execute(
                 "UPDATE jobs SET status='queued',attempts=0,last_error=NULL,"
-                "finished_at=NULL,not_before=? WHERE id=?",
+                "finished_at=NULL,not_before=?,claim_protocol=0 WHERE id=?",
                 (time.time(), job_id),
             )
             result = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -426,8 +578,15 @@ class Store:
                 "UPDATE jobs SET status=CASE WHEN attempts>=? THEN 'failed' ELSE 'queued' END,"
                 "last_error='Worker lease expired; retry after checking worker health',"
                 "finished_at=CASE WHEN attempts>=? THEN ? ELSE NULL END,claim_token=NULL,"
-                "lease_until=NULL WHERE status='running' AND lease_until<=?",
+                "lease_until=NULL,claim_protocol=0 WHERE status='running' AND lease_until<=?",
                 (self.settings.max_attempts, self.settings.max_attempts, timestamp(), now),
+            )
+            _ = db.execute(
+                "UPDATE jobs SET status='failed',"
+                "last_error='Attempt limit reached; retry after checking worker health',"
+                "finished_at=?,claim_token=NULL,lease_until=NULL,claim_protocol=0 "
+                "WHERE status='queued' AND attempts>=?",
+                (timestamp(), self.settings.max_attempts),
             )
             rows = db.execute(
                 "SELECT j.* FROM jobs j JOIN entries e ON e.id=j.entry_id "
@@ -441,8 +600,17 @@ class Store:
                 return None
 
             def group(job: dict[str, Any]) -> tuple[int, str, str, str, str]:
-                route = self.settings.tasks[job["kind"]]
-                stage = {"transcribe": 0, "cleanup": 1}.get(job["kind"], 2)
+                route = self._job_route(db, job)
+                target = job["target"]
+                turn = int(job["turn"])
+                stage = {
+                    "transcribe": 0,
+                    "cleanup": 1,
+                    "review": 2 * turn if target == "cleanup" else 8 + 2 * turn - 1,
+                    "revise": 2 * turn + 1 if target == "cleanup" else 8 + 2 * turn,
+                    "summarize": 8,
+                    "extract": 8,
+                }[job["kind"]]
                 return (
                     stage,
                     route.provider,
@@ -455,17 +623,49 @@ class Store:
             claim_token = identifier()
             _ = db.execute(
                 "UPDATE jobs SET status='running',attempts=attempts+1,lease_until=?,"
-                "claim_token=? WHERE id=?",
+                "claim_token=?,claim_protocol=4 WHERE id=?",
                 (now + self.settings.lease_s, claim_token, job["id"]),
             )
             return job | {
                 "status": "running",
                 "attempts": job["attempts"] + 1,
                 "claim_token": claim_token,
+                "claim_protocol": 4,
             }
+
+    def _job_route(self, db: sqlite3.Connection, job: dict[str, Any]) -> TaskRoute:
+        if job["kind"] == "revise":
+            row = db.execute(
+                "SELECT producer_route FROM review_sessions WHERE entry_id=? "
+                "AND revision=? AND target=?",
+                (job["entry_id"], job["revision"], job["target"]),
+            ).fetchone()
+            if row is None or row["producer_route"] is None:
+                raise Conflict("Original producer route is unavailable; start a new entry revision")
+            return TaskRoute.model_validate_json(row["producer_route"])
+        return self.settings.tasks[job["kind"]]
+
+    def job_route(self, job: dict[str, Any]) -> TaskRoute:
+        with self.connect() as db:
+            return self._job_route(db, job)
 
     def job_inputs(self, job: dict[str, Any]) -> tuple[str, str | None, bytes | None]:
         with self.connect() as db:
+            if job["kind"] in {"review", "revise"}:
+                session = db.execute(
+                    "SELECT * FROM review_sessions WHERE entry_id=? AND revision=? AND target=?",
+                    (job["entry_id"], job["revision"], job["target"]),
+                ).fetchone()
+                assert session is not None
+                source_row = db.execute(
+                    "SELECT content FROM artifacts WHERE id=?", (session["source_artifact_id"],)
+                ).fetchone()
+                candidate_row = db.execute(
+                    "SELECT content FROM artifacts WHERE id=?", (job["input_artifact_id"],)
+                ).fetchone()
+                if source_row is None or candidate_row is None:
+                    raise Conflict("Review input artifacts are unavailable for this revision")
+                return str(source_row["content"]), str(candidate_row["content"]), None
             rows = db.execute(
                 "SELECT kind,content FROM artifacts WHERE entry_id=? AND revision=? "
                 "AND superseded_by IS NULL",
@@ -479,10 +679,27 @@ class Store:
                 return path, None, (self.data_dir / path).read_bytes()
             case "cleanup":
                 return raw, None, None
-            case "review":
-                return raw, artifacts["cleaned"], None
             case _:
                 return artifacts["cleaned"], None, None
+
+    def revision_claims(self, job: dict[str, Any]) -> tuple[str, ...]:
+        artifact_id = job.get("review_artifact_id")
+        if not isinstance(artifact_id, str):
+            raise Conflict("Revision job has no pinned review result")
+        with self.connect() as db:
+            row = db.execute("SELECT content FROM artifacts WHERE id=?", (artifact_id,)).fetchone()
+        if row is None:
+            raise Conflict("Revision review result is unavailable")
+        try:
+            value = json.loads(row["content"])
+        except ValueError, RecursionError:
+            raise Conflict("Pinned review result is invalid") from None
+        if not isinstance(value, dict):
+            raise Conflict("Pinned review result is invalid")
+        claims = value.get("unsupported_claims")
+        if not isinstance(claims, list) or not all(isinstance(item, str) for item in claims):
+            raise Conflict("Pinned review result is invalid")
+        return tuple(claims)
 
     def finish_job(
         self,
@@ -491,6 +708,9 @@ class Store:
         model: str | None,
         prompt_sha256: str | None,
         needs_attention: bool = False,
+        *,
+        unsupported_claims: tuple[str, ...] | None = None,
+        producer_route: TaskRoute | None = None,
     ) -> bool:
         with self.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
@@ -508,8 +728,22 @@ class Store:
                 "summarize": "summary",
                 "extract": "extraction",
                 "review": "review",
-            }[job["kind"]]
-            _ = self._artifact(
+            }.get(job["kind"])
+            if job["kind"] == "revise":
+                kind = {"cleanup": "cleaned", "summarize": "summary", "extract": "extraction"}.get(
+                    job["target"]
+                )
+            if kind is None:
+                raise Conflict("Unknown processing job kind")
+            session = None
+            if job["kind"] in {"review", "revise"}:
+                session = db.execute(
+                    "SELECT * FROM review_sessions WHERE entry_id=? AND revision=? AND target=?",
+                    (job["entry_id"], job["revision"], job["target"]),
+                ).fetchone()
+                assert session is not None
+            reviewed_id = job.get("input_artifact_id") if job["kind"] == "review" else None
+            artifact_id = self._artifact(
                 db,
                 job["entry_id"],
                 job["revision"],
@@ -517,20 +751,206 @@ class Store:
                 content,
                 model=model,
                 prompt_sha256=prompt_sha256,
+                target=(
+                    job.get("target")
+                    if job["kind"] in {"review", "revise"}
+                    else (
+                        job["kind"] if job["kind"] in {"cleanup", "summarize", "extract"} else None
+                    )
+                ),
+                turn=job.get("turn", 0),
+                reviewed_artifact_id=reviewed_id,
             )
-            if job["kind"] == "review":
+            if job["kind"] in {"cleanup", "summarize", "extract"}:
+                target = job["target"]
+                route = producer_route or self.settings.tasks[target]
+                source_id = self._producer_source_id(db, job, target)
+                session = db.execute(
+                    "SELECT * FROM review_sessions WHERE entry_id=? AND revision=? AND target=?",
+                    (job["entry_id"], job["revision"], target),
+                ).fetchone()
+                assert session is not None
+                enabled = bool(session["enabled"])
                 _ = db.execute(
-                    "UPDATE artifacts SET needs_attention=? WHERE entry_id=? "
-                    "AND revision=? AND kind='cleaned' AND superseded_by IS NULL",
-                    (int(needs_attention), job["entry_id"], job["revision"]),
+                    "UPDATE review_sessions SET source_artifact_id=?,candidate_artifact_id=?,"
+                    "final_artifact_id=?,status=?,turns_used=0,producer_route=? "
+                    "WHERE entry_id=? AND revision=? "
+                    "AND target=?",
+                    (
+                        source_id,
+                        artifact_id,
+                        artifact_id,
+                        "pending" if enabled else "disabled",
+                        route.model_dump_json(),
+                        job["entry_id"],
+                        job["revision"],
+                        target,
+                    ),
                 )
+                if enabled:
+                    review_id = self._insert_session_job(
+                        db,
+                        job,
+                        "review",
+                        target,
+                        1,
+                        input_artifact_id=artifact_id,
+                        depends_on=job["id"],
+                    )
+                    if target == "cleanup":
+                        self._gate_cleanup_children(db, job, review_id)
+                self._set_result_id(db, job["id"], artifact_id)
+            elif job["kind"] == "review":
+                if unsupported_claims is None:
+                    raise Conflict("Review job requires validated unsupported claims")
+                claims = list(unsupported_claims)
+                target = job["target"]
+                turn = int(job["turn"])
+                _ = db.execute(
+                    "UPDATE review_sessions SET turns_used=?,remaining_claims=?,"
+                    "candidate_artifact_id=?,final_artifact_id=? WHERE entry_id=? AND revision=? "
+                    "AND target=?",
+                    (
+                        turn,
+                        json.dumps(claims),
+                        job["input_artifact_id"],
+                        job["input_artifact_id"],
+                        job["entry_id"],
+                        job["revision"],
+                        target,
+                    ),
+                )
+                _ = db.execute(
+                    "UPDATE jobs SET result_artifact_id=? WHERE id=?", (artifact_id, job["id"])
+                )
+                assert session is not None
+                max_turns = int(session["max_turns"])
+                if not claims or turn >= max_turns:
+                    status = "accepted" if not claims else "needs_attention"
+                    _ = db.execute(
+                        "UPDATE review_sessions SET status=? WHERE entry_id=? AND revision=? "
+                        "AND target=?",
+                        (status, job["entry_id"], job["revision"], target),
+                    )
+                    _ = db.execute(
+                        "UPDATE artifacts SET needs_attention=? WHERE id=?",
+                        (int(bool(claims)), job["input_artifact_id"]),
+                    )
+                else:
+                    revise_id = self._insert_session_job(
+                        db,
+                        job,
+                        "revise",
+                        target,
+                        turn,
+                        input_artifact_id=job["input_artifact_id"],
+                        review_artifact_id=artifact_id,
+                        depends_on=job["id"],
+                    )
+                    if target == "cleanup":
+                        self._gate_cleanup_children(db, job, revise_id)
+            elif job["kind"] == "revise":
+                target = job["target"]
+                _ = db.execute(
+                    "UPDATE review_sessions SET candidate_artifact_id=?,final_artifact_id=? "
+                    "WHERE entry_id=? AND revision=? AND target=?",
+                    (artifact_id, artifact_id, job["entry_id"], job["revision"], target),
+                )
+                next_turn = int(job["turn"]) + 1
+                review_id = self._insert_session_job(
+                    db,
+                    job,
+                    "review",
+                    target,
+                    next_turn,
+                    input_artifact_id=artifact_id,
+                    depends_on=job["id"],
+                )
+                if target == "cleanup":
+                    self._gate_cleanup_children(db, job, review_id)
+                self._set_result_id(db, job["id"], artifact_id)
+            if job["kind"] == "review":
+                self._refresh_search(db, job["entry_id"])
+            elif needs_attention:
+                _ = db.execute("UPDATE artifacts SET needs_attention=1 WHERE id=?", (artifact_id,))
             _ = db.execute(
                 "UPDATE jobs SET status='done',finished_at=?,last_error=NULL,"
-                "lease_until=NULL,claim_token=NULL WHERE id=?",
+                "lease_until=NULL,claim_token=NULL,claim_protocol=0 WHERE id=?",
                 (timestamp(), job["id"]),
             )
             self._refresh_search(db, job["entry_id"])
             return True
+
+    @staticmethod
+    def _set_result_id(db: sqlite3.Connection, job_id: str, artifact_id: str) -> None:
+        _ = db.execute("UPDATE jobs SET result_artifact_id=? WHERE id=?", (artifact_id, job_id))
+
+    @staticmethod
+    def _producer_source_id(db: sqlite3.Connection, job: dict[str, Any], target: str) -> str:
+        source_kind = ("raw_transcript", "user_text") if target == "cleanup" else ("cleaned",)
+        for source_kind_item in source_kind:
+            row = db.execute(
+                "SELECT id FROM artifacts WHERE entry_id=? AND revision=? AND kind=? "
+                "AND superseded_by IS NULL ORDER BY created_at DESC,id DESC LIMIT 1",
+                (job["entry_id"], job["revision"], source_kind_item),
+            ).fetchone()
+            if row is not None:
+                return str(row["id"])
+        raise Conflict("Producer source artifact is unavailable")
+
+    @staticmethod
+    def _insert_session_job(
+        db: sqlite3.Connection,
+        parent: dict[str, Any],
+        kind: str,
+        target: str,
+        turn: int,
+        *,
+        input_artifact_id: str,
+        depends_on: str,
+        review_artifact_id: str | None = None,
+    ) -> str:
+        job_id = identifier()
+        _ = db.execute(
+            "INSERT INTO jobs (id,entry_id,kind,target,turn,input_artifact_id,review_artifact_id,"
+            "not_before,created_at,revision) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                job_id,
+                parent["entry_id"],
+                kind,
+                target,
+                turn,
+                input_artifact_id,
+                review_artifact_id,
+                time.time(),
+                timestamp(),
+                parent["revision"],
+            ),
+        )
+        _ = db.execute("INSERT INTO job_dependencies VALUES (?,?)", (job_id, depends_on))
+        return job_id
+
+    @staticmethod
+    def _gate_cleanup_children(db: sqlite3.Connection, job: dict[str, Any], gate_id: str) -> None:
+        cleanup = db.execute(
+            "SELECT candidate_artifact_id FROM review_sessions WHERE entry_id=? "
+            "AND revision=? AND target='cleanup'",
+            (job["entry_id"], job["revision"]),
+        ).fetchone()
+        if cleanup is not None and cleanup["candidate_artifact_id"] is not None:
+            _ = db.execute(
+                "UPDATE review_sessions SET source_artifact_id=? WHERE entry_id=? "
+                "AND revision=? AND target IN ('summarize','extract')",
+                (cleanup["candidate_artifact_id"], job["entry_id"], job["revision"]),
+            )
+        _ = db.execute(
+            "INSERT OR IGNORE INTO job_dependencies (job_id,depends_on) "
+            "SELECT id,? FROM jobs WHERE entry_id=? AND revision=? "
+            "AND status IN ('queued','running','failed') AND "
+            "(kind IN ('summarize','extract') OR "
+            "(kind IN ('review','revise') AND target IN ('summarize','extract'))) ",
+            (gate_id, job["entry_id"], job["revision"]),
+        )
 
     def fail_job(self, job: dict[str, Any], error: str, *, retryable: bool = True) -> bool:
         terminal = not retryable or job["attempts"] >= self.settings.max_attempts
@@ -538,7 +958,8 @@ class Store:
         with self.connect() as db:
             result = db.execute(
                 "UPDATE jobs SET status=?,last_error=?,not_before=?,finished_at=?,lease_until=NULL,"
-                "claim_token=NULL WHERE id=? AND status='running' AND claim_token=?",
+                "claim_token=NULL,claim_protocol=0 "
+                "WHERE id=? AND status='running' AND claim_token=?",
                 (
                     "failed" if terminal else "queued",
                     error,

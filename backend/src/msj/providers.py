@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, ReadOnly, TypedDict
 from urllib.parse import quote
 
 import httpx
@@ -17,13 +20,22 @@ import httpx
 from .config import Settings, TaskKind, TaskRoute
 
 
+class Message(TypedDict):
+    role: ReadOnly[str]
+    content: ReadOnly[str]
+
+
 class ProviderError(RuntimeError):
-    """Safe, actionable inference failure without remote response details."""
+    """An inference failure whose text is private unless explicitly sanitized."""
 
     def __init__(self, message: str, *, retryable: bool = True, transient: bool = False) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.transient = transient
+
+
+class SafeProviderError(ProviderError):
+    """Built-in error assembled from fixed templates and non-content metadata."""
 
 
 @dataclass(frozen=True)
@@ -41,6 +53,7 @@ class Provider(Protocol):
         *,
         candidate: str | None = None,
         audio: bytes | None = None,
+        messages: Sequence[Message] | None = None,
     ) -> Generation: ...
 
 
@@ -48,18 +61,76 @@ def ensure_model(generation: Generation, route: TaskRoute) -> Generation:
     """Reject artifacts produced by an unexpected or unidentified worker model."""
     expected = route.expect_model
     if expected is not None and generation.model != expected:
-        actual = generation.model if generation.model is not None else "missing model metadata"
-        raise ProviderError(
-            f"Stale worker or wrong model: expected {expected!r}, received {actual!r}"
+        raise SafeProviderError(
+            "Stale worker or wrong model: provider metadata did not match the "
+            "configured expectation"
         )
     return generation
+
+
+@cache
+def _prompt(kind: TaskKind) -> str:
+    from importlib.resources import files
+
+    return files("msj.resources").joinpath(f"{kind}.txt").read_text(encoding="utf-8")
+
+
+@cache
+def _revision_template() -> str:
+    from importlib.resources import files
+
+    return files("msj.resources").joinpath("revise.txt").read_text(encoding="utf-8")
+
+
+def prompt_digest(kind: TaskKind, *, revision: bool = False) -> str:
+    """Hash the immutable prompt strings used by this worker's message builder."""
+    content = _prompt(kind).encode("utf-8")
+    if revision:
+        content += b"\n" + _revision_template().encode("utf-8")
+    return hashlib.sha256(content).hexdigest()
+
+
+def initial_messages(
+    kind: TaskKind, source: str, *, candidate: str | None = None
+) -> tuple[Message, ...]:
+    """Build the initial producer or reviewer conversation."""
+    if kind == "transcribe":
+        raise SafeProviderError("Transcription does not use chat messages")
+    payload: dict[str, str] = {"source": source}
+    if kind == "review":
+        if candidate is None:
+            raise SafeProviderError("Review requires a candidate")
+        payload["candidate"] = candidate
+    return (
+        {"role": "system", "content": _prompt(kind)},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    )
+
+
+def revision_messages(
+    kind: TaskKind, source: str, previous: str, claims: Sequence[str]
+) -> tuple[Message, ...]:
+    """Build a producer revision conversation from source and reviewer claims."""
+    if kind in {"review", "transcribe"}:
+        raise SafeProviderError("Only cleanup, summarize, and extract outputs can be revised")
+    request = {
+        "revision_request": _revision_template(),
+        "unsupported_claims": list(claims),
+    }
+    original = initial_messages(kind, source)
+    return (
+        original[0],
+        original[1],
+        {"role": "assistant", "content": previous},
+        {"role": "user", "content": json.dumps(request, ensure_ascii=False)},
+    )
 
 
 def _request_json(http: httpx.Client, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
     try:
         response = http.request(method, url, **kwargs)
     except httpx.HTTPError:
-        raise ProviderError(
+        raise SafeProviderError(
             f"{method} request failed; check connectivity and provider configuration",
             transient=True,
         ) from None
@@ -68,9 +139,9 @@ def _request_json(http: httpx.Client, method: str, url: str, **kwargs: Any) -> d
     try:
         value: Any = response.json()
     except ValueError, RecursionError:
-        raise ProviderError("Provider returned invalid JSON") from None
+        raise SafeProviderError("Provider returned invalid JSON") from None
     if not isinstance(value, dict):
-        raise ProviderError("Provider response must be a JSON object")
+        raise SafeProviderError("Provider response must be a JSON object")
     return value
 
 
@@ -79,7 +150,7 @@ def _parse_chat(value: Any) -> Generation:
         try:
             value = json.loads(value)
         except ValueError:
-            raise ProviderError("LLM worker returned invalid JSON") from None
+            raise SafeProviderError("LLM worker returned invalid JSON") from None
     if isinstance(value, list) and len(value) == 1:
         return _parse_chat(value[0])
     if isinstance(value, dict) and "choices" not in value and "body" in value:
@@ -90,15 +161,15 @@ def _parse_chat(value: Any) -> Generation:
         model = value.get("model")
         finish_reason = choice.get("finish_reason")
     except KeyError, IndexError, TypeError, AttributeError:
-        raise ProviderError("LLM response lacks choices[0].message.content") from None
+        raise SafeProviderError("LLM response lacks choices[0].message.content") from None
     if not isinstance(content, str) or (model is not None and not isinstance(model, str)):
-        raise ProviderError("LLM response has invalid content or model metadata")
+        raise SafeProviderError("LLM response has invalid content or model metadata")
     if isinstance(finish_reason, str) and finish_reason in {"length", "content_filter"}:
-        raise ProviderError(
+        raise SafeProviderError(
             "LLM output is incomplete or filtered; increase max_tokens or check model"
         )
     if finish_reason is not None and not isinstance(finish_reason, str):
-        raise ProviderError("LLM response has invalid finish_reason metadata")
+        raise SafeProviderError("LLM response has invalid finish_reason metadata")
     return Generation(content, model)
 
 
@@ -109,24 +180,18 @@ def _chat_body(
     candidate: str | None,
     *,
     runpod: bool,
+    messages: Sequence[Message] | None = None,
 ) -> dict[str, Any]:
-    from importlib.resources import files
-
     if kind == "transcribe":
-        raise ProviderError("Transcription requires audio input")
-    prompt = files("msj.resources").joinpath(f"{kind}.txt").read_text(encoding="utf-8")
-    payload: dict[str, str] = {"source": source}
-    if kind == "review":
-        if candidate is None:
-            raise ProviderError("Review requires cleaned candidate text")
-        payload["candidate"] = candidate
-    messages = [
-        {"role": "system", "content": prompt},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ]
+        raise SafeProviderError("Transcription requires audio input")
+    conversation = (
+        tuple(dict(turn) for turn in messages)
+        if messages is not None
+        else initial_messages(kind, source, candidate=candidate)
+    )
     body: dict[str, Any] = {
         "model": route.model,
-        "messages": messages,
+        "messages": conversation,
         "max_tokens": route.max_tokens,
         "temperature": 0,
         "stream": False,
@@ -136,6 +201,8 @@ def _chat_body(
     else:
         body["chat_template_kwargs"] = {"enable_thinking": False}
     if kind == "extract":
+        from importlib.resources import files
+
         schema = json.loads(
             files("msj.resources").joinpath("extraction.schema.json").read_text(encoding="utf-8")
         )
@@ -184,14 +251,15 @@ class InferenceProvider:
         *,
         candidate: str | None = None,
         audio: bytes | None = None,
+        messages: Sequence[Message] | None = None,
     ) -> Generation:
         match route.provider:
             case "fake":
-                generation = self._fake(kind, route, source, candidate, audio)
+                generation = self._fake(kind, route, source, candidate, audio, messages)
             case "runpod":
-                generation = self._runpod(kind, route, source, candidate, audio)
+                generation = self._runpod(kind, route, source, candidate, audio, messages)
             case "openai":
-                generation = self._openai(kind, route, source, candidate, audio)
+                generation = self._openai(kind, route, source, candidate, audio, messages)
         return ensure_model(generation, route)
 
     @staticmethod
@@ -201,17 +269,26 @@ class InferenceProvider:
         source: str,
         candidate: str | None,
         audio: bytes | None,
+        messages: Sequence[Message] | None,
     ) -> Generation:
+        if messages is not None and kind != "review":
+            prior = next(
+                (turn["content"] for turn in reversed(messages) if turn["role"] == "assistant"),
+                None,
+            )
+            if prior is None:
+                raise SafeProviderError("Revision conversation has no previous assistant output")
+            return Generation(prior, "fake")
         match kind:
             case "transcribe":
                 if audio is None:
-                    raise ProviderError("Transcription requires audio input")
+                    raise SafeProviderError("Transcription requires audio input")
                 text = "[fake transcript]"
             case "cleanup" | "summarize":
                 text = source
             case "review":
                 if candidate is None:
-                    raise ProviderError("Review requires cleaned candidate text")
+                    raise SafeProviderError("Review requires cleaned candidate text")
                 text = '{"unsupported_claims": []}'
             case "extract":
                 text = json.dumps(
@@ -233,10 +310,11 @@ class InferenceProvider:
         source: str,
         candidate: str | None,
         audio: bytes | None,
+        messages: Sequence[Message] | None,
     ) -> Generation:
         if kind == "transcribe":
             if audio is None:
-                raise ProviderError("Transcription requires audio input")
+                raise SafeProviderError("Transcription requires audio input")
             payload: dict[str, Any] = {
                 "audio_base64": base64.b64encode(audio).decode("ascii"),
                 "model": route.model,
@@ -245,7 +323,7 @@ class InferenceProvider:
                 {"input": payload}, ensure_ascii=False, separators=(",", ":")
             ).encode("utf-8")
             if len(request_body) > self._settings.runpod_max_payload_bytes:
-                raise ProviderError(
+                raise SafeProviderError(
                     "audio too large for RunPod request; record in Opus/compressed format or "
                     "split the recording",
                     retryable=False,
@@ -254,12 +332,14 @@ class InferenceProvider:
         else:
             payload = {
                 "openai_route": "/v1/chat/completions",
-                "openai_input": _chat_body(route, kind, source, candidate, runpod=True),
+                "openai_input": _chat_body(
+                    route, kind, source, candidate, runpod=True, messages=messages
+                ),
             }
             submission = {"json": {"input": payload}}
         key = os.environ.get("RUNPOD_API_KEY")
         if not key or not route.endpoint_id:
-            raise ProviderError("RUNPOD_API_KEY and endpoint_id are required for RunPod tasks")
+            raise SafeProviderError("RUNPOD_API_KEY and endpoint_id are required for RunPod tasks")
         endpoint = f"https://api.runpod.ai/v2/{quote(route.endpoint_id, safe='')}"
         headers = {"Authorization": f"Bearer {key}"}
         submission["headers"] = (
@@ -276,7 +356,7 @@ class InferenceProvider:
         )
         job_id = state.get("id")
         if not isinstance(job_id, str) or not job_id:
-            raise ProviderError("RunPod submission returned no job ID")
+            raise SafeProviderError("RunPod submission returned no job ID")
         status_url = f"{endpoint}/status/{quote(job_id, safe='')}"
         pending = True
         interval = self._settings.poll_initial_s
@@ -292,7 +372,7 @@ class InferenceProvider:
                     timeout=min(30, self._settings.provider_timeout_s),
                 )
             except ProviderError:
-                raise ProviderError(
+                raise SafeProviderError(
                     "RunPod monitoring failed and cancellation could not be confirmed"
                 ) from None
 
@@ -300,11 +380,11 @@ class InferenceProvider:
             while True:
                 status = state.get("status")
                 if not isinstance(status, str):
-                    raise ProviderError("RunPod returned a missing or non-string job status")
+                    raise SafeProviderError("RunPod returned a missing or non-string job status")
                 if status == "COMPLETED":
                     pending = False
                     if "output" not in state:
-                        raise ProviderError("Completed RunPod job has no output")
+                        raise SafeProviderError("Completed RunPod job has no output")
                     if kind == "transcribe":
                         generation = self._parse_transcription(state["output"])
                     else:
@@ -312,18 +392,18 @@ class InferenceProvider:
                     return generation
                 if status in {"FAILED", "TIMED_OUT", "CANCELLED"}:
                     pending = False
-                    raise ProviderError(f"RunPod job ended with status {status}")
+                    raise SafeProviderError(f"RunPod job ended with status {status}")
                 if time.monotonic() >= deadline:
                     pending = False
                     cancel()
-                    raise ProviderError("RunPod job timed out; cancellation requested")
+                    raise SafeProviderError("RunPod job timed out; cancellation requested")
                 if status not in {"IN_QUEUE", "IN_PROGRESS"}:
-                    raise ProviderError("RunPod returned a missing or unknown job status")
+                    raise SafeProviderError("RunPod returned a missing or unknown job status")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     pending = False
                     cancel()
-                    raise ProviderError("RunPod job timed out; cancellation requested")
+                    raise SafeProviderError("RunPod job timed out; cancellation requested")
                 time.sleep(min(interval, remaining))
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -338,13 +418,15 @@ class InferenceProvider:
                         raise
                     status_failures += 1
                     if status_failures > self._settings.runpod_status_max_failures:
-                        raise ProviderError(
+                        raise SafeProviderError(
                             "RunPod status polling failed after "
                             f"{status_failures} consecutive transient failures",
                             retryable=True,
                         ) from None
                     if time.monotonic() >= deadline:
-                        raise ProviderError("RunPod job timed out while polling status") from None
+                        raise SafeProviderError(
+                            "RunPod job timed out while polling status"
+                        ) from None
                     interval = min(interval * 1.5, self._settings.poll_max_s)
                     continue
                 interval = min(interval * 1.5, self._settings.poll_max_s)
@@ -367,7 +449,7 @@ class InferenceProvider:
         if isinstance(value, list) and len(value) == 1:
             value = value[0]
         if not isinstance(value, dict):
-            raise ProviderError("Whisper output must be a JSON object")
+            raise SafeProviderError("Whisper output must be a JSON object")
         text = value.get("transcription", value.get("text"))
         if text is None and isinstance(value.get("segments"), list):
             segments = value["segments"]
@@ -375,11 +457,11 @@ class InferenceProvider:
                 isinstance(segment, dict) and isinstance(segment.get("text"), str)
                 for segment in segments
             ):
-                raise ProviderError("Whisper returned invalid segments")
+                raise SafeProviderError("Whisper returned invalid segments")
             text = " ".join(segment["text"].strip() for segment in segments)
         model = value.get("model")
         if not isinstance(text, str) or (model is not None and not isinstance(model, str)):
-            raise ProviderError(
+            raise SafeProviderError(
                 "Whisper response contains no transcription or has invalid model metadata"
             )
         return Generation(text, model)
@@ -391,11 +473,14 @@ class InferenceProvider:
         source: str,
         candidate: str | None,
         audio: bytes | None,
+        messages: Sequence[Message] | None,
     ) -> Generation:
         try:
-            return asyncio.run(self._openai_request(kind, route, source, candidate, audio))
+            return asyncio.run(
+                self._openai_request(kind, route, source, candidate, audio, messages)
+            )
         except TimeoutError:
-            raise ProviderError(
+            raise SafeProviderError(
                 f"OpenAI-compatible request timed out after "
                 f"{self._settings.provider_timeout_s:g} seconds"
             ) from None
@@ -407,6 +492,7 @@ class InferenceProvider:
         source: str,
         candidate: str | None,
         audio: bytes | None,
+        messages: Sequence[Message] | None,
     ) -> Generation:
         base = route.base_url.rstrip("/")
         timeout = self._settings.provider_timeout_s
@@ -424,7 +510,7 @@ class InferenceProvider:
                 ) as client:
                     if kind == "transcribe":
                         if audio is None:
-                            raise ProviderError("Transcription requires audio input")
+                            raise SafeProviderError("Transcription requires audio input")
                         suffix = Path(source).suffix.lower()
                         media_type = {
                             ".wav": "audio/wav",
@@ -447,7 +533,9 @@ class InferenceProvider:
                             files={"file": (filename, audio, media_type)},
                         )
                     else:
-                        body = _chat_body(route, kind, source, candidate, runpod=False)
+                        body = _chat_body(
+                            route, kind, source, candidate, runpod=False, messages=messages
+                        )
                         response = await client.post(
                             f"{base}/chat/completions", headers=headers, json=body
                         )
@@ -459,35 +547,37 @@ class InferenceProvider:
                 exc,
                 (httpx.ReadTimeout, httpx.WriteTimeout, httpx.ConnectTimeout, httpx.PoolTimeout),
             ):
-                raise ProviderError(
+                raise SafeProviderError(
                     "OpenAI-compatible request timed out; check provider availability",
                     transient=True,
                 ) from None
-            raise ProviderError(
+            raise SafeProviderError(
                 "OpenAI-compatible request failed; check connectivity and endpoint configuration",
                 transient=True,
             ) from None
         except ValueError, RecursionError:
-            raise ProviderError("Provider returned invalid JSON") from None
+            raise SafeProviderError("Provider returned invalid JSON") from None
         if time.monotonic() - started > timeout:
-            raise ProviderError(f"OpenAI-compatible request timed out after {timeout:g} seconds")
+            raise SafeProviderError(
+                f"OpenAI-compatible request timed out after {timeout:g} seconds"
+            )
         if kind == "transcribe":
             if not isinstance(value, dict) or not isinstance(value.get("text"), str):
-                raise ProviderError("Transcription response must contain a text field")
+                raise SafeProviderError("Transcription response must contain a text field")
             model = value.get("model")
             if model is not None and not isinstance(model, str):
-                raise ProviderError("Transcription response has invalid model metadata")
+                raise SafeProviderError("Transcription response has invalid model metadata")
             return Generation(value["text"], model)
         return _parse_chat(value)
 
 
 def _http_status_error(status_code: int) -> ProviderError:
     if status_code == 413:
-        return ProviderError(
+        return SafeProviderError(
             "Provider request too large (HTTP 413); reduce audio or text size",
             retryable=False,
         )
-    return ProviderError(
+    return SafeProviderError(
         f"Provider returned HTTP {status_code}; check credentials and endpoint configuration",
         transient=status_code in {408, 429} or status_code >= 500,
     )

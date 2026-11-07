@@ -4,6 +4,7 @@ import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,10 +12,24 @@ from pydantic_settings.sources import EnvSettingsSource
 
 TaskKind = Literal["transcribe", "cleanup", "review", "summarize", "extract"]
 TASKS: tuple[TaskKind, ...] = ("transcribe", "cleanup", "review", "summarize", "extract")
+ProducerKind = Literal["cleanup", "summarize", "extract"]
+PRODUCERS: tuple[ProducerKind, ...] = ("cleanup", "summarize", "extract")
+
+
+class ReviewSettings(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+    max_turns: int = Field(default=3, ge=1, le=3)
+    enabled_for: tuple[ProducerKind, ...] = PRODUCERS
+
+    @model_validator(mode="after")
+    def unique_targets(self) -> ReviewSettings:
+        if len(self.enabled_for) != len(set(self.enabled_for)):
+            raise ValueError("review.enabled_for must not contain duplicate producers")
+        return self
 
 
 class TaskRoute(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
     provider: Literal["fake", "runpod", "openai"] = "fake"
     model: str = Field(default="fake", min_length=1)
     expect_model: str | None = None
@@ -26,6 +41,24 @@ class TaskRoute(BaseModel):
     def endpoint_required(self) -> TaskRoute:
         if self.provider == "runpod" and not self.endpoint_id:
             raise ValueError("runpod routes require endpoint_id")
+        try:
+            address = urlsplit(self.base_url)
+            valid = (
+                address.scheme in {"http", "https"}
+                and address.hostname is not None
+                and address.username is None
+                and address.password is None
+                and not address.query
+                and not address.fragment
+            )
+            _ = address.port
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError(
+                "base_url must be an absolute HTTP(S) URL without credentials, "
+                "query parameters, or fragments; set authentication via environment"
+            )
         return self
 
 
@@ -36,9 +69,11 @@ class Settings(BaseSettings):
         frozen=True,
         extra="forbid",
         allow_inf_nan=False,
+        hide_input_in_errors=True,
     )
     data_dir: Path = Path("~/.local/share/my-smart-journal").expanduser()
     config_file: Path | None = None
+    review: ReviewSettings = Field(default_factory=ReviewSettings)
     tasks: dict[TaskKind, TaskRoute] = Field(
         default_factory=lambda: {
             kind: TaskRoute(

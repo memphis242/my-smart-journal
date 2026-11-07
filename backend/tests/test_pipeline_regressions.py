@@ -63,7 +63,7 @@ def test_unexpected_job_errors_do_not_abort_batch_or_disclose_text(
         )
         response = client.post("/api/v1/batches/run", headers=headers)
     assert response.status_code == 200
-    assert response.json() == {"done": 4, "failed": 1, "discarded": 0}
+    assert response.json() == {"done": 6, "failed": 1, "discarded": 0}
     jobs: list[dict[str, Any]] = client.get("/api/v1/jobs", headers=headers).json()
     failed = next(
         job for job in jobs if job["entry_id"] == first["id"] and job["kind"] == "cleanup"

@@ -45,9 +45,15 @@ def test_text_entry_batch_artifacts_and_search(client: tuple[TestClient, str]) -
     entry_id = response.json()["id"]
     batch = http.post("/api/v1/batches/run", headers=_headers(token))
     assert batch.status_code == 200
-    assert batch.json() == {"done": 4, "failed": 0, "discarded": 0}
+    assert batch.json() == {"done": 6, "failed": 0, "discarded": 0}
 
     entry = http.get(f"/api/v1/entries/{entry_id}", headers=_headers(token)).json()
+    assert {target: session["status"] for target, session in entry["review_sessions"].items()} == {
+        "cleanup": "accepted",
+        "summarize": "accepted",
+        "extract": "accepted",
+    }
+    assert all(len(session["history"]) == 1 for session in entry["review_sessions"].values())
     artifacts = {item["kind"]: item for item in entry["artifacts"]}
     assert {"user_text", "cleaned", "summary", "extraction", "review"} <= set(artifacts)
     assert json.loads(artifacts["extraction"]["content"])["projects"] == []
@@ -199,9 +205,12 @@ def test_auth_cases_cover_each_route_except_health(client: tuple[TestClient, str
         if route.path != "/api/v1/health"
     }
     covered = {
-        (method, path.split("?", maxsplit=1)[0]
-         .replace("/entries/not-found", "/entries/{entry_id}")
-         .replace("/jobs/not-found/", "/jobs/{job_id}/"))
+        (
+            method,
+            path.split("?", maxsplit=1)[0]
+            .replace("/entries/not-found", "/entries/{entry_id}")
+            .replace("/jobs/not-found/", "/jobs/{job_id}/"),
+        )
         for method, path, _ in _AUTH_CASES
     }
     assert covered == actual

@@ -12,6 +12,10 @@ runpod_max_payload_bytes = 9500000
 # Tolerate this many consecutive transient status failures; 0 disables tolerance.
 runpod_status_max_failures = 3
 
+[review]
+max_turns = 3
+enabled_for = ["cleanup", "summarize", "extract"]
+
 [tasks.transcribe]
 provider = "runpod"
 endpoint_id = "your-whisper-endpoint-id"
