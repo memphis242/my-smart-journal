@@ -79,6 +79,37 @@ def test_poll_network_failure_cancels_without_reflecting_secrets():
     assert "secret" not in str(caught.value)
 
 
+def test_paused_endpoint_error_includes_provider_detail_and_remedy(caplog):
+    body = {"status": 409, "title": "Conflict", "detail": "Endpoint is paused (max_workers=0). Set max_workers > 0 to accept work.", "code": "ENDPOINT_PAUSED"}
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(409, json=body))) as http:
+        with pytest.raises(BenchmarkError) as caught:
+            client(http, FakeClock()).run({"private": "journal text"})
+    message = str(caught.value)
+    assert "HTTP 409" in message and "ENDPOINT_PAUSED" in message
+    assert body["detail"] in message
+    assert "max workers >= 1" in message
+    assert "test-endpoint" in message
+    assert "journal text" not in message
+    assert "ENDPOINT_PAUSED" in caplog.text
+    assert body["detail"] in caplog.text
+
+
+def test_unauthorized_error_names_key_without_secret():
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(401, json={"code": "INVALID_KEY"}))) as http:
+        with pytest.raises(BenchmarkError) as caught:
+            client(http, FakeClock()).run({})
+    assert "RUNPOD_API_KEY" in str(caught.value)
+    assert "fake-offline-credential" not in str(caught.value)
+
+
+def test_non_json_server_error_keeps_status():
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(502, text="upstream unavailable"))) as http:
+        with pytest.raises(BenchmarkError) as caught:
+            client(http, FakeClock()).run({})
+    assert "HTTP 502" in str(caught.value)
+    assert "test-endpoint" in str(caught.value)
+
+
 def test_invalid_submission_and_json():
     with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"status": "IN_QUEUE"}))) as http:
         with pytest.raises(BenchmarkError, match="job ID"):
