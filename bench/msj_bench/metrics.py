@@ -186,6 +186,10 @@ def _fact_present(fact: str, output: str) -> bool:
     return False
 
 
+CLAIM_SPLIT_RE: Final = re.compile(r"(?<=[.!?;])\s+")
+NEGATION_RE: Final = re.compile(r"\b(?:not|no|never|without|unconfirmed|unresolved|pending|remain(?:s|ed)?|yet)\b|n't\b", re.IGNORECASE)
+
+
 def compile_metrics(output: str, item: Any, schema: Mapping[str, Any]) -> dict[str, Any]:
     source = item.source
     result = faithfulness_guard(source, output)
@@ -203,14 +207,22 @@ def compile_metrics(output: str, item: Any, schema: Mapping[str, Any]) -> dict[s
     invalid = sorted(set(cited) - dates)
     result["evidence_dates_valid"] = not invalid
     result["invalid_evidence_dates"] = invalid
-    claims = " ".join([row.get("text", "") for row in value.get("resume_bullets", [])] + [row.get("result", "") for row in value.get("star_stories", [])])
-    claim_terms = content_terms(claims)
+    claims = [row.get("text", "") for row in value.get("resume_bullets", [])] + [row.get("result", "") for row in value.get("star_stories", [])]
+    # A negated sentence ("was not deployed") reports the gap honestly, so only affirmative sentences can leak.
+    affirmative = [content_terms(sentence) for claim in claims for sentence in CLAIM_SPLIT_RE.split(claim)
+                   if sentence.strip() and not NEGATION_RE.search(sentence)]
     leaks = 0
     for phrase in item.not_accomplished:
         phrase_terms = content_terms(phrase)
-        if phrase_terms and len(phrase_terms & claim_terms) / len(phrase_terms) >= .6:
+        if phrase_terms and any(len(phrase_terms & terms) / len(phrase_terms) >= .6 for terms in affirmative):
             leaks += 1
     result["not_accomplished_leaks"] = leaks
+    # Competency labels and titles are generated categories, not factual claims about the source.
+    label_free = {key: val for key, val in value.items()}
+    for section in ("star_stories", "technical_topics"):
+        label_free[section] = [{k: v for k, v in row.items() if k not in {"competencies", "title", "topic"}}
+                               for row in value.get(section, []) if isinstance(row, dict)]
+    result.update(faithfulness_guard(source, json.dumps(label_free, ensure_ascii=False)))
     return result
 
 

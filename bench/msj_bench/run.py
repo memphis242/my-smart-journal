@@ -17,7 +17,7 @@ import httpx
 from .backends import LLMBackend, OpenAIBackend, RunPodLLM, WhisperBackend
 from .config import Config, DEFAULT_BUILD, load_config, output_root, validate_url
 from .datasets import BENCH_ROOT, JournalItem, load_dataset, load_compile_dataset
-from .metrics import llm_metrics, performance_metrics, stt_metrics
+from .metrics import compile_metrics, llm_metrics, performance_metrics, stt_metrics
 from .report import compare_runs, comparison_table, summarize, write_json, write_rating_sheets
 from .runpod_client import BenchmarkError, RunPodClient
 from .tasks import TASK_NAMES, messages_for, resource_path, task_schema

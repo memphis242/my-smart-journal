@@ -37,3 +37,18 @@ def test_compile_metrics_dates_facts_and_unfinished_leaks():
     invalid = json.loads(output)
     invalid["resume_bullets"][0]["evidence_dates"] = ["2026-12-31"]
     assert not compile_metrics(json.dumps(invalid), item, compile_schema())["evidence_dates_valid"]
+
+
+def test_negated_claims_do_not_leak_and_labels_are_not_names():
+    from msj_bench.datasets import load_compile_dataset
+    item = load_compile_dataset("compile")[0]
+    phrase = item.not_accomplished[0]
+    output = {"resume_bullets": [{"text": f"Work was {phrase}? No: it was not {phrase}.", "evidence_dates": []}],
+              "star_stories": [{"title": "Zyxwv Story", "situation": "", "task": "", "action": "", "result": "",
+                                "evidence_dates": [], "competencies": ["Qwertyuiop"]}],
+              "technical_topics": [], "open_threads": []}
+    metrics = compile_metrics(json.dumps(output), item, compile_schema())
+    assert "Qwertyuiop" not in metrics["unsupported_names"]
+    assert "Zyxwv" not in metrics["unsupported_names"]
+    affirmative = dict(output, resume_bullets=[{"text": f"Successfully {phrase}.", "evidence_dates": []}])
+    assert compile_metrics(json.dumps(affirmative), item, compile_schema())["not_accomplished_leaks"] >= 1

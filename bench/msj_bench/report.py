@@ -100,7 +100,7 @@ def write_rating_sheets(runs: Sequence[tuple[Mapping[str, Any], Sequence[Mapping
             grouped[key[0]].setdefault(key[1], []).append((summary, record))
     out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     for task, items in sorted(grouped.items()):
-        if task not in {"cleanup", "summarize", "extract", "review", "stt"}:
+        if task not in {"cleanup", "summarize", "extract", "review", "compile", "stt"}:
             raise BenchmarkError("Unsupported task in rating sheet")
         rows: list[dict[str, Any]] = []
         keys: list[dict[str, Any]] = []
