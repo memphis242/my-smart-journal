@@ -64,3 +64,16 @@ Compile prompt (3 sets):
 - Constraining `evidence_dates` to an enum of the input dates (grammar decoding) removes malformed or invented dates entirely; the app must build this schema per request.
 - v2 flags were title-case labels inside `depth_notes`, not invented facts.
 - Remaining misses are mostly secondary people and investigation numbers; worth rechecking with the user's real entries and with blind ratings.
+
+## 11. Larger models (current prompts: summary v6, compile v3)
+
+| Model | Long summary key facts | Extraction key facts | Compile key facts | Cleanup WER | $/entry (4 short tasks) | tok/s |
+|---|---|---|---|---|---|---|
+| Gemma-4-E2B Q8_0 (baseline) | 0.81 | 0.79 | 0.79 | 0.077 | 0.0012 | 81 |
+| Gemma-4-E4B Q8_0 | 0.65 | 0.64 | 0.85 | 0.055 | 0.0020 | 50 |
+| Qwen3.5-9B Q8_0 | **0.93** | **0.86** | 0.72 | 0.11 | 0.0023 | 37 |
+| Gemma-4-26B-A4B UD-Q4_K_XL | not run: 17 GB cold download never finished; worker containers were stopped every ~8.5 min during startup |
+
+- E4B compresses long entries to 27% and drops specifics; one compile bullet inverted a latency regression into a "reduction".
+- Large weights must be staged on the volume ahead of time rather than downloaded by a serverless worker on first request.
+- The compile leak metric over-matches shared words ("6 hours to 40 minutes" vs. trap "4 hours to 40 minutes"); needs a numeric-aware check.
