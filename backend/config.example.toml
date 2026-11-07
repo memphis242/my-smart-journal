@@ -32,16 +32,16 @@ expect_model = "Phi-4-mini"
 provider = "runpod"
 endpoint_id = "your-gemma-endpoint-id"
 model = "any"
-expect_model = "Gemma-4-E2B"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
 
 [tasks.summarize]
 provider = "runpod"
 endpoint_id = "your-gemma-endpoint-id"
 model = "any"
-expect_model = "Gemma-4-E2B"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
 
 [tasks.extract]
 provider = "runpod"
 endpoint_id = "your-gemma-endpoint-id"
 model = "any"
-expect_model = "Gemma-4-E2B"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"

@@ -78,7 +78,7 @@ class Settings(BaseSettings):
         default_factory=lambda: {
             kind: TaskRoute(
                 provider="openai",
-                model={"transcribe": "turbo", "cleanup": "Phi-4-mini"}.get(kind, "Gemma-4-E2B"),
+                model={"transcribe": "turbo", "cleanup": "Phi-4-mini"}.get(kind, "Gemma-4-26B-A4B"),
             )
             for kind in TASKS
         }
@@ -103,7 +103,7 @@ class Settings(BaseSettings):
                 kind: {
                     "provider": "openai",
                     "model": {"transcribe": "turbo", "cleanup": "Phi-4-mini"}.get(
-                        kind, "Gemma-4-E2B"
+                        kind, "Gemma-4-26B-A4B"
                     ),
                 }
                 for kind in TASKS
