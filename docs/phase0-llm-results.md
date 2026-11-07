@@ -38,3 +38,29 @@ Cost excludes cold starts. Total RunPod serverless spend for the day (billing re
 - Bullets compress hard but drop names, units and acronyms.
 - v5's must-keep list (full names, acronyms, numbers with units, weekdays) raised recall. Some remaining misses are metric artifacts: "five" vs "5", and "12 cm" is the value the speaker corrected away from.
 - Synthetic entries are ~115 words; real entries will be longer, so recheck length on the user's recordings.
+
+## 10. Long entries and compilation (Gemma-4-E2B Q8_0)
+
+Datasets: `bench/data/synthetic-long` (6 fictional dictated entries, 590-790 words) and `bench/data/compile` (3 fictional periods: monthly, quarterly, job-search; 8-10 cleaned entries each, with `not_accomplished` traps).
+
+Summary prompt:
+
+| Prompt | Long: length | Long: key facts | Short: length | Short: key facts | Flags |
+|---|---|---|---|---|---|
+| v5 (prose, must-keep list) | 0.36 | 0.84 | 0.69 | 0.94 | ~0 |
+| **v6 (kept): Done / Open / Notes paragraphs** | 0.37 | 0.81 | 0.83 | 0.95 | 0 |
+
+v6 keeps recall roughly level and separates completed work from plans, which compilation depends on; it runs long on very short entries.
+
+Compile prompt (3 sets):
+
+| Prompt | Key facts | Plan-as-accomplishment leaks | Valid evidence dates | Flags |
+|---|---|---|---|---|
+| v1 | 0.66 | 0.33 | 1.00 | 0.33 |
+| v2 (truthfulness rules, exhaustive open_threads) | 0.77 | 0 | 0.67 | 3.0 |
+| v2 + evidence_dates enum in schema | 0.81 | 0 | 1.00 | 2.67 |
+| **v3 (kept): named people in STAR, sentence depth notes** | 0.79 | 0 | 1.00 | 0 |
+
+- Constraining `evidence_dates` to an enum of the input dates (grammar decoding) removes malformed or invented dates entirely; the app must build this schema per request.
+- v2 flags were title-case labels inside `depth_notes`, not invented facts.
+- Remaining misses are mostly secondary people and investigation numbers; worth rechecking with the user's real entries and with blind ratings.
