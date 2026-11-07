@@ -1,0 +1,40 @@
+# Copy this file outside the source checkout and set MSJ_CONFIG_FILE to its path.
+# Set RUNPOD_API_KEY in the process environment; never put credentials here.
+
+batch_interval_s = 86400
+max_attempts = 3
+retry_base_s = 30
+provider_timeout_s = 900
+lease_s = 1200
+poll_initial_s = 1
+poll_max_s = 10
+
+[tasks.transcribe]
+provider = "runpod"
+endpoint_id = "your-whisper-endpoint-id"
+model = "turbo"
+expect_model = "large-v3-turbo"
+
+[tasks.cleanup]
+provider = "runpod"
+endpoint_id = "your-phi-endpoint-id"
+model = "any"
+expect_model = "Phi-4-mini"
+
+[tasks.review]
+provider = "runpod"
+endpoint_id = "your-gemma-endpoint-id"
+model = "any"
+expect_model = "Gemma-4-E2B"
+
+[tasks.summarize]
+provider = "runpod"
+endpoint_id = "your-gemma-endpoint-id"
+model = "any"
+expect_model = "Gemma-4-E2B"
+
+[tasks.extract]
+provider = "runpod"
+endpoint_id = "your-gemma-endpoint-id"
+model = "any"
+expect_model = "Gemma-4-E2B"
