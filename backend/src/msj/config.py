@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     provider_timeout_s: float = Field(default=900, gt=0)
     poll_initial_s: float = Field(default=1, gt=0)
     poll_max_s: float = Field(default=10, gt=0)
+    runpod_max_payload_bytes: int = Field(default=9_500_000, gt=0)
+    runpod_status_max_failures: int = Field(default=3, ge=0)
     upload_limit_bytes: int = Field(default=50 * 1024 * 1024, gt=0)
     fuzzy_threshold: float = Field(default=80, ge=0, le=100)
 

@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from msj.api import create_app
+from msj.api import EntryCreate, EntryPatch, create_app
 from msj.auth import create_token
 from msj.config import TASKS, Settings, TaskRoute
 
@@ -135,3 +135,85 @@ def test_failed_jobs_filter_and_manual_retry(tmp_path: Path) -> None:
             http.get("/api/v1/jobs", params={"status": "unknown"}, headers=headers).status_code
             == 422
         )
+
+
+def test_date_inputs_are_canonicalized() -> None:
+    created = EntryCreate.model_validate({"text": "date", "entry_date": "20261106"})
+    patched = EntryPatch.model_validate({"entry_date": "2026-W45-6"})
+    assert created.entry_date == "2026-11-06"
+    assert patched.entry_date == "2026-11-07"
+
+
+def test_create_and_patch_return_canonical_entry_dates(client: tuple[TestClient, str]) -> None:
+    http, token = client
+    headers = _headers(token)
+    created = http.post(
+        "/api/v1/entries",
+        headers=headers,
+        json={"text": "dated entry", "entry_date": "20261106"},
+    )
+    assert created.status_code == 201
+    entry_id = created.json()["id"]
+    assert created.json()["entry_date"] == "2026-11-06"
+    patched = http.patch(
+        f"/api/v1/entries/{entry_id}", headers=headers, json={"entry_date": "2026-W45-6"}
+    )
+    assert patched.status_code == 200
+    assert patched.json()["entry_date"] == "2026-11-07"
+
+
+_AUTH_CASES: tuple[tuple[str, str, dict[str, Any]], ...] = (
+    ("POST", "/api/v1/entries", {"json": {"text": "authenticated"}}),
+    ("GET", "/api/v1/entries", {}),
+    ("GET", "/api/v1/entries/not-found", {}),
+    ("PATCH", "/api/v1/entries/not-found", {"json": {"title": "title"}}),
+    ("DELETE", "/api/v1/entries/not-found", {}),
+    ("GET", "/api/v1/jobs", {}),
+    ("POST", "/api/v1/jobs/not-found/retry", {}),
+    ("POST", "/api/v1/batches/run", {}),
+    ("GET", "/api/v1/search?q=journal", {}),
+)
+
+
+@pytest.mark.parametrize(("method", "path", "kwargs"), _AUTH_CASES)
+def test_every_api_route_requires_authentication(
+    client: tuple[TestClient, str], method: str, path: str, kwargs: dict[str, Any]
+) -> None:
+    http, token = client
+
+    def request(headers: dict[str, str] | None = None) -> Any:
+        return http.request(method, path, headers=headers, **kwargs)
+
+    assert request().status_code == 401
+    assert request({"Authorization": "Bearer wrong-token"}).status_code == 401
+    assert request(_headers(token)).status_code != 401
+
+
+def test_auth_cases_cover_each_route_except_health(client: tuple[TestClient, str]) -> None:
+    http, _ = client
+    actual = {
+        (method, route.path)
+        for route in http.app.routes
+        if hasattr(route, "methods") and route.path.startswith("/api/v1/")
+        for method in route.methods or set()
+        if route.path != "/api/v1/health"
+    }
+    covered = {
+        (method, path.split("?", maxsplit=1)[0]
+         .replace("/entries/not-found", "/entries/{entry_id}")
+         .replace("/jobs/not-found/", "/jobs/{job_id}/"))
+        for method, path, _ in _AUTH_CASES
+    }
+    assert covered == actual
+
+
+def test_multipart_date_is_stored_canonically(client: tuple[TestClient, str]) -> None:
+    http, token = client
+    response = http.post(
+        "/api/v1/entries",
+        headers=_headers(token),
+        files={"file": ("voice.wav", b"1234", "audio/wav")},
+        data={"entry_date": "20261106"},
+    )
+    assert response.status_code == 201
+    assert response.json()["entry_date"] == "2026-11-06"

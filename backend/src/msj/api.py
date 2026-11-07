@@ -47,7 +47,7 @@ class EntryCreate(BaseModel):
     @classmethod
     def valid_entry_date(cls, value: str | None) -> str | None:
         if value is not None:
-            _ = date.fromisoformat(value)
+            return date.fromisoformat(value).isoformat()
         return value
 
 
@@ -62,7 +62,7 @@ class EntryPatch(BaseModel):
     @classmethod
     def valid_entry_date(cls, value: str | None) -> str | None:
         if value is not None:
-            _ = date.fromisoformat(value)
+            return date.fromisoformat(value).isoformat()
         return value
 
     @field_validator("text")
@@ -262,10 +262,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise APIProblem(
                     413, "Payload Too Large", "Audio exceeds the configured upload limit."
                 )
-            entry_date = form.get("entry_date")
-            if entry_date is not None:
+            entry_date_value = form.get("entry_date")
+            if entry_date_value is not None:
                 try:
-                    _ = date.fromisoformat(str(entry_date))
+                    entry_date = date.fromisoformat(str(entry_date_value)).isoformat()
                 except ValueError:
                     raise APIProblem(
                         422, "Validation Error", "entry_date must be an ISO calendar date."
@@ -276,7 +276,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 extension=extension,
                 title=str(form.get("title")) if form.get("title") else None,
                 tags=tags_value,
-                entry_date=str(entry_date) if entry_date else None,
+                entry_date=entry_date if entry_date_value else None,
             )
         finally:
             await form.close()

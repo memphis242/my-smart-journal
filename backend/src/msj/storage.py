@@ -5,11 +5,12 @@ The Store interface is the seam for a future encrypted storage implementation.
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, date, datetime
 from importlib.resources import files
 from pathlib import Path
@@ -17,6 +18,8 @@ from typing import Any
 from uuid import uuid4
 
 from .config import Settings
+
+_logger = logging.getLogger(__name__)
 
 
 class NotFound(ValueError):
@@ -140,6 +143,10 @@ class Store:
             if parent in ids:
                 _ = db.execute("INSERT INTO job_dependencies VALUES (?,?)", (job_id, ids[parent]))
 
+    @staticmethod
+    def _canonical_date(value: str) -> str:
+        return date.fromisoformat(value).isoformat()
+
     def create_entry(
         self,
         *,
@@ -188,7 +195,9 @@ class Store:
                     (
                         entry_id,
                         timestamp(),
-                        entry_date or date.today().isoformat(),
+                        self._canonical_date(entry_date)
+                        if entry_date is not None
+                        else date.today().isoformat(),
                         title,
                         json.dumps(tags or []),
                         "audio" if audio is not None else "text",
@@ -201,8 +210,10 @@ class Store:
                 self._refresh_search(db, entry_id)
         except Exception:
             if stored_file is not None:
-                stored_file.unlink(missing_ok=True)
-                stored_file.parent.rmdir()
+                with suppress(OSError):
+                    stored_file.unlink(missing_ok=True)
+                with suppress(OSError):
+                    stored_file.parent.rmdir()
             raise
         return self.get_entry(entry_id)
 
@@ -221,6 +232,13 @@ class Store:
         entry["needs_attention"] = any(
             row["needs_attention"] for row in rows if row["revision"] == entry["revision"]
         )
+        job_rows = db.execute(
+            "SELECT * FROM jobs WHERE entry_id=? "
+            + ("" if history else "AND revision=? ")
+            + "ORDER BY created_at,id",
+            (entry_id,) if history else (entry_id, entry["revision"]),
+        ).fetchall()
+        entry["jobs"] = Store._job_views(db, job_rows)
         return entry
 
     def get_entry(self, entry_id: str, history: bool = False) -> dict[str, Any]:
@@ -252,17 +270,25 @@ class Store:
             entry = self._entry(db, entry_id)
             for field in ("title", "tags", "entry_date"):
                 if field in changes:
-                    value = json.dumps(changes[field]) if field == "tags" else changes[field]
+                    value = (
+                        json.dumps(changes[field])
+                        if field == "tags"
+                        else (
+                            self._canonical_date(changes[field])
+                            if field == "entry_date"
+                            else changes[field]
+                        )
+                    )
                     _ = db.execute(f"UPDATE entries SET {field}=? WHERE id=?", (value, entry_id))
             if text is not None:
                 revision = int(entry["revision"]) + 1
                 _ = db.execute("UPDATE entries SET revision=? WHERE id=?", (revision, entry_id))
                 # Existing in-flight claims cannot publish into a newer revision.
                 _ = db.execute(
-                    "UPDATE jobs SET status='failed',"
+                    "UPDATE jobs SET status='superseded',"
                     "last_error='Entry text revised; use current jobs',"
                     "finished_at=?,claim_token=NULL,lease_until=NULL WHERE entry_id=? "
-                    "AND status IN ('queued','running')",
+                    "AND status IN ('queued','running','failed')",
                     (timestamp(), entry_id),
                 )
                 _ = self._artifact(db, entry_id, revision, "user_text", text)
@@ -294,24 +320,82 @@ class Store:
             paths = [row[0] for row in db.execute("SELECT path FROM file_deletions")]
             for relative in paths:
                 path = self.data_dir / relative
-                path.unlink(missing_ok=True)
-                if path.parent.exists() and not any(path.parent.iterdir()):
-                    path.parent.rmdir()
-                _ = db.execute("DELETE FROM file_deletions WHERE path=?", (relative,))
+                try:
+                    path.unlink(missing_ok=True)
+                    if path.parent.exists() and not any(path.parent.iterdir()):
+                        path.parent.rmdir()
+                except OSError as exc:
+                    _logger.warning(
+                        "Audio cleanup failed for managed file %s (%s); will retry later",
+                        path.name,
+                        type(exc).__name__,
+                    )
+                else:
+                    _ = db.execute("DELETE FROM file_deletions WHERE path=?", (relative,))
 
     def list_jobs(self, status: str | None = None) -> list[dict[str, Any]]:
-        if status is not None and status not in {"queued", "running", "done", "failed"}:
+        if status is not None and status not in {
+            "queued",
+            "running",
+            "done",
+            "failed",
+            "superseded",
+        }:
             raise ValueError("Unknown job status")
         with self.connect() as db:
-            return [
-                dict(row)
-                for row in db.execute(
-                    "SELECT * FROM jobs"
-                    + (" WHERE status=?" if status is not None else "")
-                    + " ORDER BY created_at,id",
-                    () if status is None else (status,),
-                )
+            _ = db.execute("BEGIN")
+            rows = db.execute(
+                "SELECT * FROM jobs"
+                + (" WHERE status=?" if status is not None else "")
+                + " ORDER BY created_at,id",
+                () if status is None else (status,),
+            ).fetchall()
+            return self._job_views(db, rows)
+
+    @staticmethod
+    def _job_views(db: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        entry_ids = sorted({row["entry_id"] for row in rows})
+        placeholders = ",".join("?" for _ in entry_ids)
+        jobs = {
+            row["id"]: dict(row)
+            for row in db.execute(
+                f"SELECT * FROM jobs WHERE entry_id IN ({placeholders})", entry_ids
+            )
+        }
+        dependencies: dict[str, list[str]] = {}
+        for row in db.execute(
+            "SELECT d.job_id,d.depends_on FROM job_dependencies d "
+            "JOIN jobs j ON j.id=d.job_id "
+            f"WHERE j.entry_id IN ({placeholders})",
+            entry_ids,
+        ):
+            dependencies.setdefault(row["job_id"], []).append(row["depends_on"])
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            job = dict(row)
+            ancestors: set[str] = set()
+            pending = list(dependencies.get(job["id"], []))
+            while pending:
+                parent_id = pending.pop()
+                if parent_id in ancestors:
+                    continue
+                ancestors.add(parent_id)
+                pending.extend(dependencies.get(parent_id, []))
+            blocked_by = [
+                {
+                    "job_id": parent_id,
+                    "kind": jobs[parent_id]["kind"],
+                    "message": f"blocked by failed {jobs[parent_id]['kind']} job {parent_id}",
+                }
+                for parent_id in sorted(ancestors)
+                if jobs[parent_id]["status"] == "failed"
             ]
+            job["blocked_by"] = blocked_by
+            results.append(job)
+        return results
 
     def retry_job(self, job_id: str) -> dict[str, Any]:
         with self.connect() as db:
@@ -329,7 +413,7 @@ class Store:
             )
             result = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             assert result is not None
-            return dict(result)
+            return self._job_views(db, [result])[0]
 
     def claim(self, eligible_ids: set[str]) -> dict[str, Any] | None:
         if not eligible_ids:
@@ -448,8 +532,8 @@ class Store:
             self._refresh_search(db, job["entry_id"])
             return True
 
-    def fail_job(self, job: dict[str, Any], error: str) -> bool:
-        terminal = job["attempts"] >= self.settings.max_attempts
+    def fail_job(self, job: dict[str, Any], error: str, *, retryable: bool = True) -> bool:
+        terminal = not retryable or job["attempts"] >= self.settings.max_attempts
         delay = self.settings.retry_base_s * 2 ** min(job["attempts"] - 1, 16)
         with self.connect() as db:
             result = db.execute(

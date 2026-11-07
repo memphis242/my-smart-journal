@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from importlib.resources import files
 from typing import Any, Protocol
@@ -12,6 +13,8 @@ from jsonschema import Draft202012Validator
 from .config import Settings, TaskKind, TaskRoute
 from .providers import Generation, InferenceProvider, ProviderError
 from .storage import Store
+
+_logger = logging.getLogger(__name__)
 
 
 class Provider(Protocol):
@@ -111,6 +114,18 @@ class Runner:
                             "and data directory permissions"
                         )
                     )
-                    recorded = self.store.fail_job(job, message)
+                    recorded = self.store.fail_job(
+                        job,
+                        message,
+                        retryable=exc.retryable if isinstance(exc, ProviderError) else True,
+                    )
+                    stats["failed" if recorded else "discarded"] += 1
+                except Exception as exc:
+                    _logger.error("Unexpected job exception: %s", type(exc).__name__)
+                    recorded = self.store.fail_job(
+                        job,
+                        "Unexpected processing failure; retry the job and check provider "
+                        "configuration and worker health",
+                    )
                     stats["failed" if recorded else "discarded"] += 1
         return stats

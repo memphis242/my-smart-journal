@@ -8,6 +8,9 @@ provider_timeout_s = 900
 lease_s = 1200
 poll_initial_s = 1
 poll_max_s = 10
+runpod_max_payload_bytes = 9500000
+# Tolerate this many consecutive transient status failures; 0 disables tolerance.
+runpod_status_max_failures = 3
 
 [tasks.transcribe]
 provider = "runpod"

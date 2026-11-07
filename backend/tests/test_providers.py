@@ -93,7 +93,7 @@ def test_runpod_terminal_failure_is_actionable(
 
     monkeypatch.setenv("RUNPOD_API_KEY", "secret")
     http = httpx.Client(transport=httpx.MockTransport(handler))
-    provider = InferenceProvider(settings(), http)
+    provider = InferenceProvider(settings(), http, openai_transport=httpx.MockTransport(handler))
     with pytest.raises(ProviderError, match=f"status {status}"):
         provider.generate("cleanup", TaskRoute(provider="runpod", endpoint_id="ep"), "raw")
     http.close()
@@ -117,7 +117,7 @@ def test_openai_chat_wire_format_and_reported_model() -> None:
         )
 
     http = httpx.Client(transport=httpx.MockTransport(handler))
-    provider = InferenceProvider(settings(), http)
+    provider = InferenceProvider(settings(), http, openai_transport=httpx.MockTransport(handler))
     route = TaskRoute(
         provider="openai", base_url="http://local/v1", model="Phi-4-mini", expect_model="Phi-4-mini"
     )
@@ -134,7 +134,7 @@ def test_openai_transcription_uses_multipart() -> None:
         return httpx.Response(200, json={"text": "spoken text", "model": "turbo"})
 
     http = httpx.Client(transport=httpx.MockTransport(handler))
-    provider = InferenceProvider(settings(), http)
+    provider = InferenceProvider(settings(), http, openai_transport=httpx.MockTransport(handler))
     assert provider.generate(
         "transcribe",
         TaskRoute(provider="openai", base_url="http://local/v1", model="turbo"),
@@ -202,9 +202,9 @@ def test_malformed_runpod_status_is_a_provider_failure(
     monkeypatch.setenv("RUNPOD_API_KEY", "test-only")
     with httpx.Client(transport=httpx.MockTransport(handler)) as http:
         with pytest.raises(ProviderError, match="non-string job status"):
-            InferenceProvider(settings(), http).generate(
-                "cleanup", TaskRoute(provider="runpod", endpoint_id="ep"), "source"
-            )
+            InferenceProvider(
+                settings(), http, openai_transport=httpx.MockTransport(handler)
+            ).generate("cleanup", TaskRoute(provider="runpod", endpoint_id="ep"), "source")
     assert calls[-1].endswith("/cancel/job")
 
 
@@ -220,6 +220,6 @@ def test_truncated_chat_output_is_not_published() -> None:
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http:
         with pytest.raises(ProviderError, match="increase max_tokens"):
-            InferenceProvider(settings(), http).generate(
-                "summarize", TaskRoute(provider="openai"), "source"
-            )
+            InferenceProvider(
+                settings(), http, openai_transport=httpx.MockTransport(handler)
+            ).generate("summarize", TaskRoute(provider="openai"), "source")

@@ -254,8 +254,7 @@ def test_audio_delete_has_durable_cleanup_after_filesystem_failure(
 
     with monkeypatch.context() as scoped:
         scoped.setattr(Path, "unlink", fail_unlink)
-        with pytest.raises(OSError, match="injected"):
-            store.delete_entry(entry["id"])
+        store.delete_entry(entry["id"])
     with pytest.raises(NotFound):
         store.get_entry(entry["id"])
     assert audio_path.read_bytes() == b"retained until deletion"
