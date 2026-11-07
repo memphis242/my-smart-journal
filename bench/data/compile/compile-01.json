@@ -6,36 +6,61 @@
   "entries": [
     {
       "date": "2026-10-02",
-      "text": "I worked with Ivo Penn on Cedar Metrics, a fictional Go service. We reproduced queue lag in a local replay and recorded 14 ms p95 over 20 minutes. The production cause remains unconfirmed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+      "text": "Started the month on Cedar Metrics, our Go ingest service. Ivo Penn flagged duplicate rows in the PostgreSQL events table after Kafka consumer rebalances. I spent the day trying to reproduce it locally with three partitions and a forced rebalance every 90 seconds, and got nothing. No duplicates in a 30 minute run. Either the repro is wrong or the trigger needs more partitions. Writing this down so I stop guessing: the production cause is not known yet. Plan for tomorrow: raise the partition count in the repro, and ask Ivo how many consumer instances run in production so the local setup is closer to reality."
     },
     {
-      "date": "2026-10-06",
-      "text": "Nella Voss reviewed the bounded retry proposal. I added a test for three retries and verified the test passes locally. We did not merge or deploy the change. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+      "date": "2026-10-08",
+      "text": "Got the duplicate repro working. Six partitions instead of three, same 90 second rebalance, and a 40 minute run produced 212 duplicate rows. Paired with Nella Voss from the data platform team; her idea was to stop fighting offset timing and make the insert idempotent with a unique constraint on event_id plus source and ON CONFLICT DO NOTHING. Same repro, zero duplicates. Local p95 insert latency went from 18 ms to 21 ms. Opened PR 1184. Not merged. The events table is about 310 million rows, so the unique index needs a DBA review first."
     },
     {
-      "date": "2026-10-11",
-      "text": "I compared logs from two worker configurations. The second had fewer visible stalls in this sample, but we did not collect enough runs to claim an improvement. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+      "date": "2026-10-12",
+      "text": "Short one. Was supposed to roll the idempotent insert to staging today behind the ingest_idempotent_insert flag, but the DBA review on PR 1184 has not happened, so nothing rolled out. Created the feature flag at least. Also started a design note for the Grafana alert cleanup Priya Okafor asked for, about a page in, and spent the afternoon in an incident retro that was not mine. The alert cleanup is supposed to remove the noisy disk alerts that page us roughly twice a week for nothing. Nothing removed yet. I also told Ivo I would add p99 to the latency comparison and did not get to it today."
     },
     {
-      "date": "2026-10-17",
-      "text": "I documented the replay command and the 14 ms p95 observation. I planned to run a larger test on Friday, but the shared environment was unavailable. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+      "date": "2026-10-14",
+      "text": "DBA review done. Osric Hale tested the concurrent index build on a restored production snapshot: it took 47 minutes, not the 2 hours Nella guessed. He approved PR 1184 with one change, building the index in a separate migration so it can be retried independently. I made the change, merged it, and the flag went on in staging at 16:00. Watching it for 48 hours before production. Osric also pointed out that our migration tool runs inside a transaction by default, which would have blocked CREATE INDEX CONCURRENTLY entirely, so the separate migration was not just tidiness. Good catch. Staging traffic is about a tenth of production, so a clean staging run is a weak signal, but it is the signal we have."
     },
     {
-      "date": "2026-10-26",
-      "text": "I summarized the open questions for Ivo and Nella. We still need production-like traffic and approval before any rollout; neither happened this month. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+      "date": "2026-10-19",
+      "text": "Production rollout of the idempotent insert. Staging was clean for 48 hours, so the ingest_idempotent_insert flag went on in production this morning. Over the first 24 hours: zero new duplicate rows across 41 million ingested events, compared with roughly 3,000 duplicates per day before. Production p95 insert latency moved from 19 ms to 22 ms, close to what the local test predicted. Priya's deadline was October 23rd, so we made it with days to spare. The historical duplicates are still in the table. Nella's team has a dedup script but nobody has run it, and I have not scheduled the backfill."
+    },
+    {
+      "date": "2026-10-22",
+      "text": "Mentoring day. Kestrel, the new grad on the team, shadowed me through the Cedar Metrics on-call runbook. We found two runbook steps that reference a dashboard that no longer exists and fixed them together. Then I wrote the postmortem-style summary for the duplicates fix and shared it in the platform channel. Correction to my October 19th note: production p95 went from 19 ms to 23 ms, not 22; I misread the panel. Ivo double checked it with me. Kestrel asked good questions about why idempotency was preferred over fixing offset commits; I pointed them at CM-447 and explained that we did both analyses, but only shipped the idempotent insert."
+    },
+    {
+      "date": "2026-10-27",
+      "text": "Planned to spend this week on CM-447, the offset commit issue that causes extra work on every rebalance, but got pulled into the quarterly planning doc. Wrote the Cedar Metrics section, proposing the dedup backfill and CM-447 for next quarter. No code on CM-447. The Grafana alert cleanup note is still one page and has not been reviewed. Ivo agreed that the backfill should run during a low-traffic window with a dry run first, so it is not something to rush at the end of a month."
+    },
+    {
+      "date": "2026-10-30",
+      "text": "End of month. Shipped: idempotent ingest inserts in production, zero new duplicates since October 19th, runbook fixes with Kestrel. Not done: the historical dedup backfill, CM-447, the Grafana alert cleanup. Priya gave positive feedback in our 1:1 and asked me to present the duplicates fix at the November engineering review. I said yes; I have not made any slides. Also tried to get load test numbers for the ingest service at 2x traffic but the load generator kept crashing, so there is no capacity result to report."
     }
   ],
   "key_facts": [
     "Cedar Metrics",
     "Go",
-    "14 ms p95",
-    "20 minutes",
-    "three retries",
-    "local replay"
+    "PostgreSQL",
+    "Kafka",
+    "212 duplicate rows",
+    "ON CONFLICT DO NOTHING",
+    "PR 1184",
+    "310 million rows",
+    "Osric Hale",
+    "47 minutes",
+    "ingest_idempotent_insert",
+    "zero new duplicate rows",
+    "41 million",
+    "3,000 duplicates per day",
+    "19 ms to 23 ms",
+    "Nella Voss",
+    "Kestrel"
   ],
   "not_accomplished": [
-    "deployed the change",
-    "confirmed production cause",
-    "integrated parser into CI"
+    "ran the dedup backfill",
+    "fixed CM-447",
+    "completed the Grafana alert cleanup",
+    "load tested the ingest service at 2x traffic",
+    "presented at the November engineering review"
   ]
 }

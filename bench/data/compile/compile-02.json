@@ -6,37 +6,70 @@
   "entries": [
     {
       "date": "2026-07-03",
-      "text": "At fictional Harbor Sensor, Jo Rell and I captured SPI traffic at 4 MHz. We observed 3 dropped frames in 900 samples on the bench. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+      "text": "Quarter kickoff. Ruth Adeyemi assigned me the Heron pump controller firmware for Q3. Goals: fix the motor start reset on rev C, cut idle current for the battery variant, and move the build from the vendor IDE to CMake so CI can build it. Kaito Brann owns the hardware side. Inherited codebase is about 38,000 lines of C on an STM32G4. Priorities from Ruth, in order: the reset, the idle current, then the build. She wants weekly notes, which is what this is. The battery variant is targeted for a pilot with two customers in Q4, so the idle current number matters more than it looks."
     },
     {
-      "date": "2026-07-14",
-      "text": "I adjusted the test harness timeout from 80 ms to 120 ms and reproduced the capture issue twice. This helped isolate the test condition, but did not fix the firmware. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+      "date": "2026-07-15",
+      "text": "CMake migration. Got the firmware building with CMake and arm-none-eabi-gcc 13 on my machine. Binary size differs from the vendor IDE build by 1.2 KB because of different link-time options; I have not verified the two builds behave identically on hardware. CI job written but not enabled, because the build server does not have the toolchain installed yet. Kept the vendor IDE project working in parallel so nobody is blocked while the migration is unfinished. Wrote a short README section on how to build with CMake locally."
     },
     {
-      "date": "2026-08-02",
-      "text": "Tavi Moss reviewed my notes and suggested checking a second board revision. I requested the board; it had not arrived by the end of the week. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+      "date": "2026-07-29",
+      "text": "Motor start reset investigation, day one. Roughly one start in twenty resets the board. Scoped the 3.3 V rail: it dips to 2.91 V for 180 microseconds at motor enable, above the 2.8 V brownout threshold. Reset cause register shows IWDG, the watchdog, not brownout. Theory: the dip corrupts the I2C read from the INA219 current sensor, retries pile up past the 250 ms watchdog timeout. Not proven yet. Kaito still suspects the rail dip, which is fair; it is the trigger either way. Next step is a logic analyzer on the I2C lines during motor start."
     },
     {
-      "date": "2026-08-19",
-      "text": "I wrote a small parser for the capture log and used it to count frame gaps. The parser ran on the saved sample only; we have not integrated it into CI. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+      "date": "2026-08-05",
+      "text": "Reset investigation, day two. Captured a logic analyzer trace of an I2C transaction stuck in retries for 340 ms during inrush. That supports the theory. Ruth vetoed feeding the watchdog inside the retry loop. Added a 5 ms timeout per I2C transaction instead. On one board, 200 motor starts with zero resets, versus 11 resets in 200 starts before the change. One board at room temperature only. Ruth wants three boards and the thermal chamber before anyone calls it fixed."
     },
     {
-      "date": "2026-09-08",
-      "text": "I presented the bench findings to Jo and Tavi. We agreed that root cause is still unknown and planned another capture after hardware arrives. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+      "date": "2026-08-13",
+      "text": "Reset fix validation. Thermal chamber at minus 10 C, three boards, 600 motor starts total: zero resets. Merged fix/i2c-timeout and it shipped in firmware 2.4.2. This closes the rev C reset issue as far as firmware goes. Kaito still wants a 100 microfarad bulk capacitor on rev D; that is his hardware change. Kaito confirmed rev D layout includes the capacitor, but boards will not arrive before October, so the rev D combination is untested. Customers on rev C get the firmware fix only. Ruth signed off on the release notes."
+    },
+    {
+      "date": "2026-08-20",
+      "text": "Idle current work. The battery variant measured 4.8 mA idle. Put the MCU into Stop 2 mode between sensor polls and disabled the unused UART clocks. Now measuring 1.9 mA on the bench. Wait, I need to recheck that; the shunt on the meter was the 10 ohm range and the reading was noisy. The 10 ohm range drops enough voltage to disturb the regulator at low current, so I do not trust the 1.9 number at all. Will remeasure next week with the 1 ohm shunt and a longer average before telling anyone."
+    },
+    {
+      "date": "2026-08-27",
+      "text": "Rechecked idle current with the proper 1 ohm shunt and a 10 minute average: 2.3 mA, not 1.9. So the real reduction is from 4.8 mA to 2.3 mA, about 52 percent. Ruth wanted under 2 mA for the battery life target of 18 months. We are not there. The remaining draw seems to be the pressure sensor, which does not have a sleep mode we use yet. Pinged the pressure sensor vendor about the sleep command. Without it, the 18 month target looks out of reach for this hardware revision; Ruth asked me to estimate battery life at 2.3 mA, which works out to roughly 15 months on the current cell."
+    },
+    {
+      "date": "2026-09-09",
+      "text": "Spent the week on an unplanned field issue: a customer unit at the Millbrook test site logged corrupted flash config after power loss. Reproduced it by cutting power during a config write. Added a CRC32 and a two-slot config layout so a torn write falls back to the previous slot. 500 power cuts during writes on the bench, no corrupted config loaded. Merged for 2.5.0. The field unit was running 2.4.2. Ruth asked whether older versions are affected; they are, the config code has not changed in two years. The Millbrook customer has a workaround until 2.5.0 is released."
+    },
+    {
+      "date": "2026-09-22",
+      "text": "Planned to finish the pressure sensor sleep mode this sprint for the 2 mA target. Did not happen; the datasheet sleep command did not reduce current on our part revision and the vendor has not answered the support ticket. The CI build is still not enabled, IT says the toolchain image is coming next quarter. Ruth asked me to write up the options: a different pressure sensor on rev D, or accept 15 months. I have a draft; it is not reviewed."
+    },
+    {
+      "date": "2026-09-30",
+      "text": "Quarter wrap-up with Ruth. Delivered: motor start reset fix in 2.4.2, validated on 3 boards at minus 10 C; idle current down from 4.8 mA to 2.3 mA; power-loss-safe config with CRC32 in 2.5.0; local CMake build. Not delivered: the 2 mA idle target, the pressure sensor sleep mode, CI builds. Firmware 2.5.0 is in QA, not yet released to customers. Next quarter: pressure sensor decision, CI once the toolchain image exists, and the 2.5.0 release once QA signs off."
     }
   ],
   "key_facts": [
-    "Harbor Sensor",
-    "SPI",
-    "4 MHz",
-    "3 dropped frames",
-    "900 samples",
-    "120 ms",
-    "log parser"
+    "Heron",
+    "STM32G4",
+    "CMake",
+    "IWDG",
+    "INA219",
+    "340 ms",
+    "5 ms timeout",
+    "minus 10 C",
+    "600 motor starts",
+    "zero resets",
+    "2.4.2",
+    "4.8 mA",
+    "2.3 mA",
+    "52 percent",
+    "CRC32",
+    "500 power cuts",
+    "2.5.0",
+    "Ruth Adeyemi"
   ],
   "not_accomplished": [
-    "fixed firmware root cause",
-    "received second board",
-    "automated capture in CI"
+    "reached the 2 mA idle current target",
+    "enabled CI builds",
+    "implemented the pressure sensor sleep mode",
+    "released firmware 2.5.0 to customers",
+    "verified the CMake build matches the vendor IDE build on hardware"
   ]
 }
