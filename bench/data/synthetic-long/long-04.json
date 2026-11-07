@@ -1,0 +1,24 @@
+{
+  "id": "long-04",
+  "fictional": true,
+  "domain": "school",
+  "raw_transcript": "In my fictional systems seminar, Professor Leda Quill and classmate Bram Fenn discussed cache coherence. My simulation used 8 cores and 64-byte lines; I measured 11 misses in one workload. I drafted a graph, then noticed the axis was wrong and corrected it. The final report is due November 19, and I have not submitted it. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too strong. The check happened in a local setup, and there are still questions about another configuration. I want to keep that distinction clear. There was a side conversation about next steps, and I wrote those down as plans rather than completed work. I have not promised a date, and I do not want the summary to imply that someone approved it. Numbers are from the small run I described, with the units and limits as recorded. I did not extrapolate them to users or production. If I repeat the check, I should save the command and environment alongside the result. I also corrected myself while talking: I first remembered Tuesday, no wait, Wednesday. The calendar note says Wednesday, so use that date. I may be missing a detail, and I would rather mark it uncertain than fill it in. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too strong. The check happened in a local setup, and there are still questions about another configuration. I want to keep that distinction clear. There was a side conversation about next steps, and I wrote those down as plans rather than completed work. I have not promised a date, and I do not want the summary to imply that someone approved it. Numbers are from the small run I described, with the units and limits as recorded. I did not extrapolate them to users or production. If I repeat the check, I should save the command and environment alongside the result. I also corrected myself while talking: I first remembered Tuesday, no wait, Wednesday. The calendar note says Wednesday, so use that date. I may be missing a detail, and I would rather mark it uncertain than fill it in. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too strong. The",
+  "reference_cleaned": "In my fictional systems seminar, Professor Leda Quill and classmate Bram Fenn discussed cache coherence. My simulation used 8 cores and 64-byte lines; I measured 11 misses in one workload. I drafted a graph, then noticed the axis was wrong and corrected it. The final report is due November 19, and I have not submitted it.",
+  "key_facts": [
+    "Leda Quill",
+    "Bram Fenn",
+    "8 cores",
+    "64-byte",
+    "11",
+    "November 19",
+    "cache coherence",
+    "drafted graph",
+    "Ivo Penn",
+    "Nella Voss",
+    "local replay",
+    "not deployed",
+    "review",
+    "test harness",
+    "staging query"
+  ]
+}

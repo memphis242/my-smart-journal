@@ -50,7 +50,7 @@ def _cell(value: Any) -> str:
 
 def comparison_table(summaries: Sequence[Mapping[str, Any]]) -> str:
     headers = ["Run", "Server model", "Task", "OK/total", "WER", "Flags", "Preservation", "Schema valid",
-               "Compression", "Wall s", "Tokens/s", "Est. USD"]
+               "Key fact recall", "Evidence dates", "Not accomplished leaks", "Compression", "Wall s", "Tokens/s", "Est. USD"]
     lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
     for summary in summaries:
         for task, stats in sorted(summary["tasks"].items()):
@@ -58,7 +58,8 @@ def comparison_table(summaries: Sequence[Mapping[str, Any]]) -> str:
             row = [summary["label"], ", ".join(summary.get("server_models", [])), task,
                    f"{stats['successes']}/{stats['items']}", means.get("wer", means.get("reference_wer")),
                    means.get("hallucination_flag_count"), means.get("content_preservation_recall"),
-                   means.get("schema_valid"), means.get("compression_ratio"), means.get("wall_time_s"),
+                   means.get("schema_valid"), means.get("key_fact_recall"), means.get("evidence_dates_valid"),
+                   means.get("not_accomplished_leaks"), means.get("compression_ratio"), means.get("wall_time_s"),
                    means.get("tokens_per_s"), stats["estimated_cost_usd_total"]]
             lines.append("| " + " | ".join(_cell(v) for v in row) + " |")
     return "\n".join(lines) + "\n"

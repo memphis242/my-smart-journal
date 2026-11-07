@@ -1,0 +1,42 @@
+{
+  "id": "compile-02",
+  "fictional": true,
+  "period": "2026-Q3",
+  "purpose": "quarterly",
+  "entries": [
+    {
+      "date": "2026-07-03",
+      "text": "At fictional Harbor Sensor, Jo Rell and I captured SPI traffic at 4 MHz. We observed 3 dropped frames in 900 samples on the bench. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    },
+    {
+      "date": "2026-07-14",
+      "text": "I adjusted the test harness timeout from 80 ms to 120 ms and reproduced the capture issue twice. This helped isolate the test condition, but did not fix the firmware. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    },
+    {
+      "date": "2026-08-02",
+      "text": "Tavi Moss reviewed my notes and suggested checking a second board revision. I requested the board; it had not arrived by the end of the week. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    },
+    {
+      "date": "2026-08-19",
+      "text": "I wrote a small parser for the capture log and used it to count frame gaps. The parser ran on the saved sample only; we have not integrated it into CI. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    },
+    {
+      "date": "2026-09-08",
+      "text": "I presented the bench findings to Jo and Tavi. We agreed that root cause is still unknown and planned another capture after hardware arrives. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    }
+  ],
+  "key_facts": [
+    "Harbor Sensor",
+    "SPI",
+    "4 MHz",
+    "3 dropped frames",
+    "900 samples",
+    "120 ms",
+    "log parser"
+  ],
+  "not_accomplished": [
+    "fixed firmware root cause",
+    "received second board",
+    "automated capture in CI"
+  ]
+}

@@ -16,7 +16,7 @@ import httpx
 
 from .backends import LLMBackend, OpenAIBackend, RunPodLLM, WhisperBackend
 from .config import Config, DEFAULT_BUILD, load_config, output_root, validate_url
-from .datasets import BENCH_ROOT, JournalItem, load_dataset
+from .datasets import BENCH_ROOT, JournalItem, load_dataset, load_compile_dataset
 from .metrics import llm_metrics, performance_metrics, stt_metrics
 from .report import compare_runs, comparison_table, summarize, write_json, write_rating_sheets
 from .runpod_client import BenchmarkError, RunPodClient
@@ -35,7 +35,7 @@ def parser() -> argparse.ArgumentParser:
         sub.add_argument("--limit", type=int, help="Run only the first N items (smoke/acceptance runs)")
         sub.add_argument("--model", help="Request model ID; server-reported model is recorded separately")
         if command == "llm":
-            sub.add_argument("--tasks", default=",".join(TASK_NAMES), help="Comma-separated cleanup,summarize,extract,review")
+            sub.add_argument("--tasks", default="cleanup,summarize,extract,review", help="Comma-separated cleanup,summarize,extract,review,compile")
             sub.add_argument("--backend", choices=("runpod", "openai"), default="runpod")
             sub.add_argument("--base-url", help="OpenAI-compatible base URL including /v1")
             sub.add_argument("--expect-model", help="Fail items whose server-reported model lacks this substring")
@@ -68,13 +68,13 @@ def _new_directory(root: Path, label: str) -> Path:
 
 
 def _fingerprint(items: tuple[JournalItem, ...]) -> str:
-    data = [{**asdict(item), "audio": str(item.audio) if item.audio is not None else None} for item in items]
+    data = [{**asdict(item), "audio": str(item.audio) if getattr(item, "audio", None) is not None else None} for item in items]
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 def benchmark(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    items = load_dataset(args.dataset, mode=args.command)
+    items = load_compile_dataset(args.dataset) if args.command == "llm" and "compile" in args.tasks.split(",") else load_dataset(args.dataset, mode=args.command)
     if args.limit is not None:
         if args.limit <= 0:
             raise BenchmarkError("--limit must be positive")
@@ -87,7 +87,9 @@ def benchmark(args: argparse.Namespace) -> int:
         if not requested or len(requested) != len(set(requested)) or any(t not in TASK_NAMES for t in requested):
             raise BenchmarkError("--tasks must contain unique names from cleanup,summarize,extract,review")
         tasks = tuple(t for t in TASK_NAMES if t in requested)
-        max_tokens = args.max_tokens if args.max_tokens is not None else config.max_tokens
+        max_tokens = args.max_tokens if args.max_tokens is not None else (config.compile_max_tokens if "compile" in requested else config.max_tokens)
+        if "compile" in requested and requested != ["compile"]:
+            raise BenchmarkError("Compile must be run by itself")
         if max_tokens <= 0:
             raise BenchmarkError("--max-tokens must be positive")
         if "review" in tasks and "cleanup" not in tasks and any(item.reference_cleaned is None for item in items):
@@ -132,8 +134,9 @@ def benchmark(args: argparse.Namespace) -> int:
                 for item in items:
                     cleanup_output: str | None = None
                     for task in tasks:
-                        record: dict[str, Any] = {"item_id": item.id, "task": task, "source": item.raw_transcript,
-                                                  "reference_cleaned": item.reference_cleaned, "status": "ok"}
+                        source_text = item.source if task == "compile" else item.raw_transcript
+                        record: dict[str, Any] = {"item_id": item.id, "task": task, "source": source_text,
+                                                  "reference_cleaned": getattr(item, "reference_cleaned", None), "status": "ok"}
                         try:
                             if task == "stt":
                                 assert whisper is not None and item.audio is not None
@@ -141,21 +144,23 @@ def benchmark(args: argparse.Namespace) -> int:
                                 metrics = stt_metrics(item.raw_transcript, generation.text)
                             else:
                                 assert llm is not None
-                                candidate = cleanup_output if "cleanup" in tasks else item.reference_cleaned
+                                candidate = cleanup_output if "cleanup" in tasks else getattr(item, "reference_cleaned", None)
                                 if task == "review":
                                     if candidate is None:
                                         raise BenchmarkError("Review skipped: cleanup failed to produce a candidate")
                                     record["review_candidate"] = candidate
                                     record["review_candidate_origin"] = "cleanup" if "cleanup" in tasks else "reference_cleaned"
-                                generation = llm.generate(messages_for(task, item.raw_transcript, candidate=candidate),
+                                prompt_source = json.dumps({"period": item.period, "purpose": item.purpose, "entries": list(item.entries)}, ensure_ascii=False) if task == "compile" else item.raw_transcript
+                                generation = llm.generate(messages_for(task, prompt_source, candidate=candidate),
                                                           max_tokens=max_tokens, schema=task_schema(task))
                                 if args.expect_model and args.expect_model.casefold() not in (generation.model or "").casefold():
                                     raise BenchmarkError(f"Server model {generation.model!r} does not match "
                                                          f"--expect-model {args.expect_model!r} (stale worker?)")
                                 if task == "cleanup":
                                     cleanup_output = generation.text
-                                metrics = llm_metrics(task, item.raw_transcript, generation.text,
-                                                      item.reference_cleaned, item.key_facts)
+                                metrics = (compile_metrics(generation.text, item, task_schema(task)) if task == "compile" else
+                                           llm_metrics(task, item.raw_transcript, generation.text,
+                                                       item.reference_cleaned, item.key_facts))
                             record.update(output=generation.text, server_model=generation.model, metrics=metrics,
                                           performance=performance_metrics(generation, config.hourly_usd if backend_name == "runpod" else None))
                         except BenchmarkError as exc:

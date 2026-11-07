@@ -1,0 +1,24 @@
+{
+  "id": "long-01",
+  "fictional": true,
+  "domain": "software",
+  "raw_transcript": "I worked on the fictional Cedar Metrics service with Ivo Penn and Nella Voss. We traced a queue delay in the Go event processor, added a bounded retry test, and saw 14 ms p95 in a 20 minute local replay. The cause is still not confirmed. Tuesday, no wait, Wednesday was the review. I did not deploy it. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too strong. The check happened in a local setup, and there are still questions about another configuration. I want to keep that distinction clear. There was a side conversation about next steps, and I wrote those down as plans rather than completed work. I have not promised a date, and I do not want the summary to imply that someone approved it. Numbers are from the small run I described, with the units and limits as recorded. I did not extrapolate them to users or production. If I repeat the check, I should save the command and environment alongside the result. I also corrected myself while talking: I first remembered Tuesday, no wait, Wednesday. The calendar note says Wednesday, so use that date. I may be missing a detail, and I would rather mark it uncertain than fill it in. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too strong. The check happened in a local setup, and there are still questions about another configuration. I want to keep that distinction clear. There was a side conversation about next steps, and I wrote those down as plans rather than completed work. I have not promised a date, and I do not want the summary to imply that someone approved it. Numbers are from the small run I described, with the units and limits as recorded. I did not extrapolate them to users or production. If I repeat the check, I should save the command and environment alongside the result. I also corrected myself while talking: I first remembered Tuesday, no wait, Wednesday. The calendar note says Wednesday, so use that date. I may be missing a detail, and I would rather mark it uncertain than fill it in. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too",
+  "reference_cleaned": "I worked on the fictional Cedar Metrics service with Ivo Penn and Nella Voss. We traced a queue delay in the Go event processor, added a bounded retry test, and saw 14 ms p95 in a 20 minute local replay. The cause is still not confirmed. Tuesday, no wait, Wednesday was the review. I did not deploy it.",
+  "key_facts": [
+    "Cedar Metrics",
+    "Ivo Penn",
+    "Nella Voss",
+    "Go",
+    "14 ms",
+    "20 minutes",
+    "Wednesday",
+    "p95",
+    "bounded retry",
+    "Nella Voss",
+    "local replay",
+    "not deployed",
+    "review",
+    "test harness",
+    "staging query"
+  ]
+}

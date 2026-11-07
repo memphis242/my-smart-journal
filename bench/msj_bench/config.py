@@ -27,6 +27,7 @@ class Config:
     poll_max_s: float
     backoff: float
     max_tokens: int
+    compile_max_tokens: int
     openai_base_url: str
     openai_model: str
     openai_timeout_s: float
@@ -73,6 +74,9 @@ def load_config(path: Path) -> Config:
     tokens = llm.get("max_tokens", 1024)
     if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
         raise BenchmarkError("Config max_tokens must be a positive integer")
+    compile_tokens = llm.get("compile_max_tokens", 3072)
+    if isinstance(compile_tokens, bool) or not isinstance(compile_tokens, int) or compile_tokens <= 0:
+        raise BenchmarkError("Config compile_max_tokens must be a positive integer")
     initial = _positive(runpod, "poll_initial_s", 1)
     maximum = _positive(runpod, "poll_max_s", 10)
     backoff = _positive(runpod, "backoff", 1.5)
@@ -84,7 +88,7 @@ def load_config(path: Path) -> Config:
         _string(stt, "model", "turbo"), _string(llm, "model", "any"),
         _positive(runpod, "gpu_hourly_usd", 0.58, zero=True),
         _positive(runpod, "timeout_s", 900), _positive(runpod, "request_timeout_s", 30),
-        initial, maximum, backoff, tokens,
+        initial, maximum, backoff, tokens, compile_tokens,
         validate_url(_string(openai, "base_url", "http://127.0.0.1:8080/v1")),
         _string(openai, "model", "local"), _positive(openai, "timeout_s", 300),
         output_root(Path(_string(output, "out_dir", str(DEFAULT_BUILD / "results")))),

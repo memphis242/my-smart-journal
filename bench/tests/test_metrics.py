@@ -43,6 +43,12 @@ def test_cleanup_realistic_and_reference():
     assert llm_metrics("cleanup", "um uh the", "")["content_preservation_recall"] == 1
 
 
+def test_key_fact_number_words_and_currency_forms():
+    metrics = llm_metrics("cleanup", "five sensors cost 18.50 dollars", "Five sensors cost $18.50.",
+                          key_facts=("5 sensors", "18.50 dollars"))
+    assert metrics["key_fact_recall"] == 1
+
+
 def test_json_validation_and_nested_grounding(empty_extraction):
     value = {**empty_extraction,
              "projects": ["Lantern"],

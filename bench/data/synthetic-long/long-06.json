@@ -1,0 +1,24 @@
+{
+  "id": "long-06",
+  "fictional": true,
+  "domain": "job-search",
+  "raw_transcript": "I had a fictional screening with recruiter Niko Vale about a platform role at made-up company Juniper Arc. I explained a migration project and was asked about incident response. I gave an example involving a 35 minute outage, but I am unsure whether I clearly described the rollback. The next interview may be November 6; nothing is scheduled yet. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too strong. The check happened in a local setup, and there are still questions about another configuration. I want to keep that distinction clear. There was a side conversation about next steps, and I wrote those down as plans rather than completed work. I have not promised a date, and I do not want the summary to imply that someone approved it. Numbers are from the small run I described, with the units and limits as recorded. I did not extrapolate them to users or production. If I repeat the check, I should save the command and environment alongside the result. I also corrected myself while talking: I first remembered Tuesday, no wait, Wednesday. The calendar note says Wednesday, so use that date. I may be missing a detail, and I would rather mark it uncertain than fill it in. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too strong. The check happened in a local setup, and there are still questions about another configuration. I want to keep that distinction clear. There was a side conversation about next steps, and I wrote those down as plans rather than completed work. I have not promised a date, and I do not want the summary to imply that someone approved it. Numbers are from the small run I described, with the units and limits as recorded. I did not extrapolate them to users or production. If I repeat the check, I should save the command and environment alongside the result. I also corrected myself while talking: I first remembered Tuesday, no wait, Wednesday. The calendar note says Wednesday, so use that date. I may be missing a detail, and I would rather mark it uncertain than fill it in. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's",
+  "reference_cleaned": "I had a fictional screening with recruiter Niko Vale about a platform role at made-up company Juniper Arc. I explained a migration project and was asked about incident response. I gave an example involving a 35 minute outage, but I am unsure whether I clearly described the rollback. The next interview may be November 6; nothing is scheduled yet.",
+  "key_facts": [
+    "Niko Vale",
+    "Juniper Arc",
+    "35 minutes",
+    "November 6",
+    "incident response",
+    "rollback",
+    "staging query",
+    "drafted graph",
+    "Ivo Penn",
+    "Nella Voss",
+    "local replay",
+    "not deployed",
+    "review",
+    "test harness",
+    "staging query"
+  ]
+}

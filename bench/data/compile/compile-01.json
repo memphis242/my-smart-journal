@@ -1,0 +1,41 @@
+{
+  "id": "compile-01",
+  "fictional": true,
+  "period": "2026-10",
+  "purpose": "monthly",
+  "entries": [
+    {
+      "date": "2026-10-02",
+      "text": "I worked with Ivo Penn on Cedar Metrics, a fictional Go service. We reproduced queue lag in a local replay and recorded 14 ms p95 over 20 minutes. The production cause remains unconfirmed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    },
+    {
+      "date": "2026-10-06",
+      "text": "Nella Voss reviewed the bounded retry proposal. I added a test for three retries and verified the test passes locally. We did not merge or deploy the change. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    },
+    {
+      "date": "2026-10-11",
+      "text": "I compared logs from two worker configurations. The second had fewer visible stalls in this sample, but we did not collect enough runs to claim an improvement. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    },
+    {
+      "date": "2026-10-17",
+      "text": "I documented the replay command and the 14 ms p95 observation. I planned to run a larger test on Friday, but the shared environment was unavailable. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    },
+    {
+      "date": "2026-10-26",
+      "text": "I summarized the open questions for Ivo and Nella. We still need production-like traffic and approval before any rollout; neither happened this month. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    }
+  ],
+  "key_facts": [
+    "Cedar Metrics",
+    "Go",
+    "14 ms p95",
+    "20 minutes",
+    "three retries",
+    "local replay"
+  ],
+  "not_accomplished": [
+    "deployed the change",
+    "confirmed production cause",
+    "integrated parser into CI"
+  ]
+}

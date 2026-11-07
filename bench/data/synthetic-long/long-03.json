@@ -1,0 +1,24 @@
+{
+  "id": "long-03",
+  "fictional": true,
+  "domain": "data",
+  "raw_transcript": "For fictional Orchard Ledger, I paired with Sera Dune and Oren Vale on a dbt model. The daily import had 2.4% duplicate rows across 18,000 records. A staging query reduced duplicates to 0.6% in a sample, but the backfill is only planned. We reviewed the SQL on Friday and did not change production. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too strong. The check happened in a local setup, and there are still questions about another configuration. I want to keep that distinction clear. There was a side conversation about next steps, and I wrote those down as plans rather than completed work. I have not promised a date, and I do not want the summary to imply that someone approved it. Numbers are from the small run I described, with the units and limits as recorded. I did not extrapolate them to users or production. If I repeat the check, I should save the command and environment alongside the result. I also corrected myself while talking: I first remembered Tuesday, no wait, Wednesday. The calendar note says Wednesday, so use that date. I may be missing a detail, and I would rather mark it uncertain than fill it in. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too strong. The check happened in a local setup, and there are still questions about another configuration. I want to keep that distinction clear. There was a side conversation about next steps, and I wrote those down as plans rather than completed work. I have not promised a date, and I do not want the summary to imply that someone approved it. Numbers are from the small run I described, with the units and limits as recorded. I did not extrapolate them to users or production. If I repeat the check, I should save the command and environment alongside the result. I also corrected myself while talking: I first remembered Tuesday, no wait, Wednesday. The calendar note says Wednesday, so use that date. I may be missing a detail, and I would rather mark it uncertain than fill it in. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too strong. The check happened in",
+  "reference_cleaned": "For fictional Orchard Ledger, I paired with Sera Dune and Oren Vale on a dbt model. The daily import had 2.4% duplicate rows across 18,000 records. A staging query reduced duplicates to 0.6% in a sample, but the backfill is only planned. We reviewed the SQL on Friday and did not change production.",
+  "key_facts": [
+    "Orchard Ledger",
+    "Sera Dune",
+    "Oren Vale",
+    "dbt",
+    "2.4%",
+    "18,000",
+    "0.6%",
+    "Friday",
+    "Ivo Penn",
+    "Nella Voss",
+    "local replay",
+    "not deployed",
+    "review",
+    "test harness",
+    "staging query"
+  ]
+}

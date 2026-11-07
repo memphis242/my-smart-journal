@@ -65,7 +65,7 @@ def _canonical_number(text: str) -> str:
 
 
 POSSESSIVE_RE: Final = re.compile(r"(?:'|\u2019)(?:s|ll|m|re|ve|d|t)$", re.IGNORECASE)
-SENTENCE_START_RE: Final = re.compile(r"(?:^|[.!?:;]\s+|\n\s*|[\"\u201c\u2018\[(]\s*)$")
+SENTENCE_START_RE: Final = re.compile(r"(?:(?:^|\n)\s*(?:[-*]|\d+\.)?\s*|[.!?:;]\s+|[\"\u201c\u2018\[(]\s*)$")
 
 
 def _unsupported_names(output: str, source_words: set[str]) -> set[str]:
@@ -143,7 +143,7 @@ def llm_metrics(task: str, source: str, output: str, reference: str | None = Non
     result = faithfulness_guard(source, output)
     if key_facts:
         output_terms = set(normalize(output).split())
-        missing_facts = [fact for fact in key_facts if not set(normalize(fact).split()) <= output_terms]
+        missing_facts = [fact for fact in key_facts if not _fact_present(fact, output)]
         result.update(missing_key_facts=missing_facts, key_fact_recall=1 - len(missing_facts) / len(key_facts))
     match task:
         case "cleanup":
@@ -163,6 +163,54 @@ def llm_metrics(task: str, source: str, output: str, reference: str | None = Non
             result.update(json_checks(output, REVIEW_SCHEMA))
             if result["schema_valid"]:
                 result["unsupported_claim_count"] = len(json.loads(output)["unsupported_claims"])
+    return result
+
+
+def _fact_present(fact: str, output: str) -> bool:
+    fact_terms = normalize(fact).split()
+    output_terms = normalize(output).split()
+    if set(fact_terms) <= set(output_terms):
+        return True
+    numeric = re.fullmatch(r"(\d+)(\s+\w+)?", fact.strip())
+    if numeric:
+        word = next((name for name, value in NUMBER_WORDS.items() if value == int(numeric.group(1))), None)
+        expected = [word, *normalize(numeric.group(2) or "").split()] if word else []
+        if expected and all(term in output_terms for term in expected):
+            return True
+    if "$" in fact:
+        amount = fact.replace("$", "").strip()
+        return amount in output and f"{amount} dollars" in normalize(output)
+    if fact.lower().endswith(" dollars"):
+        amount = fact[:-8].strip()
+        return f"${amount}" in output
+    return False
+
+
+def compile_metrics(output: str, item: Any, schema: Mapping[str, Any]) -> dict[str, Any]:
+    source = item.source
+    result = faithfulness_guard(source, output)
+    checks = json_checks(output, schema)
+    result.update(checks)
+    missing = [fact for fact in item.key_facts if not _fact_present(fact, output)]
+    result.update(missing_key_facts=missing, key_fact_recall=1 - len(missing) / len(item.key_facts) if item.key_facts else 1.0)
+    try:
+        value = json.loads(output)
+    except ValueError:
+        result.update(evidence_dates_valid=False, invalid_evidence_dates=[], not_accomplished_leaks=0)
+        return result
+    dates = {entry["date"] for entry in item.entries}
+    cited = [date for section in ("resume_bullets", "star_stories", "technical_topics") for row in value.get(section, []) for date in row.get("evidence_dates", [])]
+    invalid = sorted(set(cited) - dates)
+    result["evidence_dates_valid"] = not invalid
+    result["invalid_evidence_dates"] = invalid
+    claims = " ".join([row.get("text", "") for row in value.get("resume_bullets", [])] + [row.get("result", "") for row in value.get("star_stories", [])])
+    claim_terms = content_terms(claims)
+    leaks = 0
+    for phrase in item.not_accomplished:
+        phrase_terms = content_terms(phrase)
+        if phrase_terms and len(phrase_terms & claim_terms) / len(phrase_terms) >= .6:
+            leaks += 1
+    result["not_accomplished_leaks"] = leaks
     return result
 
 

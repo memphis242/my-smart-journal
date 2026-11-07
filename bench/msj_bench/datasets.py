@@ -20,6 +20,39 @@ class JournalItem:
     audio: Path | str | None = None
 
 
+@dataclass(frozen=True)
+class CompileItem:
+    id: str
+    period: str
+    purpose: str
+    entries: tuple[dict[str, str], ...]
+    key_facts: tuple[str, ...]
+    not_accomplished: tuple[str, ...]
+
+    @property
+    def source(self) -> str:
+        return "\n".join(f"{entry['date']}: {entry['text']}" for entry in self.entries)
+
+
+def load_compile_dataset(dataset: str | Path) -> tuple[CompileItem, ...]:
+    path = BENCH_ROOT / "data" / str(dataset) if str(dataset) == "compile" else Path(dataset)
+    files = sorted(path.glob("*.json")) if path.is_dir() else [path]
+    result: list[CompileItem] = []
+    for file in files:
+        data = json.loads(file.read_text(encoding="utf-8"))
+        records = data if isinstance(data, list) else [data]
+        for row in records:
+            entries = row.get("entries")
+            if not isinstance(entries, list) or not all(isinstance(e, dict) and isinstance(e.get("date"), str) and isinstance(e.get("text"), str) for e in entries):
+                raise BenchmarkError("Compile entries must contain date and text strings")
+            facts, unfinished = row.get("key_facts", []), row.get("not_accomplished", [])
+            if not isinstance(facts, list) or not all(isinstance(x, str) for x in facts) or not isinstance(unfinished, list) or not all(isinstance(x, str) for x in unfinished):
+                raise BenchmarkError("Compile key_facts and not_accomplished must be string lists")
+            result.append(CompileItem(_text(row.get("id"), "id"), _text(row.get("period"), "period"),
+                                      _text(row.get("purpose"), "purpose"), tuple(entries), tuple(facts), tuple(unfinished)))
+    return tuple(result)
+
+
 def _text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise BenchmarkError(f"Dataset field {field} must be a nonempty string")
@@ -56,7 +89,7 @@ def _json_items(path: Path) -> list[JournalItem]:
 
 
 def load_dataset(dataset: str | Path, *, mode: str = "llm") -> tuple[JournalItem, ...]:
-    path = BENCH_ROOT / "data" / str(dataset) if str(dataset) in {"synthetic", "user"} else Path(dataset)
+    path = BENCH_ROOT / "data" / str(dataset) if str(dataset) in {"synthetic", "synthetic-long", "compile", "user"} else Path(dataset)
     if not path.exists():
         raise BenchmarkError(f"Dataset does not exist: {path}")
     items: list[JournalItem] = []

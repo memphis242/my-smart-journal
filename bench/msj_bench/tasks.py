@@ -8,7 +8,7 @@ from .backends import Message
 from .datasets import BENCH_ROOT
 from .runpod_client import BenchmarkError
 
-TASK_NAMES: Final = ("cleanup", "summarize", "extract", "review")
+TASK_NAMES: Final = ("cleanup", "summarize", "extract", "review", "compile")
 REVIEW_SCHEMA: Final[dict[str, Any]] = {
     "type": "object", "additionalProperties": False,
     "properties": {"unsupported_claims": {"type": "array", "items": {"type": "string"}}},
@@ -25,12 +25,18 @@ def extraction_schema() -> dict[str, Any]:
     return json.loads(resource_path("schemas", "extraction.schema.json").read_text(encoding="utf-8"))
 
 
+def compile_schema() -> dict[str, Any]:
+    return json.loads(resource_path("schemas", "compile.schema.json").read_text(encoding="utf-8"))
+
+
 def task_schema(task: str) -> dict[str, Any] | None:
     match task:
         case "extract":
             return extraction_schema()
         case "review":
             return dict(REVIEW_SCHEMA)
+        case "compile":
+            return compile_schema()
         case _:
             return None
 

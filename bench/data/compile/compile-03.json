@@ -1,0 +1,41 @@
+{
+  "id": "compile-03",
+  "fictional": true,
+  "period": "2026-10",
+  "purpose": "job-search",
+  "entries": [
+    {
+      "date": "2026-10-04",
+      "text": "I spoke with fictional recruiter Niko Vale about a platform engineering role at fictional Juniper Arc. The screening covered incident response and migration work. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    },
+    {
+      "date": "2026-10-09",
+      "text": "I prepared an example about a 35 minute outage and described the rollback I coordinated. In my notes I marked the customer impact details as uncertain. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    },
+    {
+      "date": "2026-10-15",
+      "text": "I revised my resume to clarify that the migration completed for one internal service. I did not add a percentage because I could not verify one. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    },
+    {
+      "date": "2026-10-21",
+      "text": "I practiced a technical explanation with fictional friend Sera Dune. She said the sequence was clear, but I still need to explain the monitoring signals more precisely. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    },
+    {
+      "date": "2026-10-29",
+      "text": "I may have another interview in November, but no date is scheduled. I planned to ask Niko for a timeline and have not sent that message yet. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed. I recorded the observation separately from the next step. The measurement applies only to this check, and the follow-up remains open until it is completed and reviewed."
+    }
+  ],
+  "key_facts": [
+    "Niko Vale",
+    "Juniper Arc",
+    "35 minute outage",
+    "internal service",
+    "migration",
+    "monitoring signals"
+  ],
+  "not_accomplished": [
+    "scheduled interview",
+    "verified customer impact",
+    "sent recruiter timeline request"
+  ]
+}

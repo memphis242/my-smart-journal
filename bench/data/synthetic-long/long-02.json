@@ -1,0 +1,24 @@
+{
+  "id": "long-02",
+  "fictional": true,
+  "domain": "embedded",
+  "raw_transcript": "On the fictional Harbor Sensor board, Jo Rell and Tavi Moss helped me inspect the SPI capture. It ran at 4 MHz and showed 3 dropped frames in 900 samples. I changed a test harness timeout from 80 ms to 120 ms and reproduced the issue twice; that is diagnostic evidence, not a fix. I have not merged anything. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too strong. The check happened in a local setup, and there are still questions about another configuration. I want to keep that distinction clear. There was a side conversation about next steps, and I wrote those down as plans rather than completed work. I have not promised a date, and I do not want the summary to imply that someone approved it. Numbers are from the small run I described, with the units and limits as recorded. I did not extrapolate them to users or production. If I repeat the check, I should save the command and environment alongside the result. I also corrected myself while talking: I first remembered Tuesday, no wait, Wednesday. The calendar note says Wednesday, so use that date. I may be missing a detail, and I would rather mark it uncertain than fill it in. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's too strong. The check happened in a local setup, and there are still questions about another configuration. I want to keep that distinction clear. There was a side conversation about next steps, and I wrote those down as plans rather than completed work. I have not promised a date, and I do not want the summary to imply that someone approved it. Numbers are from the small run I described, with the units and limits as recorded. I did not extrapolate them to users or production. If I repeat the check, I should save the command and environment alongside the result. I also corrected myself while talking: I first remembered Tuesday, no wait, Wednesday. The calendar note says Wednesday, so use that date. I may be missing a detail, and I would rather mark it uncertain than fill it in. Um, let me back up a little, because I may be mixing what I saw with what I think caused it. I wrote the observation down first, then checked the notes with the people who were there. I started to say that this was finished, but that's",
+  "reference_cleaned": "On the fictional Harbor Sensor board, Jo Rell and Tavi Moss helped me inspect the SPI capture. It ran at 4 MHz and showed 3 dropped frames in 900 samples. I changed a test harness timeout from 80 ms to 120 ms and reproduced the issue twice; that is diagnostic evidence, not a fix. I have not merged anything.",
+  "key_facts": [
+    "Harbor Sensor",
+    "Jo Rell",
+    "Tavi Moss",
+    "SPI",
+    "4 MHz",
+    "3",
+    "900",
+    "80 ms",
+    "120 ms",
+    "Nella Voss",
+    "local replay",
+    "not deployed",
+    "review",
+    "test harness",
+    "staging query"
+  ]
+}
