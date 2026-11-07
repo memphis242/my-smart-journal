@@ -98,6 +98,89 @@ def test_http_413_is_nonretryable_request_size_error(
     assert not raised.value.retryable
 
 
+def test_runpod_paused_error_preserves_actionable_control_plane_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RUNPOD_API_KEY", "secret-must-not-appear")
+    body = {
+        "status": 409,
+        "title": "Conflict",
+        "detail": "Endpoint is paused (max_workers=0). Set max_workers > 0 to accept work.",
+        "code": "ENDPOINT_PAUSED",
+    }
+
+    transport = httpx.MockTransport(lambda _: httpx.Response(409, json=body))
+    with httpx.Client(transport=transport) as client:
+        with pytest.raises(ProviderError) as raised:
+            InferenceProvider(settings(), client).generate(
+                "cleanup", TaskRoute(provider="runpod", endpoint_id="ep-17"), "private journal"
+            )
+    message = str(raised.value)
+    assert "HTTP 409" in message
+    assert "ENDPOINT_PAUSED" in message
+    assert body["detail"] in message
+    assert "max workers >= 1" in message
+    assert "ep-17" in message
+    assert "private journal" not in message
+    assert "secret-must-not-appear" not in message
+    assert raised.value.retryable
+    assert not raised.value.transient
+
+
+def test_http_error_body_is_bounded_and_non_json_502_is_transient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-only")
+    response_body = b"x" * (1024 * 1024)
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda _: httpx.Response(502, content=response_body))
+    ) as client:
+        with pytest.raises(ProviderError) as raised:
+            InferenceProvider(settings(), client).generate(
+                "cleanup", TaskRoute(provider="runpod", endpoint_id="ep"), "source"
+            )
+    assert "HTTP 502" in str(raised.value)
+    assert raised.value.retryable
+    assert raised.value.transient
+    assert len(str(raised.value)) < 500
+
+
+def test_http_401_is_nonretryable_and_names_key_without_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RUNPOD_API_KEY", "secret-value")
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(401))) as client:
+        with pytest.raises(ProviderError) as raised:
+            InferenceProvider(settings(), client).generate(
+                "cleanup", TaskRoute(provider="runpod", endpoint_id="ep"), "source"
+            )
+    assert "RUNPOD_API_KEY" in str(raised.value)
+    assert "secret-value" not in str(raised.value)
+    assert not raised.value.retryable
+
+
+def test_openai_http_errors_include_endpoint_and_provider_fields() -> None:
+    body = {"error": "quota exceeded", "code": "QUOTA_LIMIT"}
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json=body)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderError) as raised:
+            InferenceProvider(
+                settings(), client, openai_transport=httpx.MockTransport(handler)
+            ).generate(
+                "cleanup",
+                TaskRoute(provider="openai", base_url="http://local/v1"),
+                "source",
+            )
+    assert "HTTP 429" in str(raised.value)
+    assert "QUOTA_LIMIT" in str(raised.value)
+    assert "quota exceeded" in str(raised.value)
+    assert "http://local/v1" in str(raised.value)
+    assert raised.value.transient
+
+
 def test_status_transient_failures_reset_after_success(monkeypatch: pytest.MonkeyPatch) -> None:
     from msj import providers
 

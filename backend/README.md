@@ -28,6 +28,10 @@ RunPod audio is sent as base64 in JSON. `runpod_max_payload_bytes` (default `950
 
 `runpod_status_max_failures` (default `3`, environment `MSJ_RUNPOD_STATUS_MAX_FAILURES`) is the number of consecutive transient `/status` failures tolerated before cancellation; `0` cancels on the first failure. A successful status response resets the counter. Transport failures and HTTP 408, 429, and 5xx responses are transient; invalid responses and other HTTP errors fail immediately. A completed job is accepted even when its status arrives after the polling deadline. OpenAI-compatible requests have one total `provider_timeout_s` deadline covering upload, response headers, and response-body reads; expiry cancels the async request before its worker lease can expire.
 
+## Provider errors
+
+Provider HTTP failures appear in the job's `last_error` with the HTTP status, configured endpoint identifier, and bounded provider code or detail when supplied. Authentication errors name the relevant environment variable without exposing its value. For RunPod `ENDPOINT_PAUSED`, set the endpoint's maximum workers to at least 1; if it already shows 1 or more, re-save the workers setting to clear a known scaler state issue. That condition retries within the normal bounded job attempt budget, then remains visible as a failed job. HTTP 401, 403, 404, and 413 errors do not retry automatically; rate limits and provider-side 5xx errors use bounded retries.
+
 ## Run
 
 Create a single-user API token once. The displayed bearer token cannot be recovered later; only its scrypt hash is stored.

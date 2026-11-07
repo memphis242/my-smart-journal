@@ -124,6 +124,48 @@ def test_oversized_runpod_audio_fails_once_without_submission(
     assert requests == []
 
 
+def test_paused_runpod_error_retries_then_remains_visible_in_job_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routes = {kind: TaskRoute(provider="fake") for kind in TASKS}
+    routes["cleanup"] = TaskRoute(provider="runpod", endpoint_id="paused-endpoint", model="model")
+    settings = Settings(data_dir=tmp_path, tasks=routes, max_attempts=2)
+    app = create_app(settings)
+    headers = {"Authorization": "Bearer " + create_token(app.state.store)}
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-key-not-for-errors")
+    paused_detail = "Endpoint is paused (max_workers=0). Set max_workers > 0 to accept work."
+    response_body = {
+        "status": 409,
+        "title": "Conflict",
+        "detail": paused_detail,
+        "code": "ENDPOINT_PAUSED",
+    }
+    transport = httpx.MockTransport(lambda _: httpx.Response(409, json=response_body))
+    with httpx.Client(transport=transport) as http:
+        app.state.runner._provider = InferenceProvider(settings, http)
+        with TestClient(app) as client:
+            entry = client.post("/api/v1/entries", headers=headers, json={"text": "private"}).json()
+            assert client.post("/api/v1/batches/run", headers=headers).json()["failed"] == 1
+            job = next(
+                item for item in client.get("/api/v1/jobs", headers=headers).json()
+                if item["entry_id"] == entry["id"] and item["kind"] == "cleanup"
+            )
+            assert job["status"] == "queued"
+            assert "ENDPOINT_PAUSED" in job["last_error"]
+            assert paused_detail in job["last_error"]
+            with app.state.store.connect() as db:
+                _ = db.execute("UPDATE jobs SET not_before=0 WHERE id=?", (job["id"],))
+            assert client.post("/api/v1/batches/run", headers=headers).json()["failed"] == 1
+            final_job = next(
+                item for item in client.get("/api/v1/jobs", headers=headers).json()
+                if item["id"] == job["id"]
+            )
+            assert final_job["status"] == "failed"
+            assert "ENDPOINT_PAUSED" in final_job["last_error"]
+            assert "max workers >= 1" in final_job["last_error"]
+            assert "test-key-not-for-errors" not in final_job["last_error"]
+
+
 def test_revising_a_failed_entry_supersedes_its_terminal_failure(tmp_path: Path) -> None:
     routes = {kind: TaskRoute(provider="fake") for kind in TASKS}
     routes["cleanup"] = TaskRoute(provider="fake", expect_model="real-model")

@@ -6,8 +6,10 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import time
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -18,6 +20,10 @@ from urllib.parse import quote
 import httpx
 
 from .config import Settings, TaskKind, TaskRoute
+
+_logger = logging.getLogger(__name__)
+_ERROR_BODY_LIMIT = 8 * 1024
+_ERROR_FIELD_LIMIT = 300
 
 
 class Message(TypedDict):
@@ -126,7 +132,9 @@ def revision_messages(
     )
 
 
-def _request_json(http: httpx.Client, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+def _request_json(
+    http: httpx.Client, method: str, url: str, *, endpoint_id: str, **kwargs: Any
+) -> dict[str, Any]:
     try:
         response = http.request(method, url, **kwargs)
     except httpx.HTTPError:
@@ -135,7 +143,7 @@ def _request_json(http: httpx.Client, method: str, url: str, **kwargs: Any) -> d
             transient=True,
         ) from None
     if not response.is_success:
-        raise _http_status_error(response.status_code)
+        raise _http_status_error(response.status_code, response, endpoint_id)
     try:
         value: Any = response.json()
     except ValueError, RecursionError:
@@ -351,6 +359,7 @@ class InferenceProvider:
             self._http,
             "POST",
             f"{endpoint}/run",
+            endpoint_id=route.endpoint_id or "",
             timeout=min(30, self._settings.provider_timeout_s),
             **submission,
         )
@@ -368,6 +377,7 @@ class InferenceProvider:
                     self._http,
                     "POST",
                     f"{endpoint}/cancel/{quote(job_id, safe='')}",
+                    endpoint_id=route.endpoint_id or "",
                     headers=headers,
                     timeout=min(30, self._settings.provider_timeout_s),
                 )
@@ -410,7 +420,12 @@ class InferenceProvider:
                     continue
                 try:
                     state = _request_json(
-                        self._http, "GET", status_url, headers=headers, timeout=min(30, remaining)
+                        self._http,
+                        "GET",
+                        status_url,
+                        endpoint_id=route.endpoint_id or "",
+                        headers=headers,
+                        timeout=min(30, remaining),
                     )
                     status_failures = 0
                 except ProviderError as exc:
@@ -540,7 +555,9 @@ class InferenceProvider:
                             f"{base}/chat/completions", headers=headers, json=body
                         )
                     if not response.is_success:
-                        raise _http_status_error(response.status_code)
+                        raise _http_status_error(
+                            response.status_code, response, route.endpoint_id or route.base_url
+                        )
                     value: Any = response.json()
         except httpx.HTTPError as exc:
             if isinstance(
@@ -571,13 +588,84 @@ class InferenceProvider:
         return _parse_chat(value)
 
 
-def _http_status_error(status_code: int) -> ProviderError:
-    if status_code == 413:
-        return SafeProviderError(
-            "Provider request too large (HTTP 413); reduce audio or text size",
-            retryable=False,
+def _clean_provider_field(value: str) -> str:
+    cleaned = "".join(char for char in value if not unicodedata.category(char).startswith("C"))
+    return cleaned[:_ERROR_FIELD_LIMIT].strip()
+
+
+def _provider_error_fields(response: httpx.Response) -> dict[str, str]:
+    try:
+        value: Any = json.loads(response.content[:_ERROR_BODY_LIMIT])
+    except (ValueError, RecursionError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    fields: dict[str, str] = {}
+    for name in ("code", "title", "detail", "error", "message"):
+        raw = value.get(name)
+        if isinstance(raw, str):
+            text = _clean_provider_field(raw)
+            if text:
+                fields[name] = text
+    return fields
+
+
+_HTTP_ERROR_GUIDANCE = {
+    401: "API key rejected; check {key_name} is set and valid",
+    403: "API key rejected; check {key_name} is set and valid",
+    404: "endpoint or job not found; check the configured endpoint id",
+    409: "conflict",
+    413: "request too large (payload too large); reduce audio or text size",
+    429: "rate limited; wait before retrying",
+}
+
+
+def _http_status_error(
+    status_code: int, response: httpx.Response, endpoint_id: str
+) -> SafeProviderError:
+    fields = _provider_error_fields(response)
+    code = fields.get("code")
+    detail = fields.get("detail") or fields.get("error") or fields.get("message")
+    title = fields.get("title")
+    if status_code == 409 and code == "ENDPOINT_PAUSED":
+        summary = (
+            "endpoint paused and not accepting work; set max workers >= 1 in RunPod; "
+            "if it already shows >= 1, re-save the workers setting"
         )
+    else:
+        summary = _HTTP_ERROR_GUIDANCE.get(
+            status_code,
+            "provider-side error" if status_code >= 500 else "provider request failed",
+        )
+    if status_code in {401, 403}:
+        key_name = (
+            "RUNPOD_API_KEY"
+            if "api.runpod.ai" in str(response.request.url)
+            else "OPENAI_API_KEY"
+        )
+        summary = summary.format(key_name=key_name)
+    provider_info = "; ".join(part for part in (title, detail) if part)
+    suffix = "".join(
+        part
+        for part in (
+            f"; provider code {code}" if code else "",
+            f"; provider detail: {provider_info}" if provider_info else "",
+        )
+    )
+    _logger.warning(
+        "Provider HTTP error endpoint_id=%s status=%d code=%s detail=%s",
+        endpoint_id,
+        status_code,
+        code or "-",
+        detail or "-",
+    )
+    retryable = status_code not in {401, 403, 404, 413}
+    transient = status_code in {408, 429} or status_code >= 500
+    if status_code == 409 and code == "ENDPOINT_PAUSED":
+        retryable = True
+        transient = False
     return SafeProviderError(
-        f"Provider returned HTTP {status_code}; check credentials and endpoint configuration",
-        transient=status_code in {408, 429} or status_code >= 500,
+        f"HTTP {status_code} for endpoint {endpoint_id}: {summary}{suffix}",
+        retryable=retryable,
+        transient=transient,
     )
