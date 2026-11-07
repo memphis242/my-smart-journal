@@ -20,7 +20,7 @@ from .datasets import BENCH_ROOT, JournalItem, load_dataset, load_compile_datase
 from .metrics import compile_metrics, llm_metrics, performance_metrics, stt_metrics
 from .report import compare_runs, comparison_table, summarize, write_json, write_rating_sheets
 from .runpod_client import BenchmarkError, RunPodClient
-from .tasks import TASK_NAMES, messages_for, resource_path, task_schema
+from .tasks import TASK_NAMES, compile_schema_for, messages_for, resource_path, task_schema
 
 
 def parser() -> argparse.ArgumentParser:
@@ -152,7 +152,7 @@ def benchmark(args: argparse.Namespace) -> int:
                                     record["review_candidate_origin"] = "cleanup" if "cleanup" in tasks else "reference_cleaned"
                                 prompt_source = json.dumps({"period": item.period, "purpose": item.purpose, "entries": list(item.entries)}, ensure_ascii=False) if task == "compile" else item.raw_transcript
                                 generation = llm.generate(messages_for(task, prompt_source, candidate=candidate),
-                                                          max_tokens=max_tokens, schema=task_schema(task))
+                                                          max_tokens=max_tokens, schema=compile_schema_for([e["date"] for e in item.entries]) if task == "compile" else task_schema(task))
                                 if args.expect_model and args.expect_model.casefold() not in (generation.model or "").casefold():
                                     raise BenchmarkError(f"Server model {generation.model!r} does not match "
                                                          f"--expect-model {args.expect_model!r} (stale worker?)")

@@ -52,3 +52,12 @@ def test_negated_claims_do_not_leak_and_labels_are_not_names():
     assert "Zyxwv" not in metrics["unsupported_names"]
     affirmative = dict(output, resume_bullets=[{"text": f"Successfully {phrase}.", "evidence_dates": []}])
     assert compile_metrics(json.dumps(affirmative), item, compile_schema())["not_accomplished_leaks"] >= 1
+
+
+def test_compile_schema_restricts_evidence_dates():
+    from jsonschema import Draft202012Validator
+    from msj_bench.tasks import compile_schema_for
+    schema = compile_schema_for(["2026-10-02", "2026-10-06"])
+    bad = {"resume_bullets": [{"text": "x", "evidence_dates": ["2026-9-21"]}], "star_stories": [],
+           "technical_topics": [], "open_threads": []}
+    assert list(Draft202012Validator(schema).iter_errors(bad))

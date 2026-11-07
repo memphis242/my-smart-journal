@@ -29,6 +29,16 @@ def compile_schema() -> dict[str, Any]:
     return json.loads(resource_path("schemas", "compile.schema.json").read_text(encoding="utf-8"))
 
 
+def compile_schema_for(dates: list[str]) -> dict[str, Any]:
+    """Compile schema whose evidence_dates may only name the given entry dates (enforced by grammar decoding)."""
+    assert dates, "a compile item always has dated entries"
+    schema = compile_schema()
+    allowed = sorted(set(dates))
+    for section in ("resume_bullets", "star_stories", "technical_topics"):
+        schema["properties"][section]["items"]["properties"]["evidence_dates"]["items"] = {"type": "string", "enum": allowed}
+    return schema
+
+
 def task_schema(task: str) -> dict[str, Any] | None:
     match task:
         case "extract":
