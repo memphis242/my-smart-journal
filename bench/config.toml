@@ -17,7 +17,7 @@ model = "turbo"
 endpoint_name = "msj-bench-llm"
 endpoint_id = "rcybvy10rvnu2q"
 model = "any"
-max_tokens = 1024
+max_tokens = 3072
 compile_max_tokens = 3072
 
 [openai]

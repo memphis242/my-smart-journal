@@ -79,3 +79,17 @@ Compile prompt (3 sets):
 - Weights were staged with a short-lived CPU pod (huggingface_hub with Xet disabled; 8 GB RAM was OOM-killed with Xet) into llama.cpp's HF cache layout; llama.cpp used them without re-downloading.
 - Large weights must be staged on the volume ahead of time rather than downloaded by a serverless worker on first request.
 - The compile leak metric over-matches shared words ("6 hours to 40 minutes" vs. trap "4 hours to 40 minutes"); needs a numeric-aware check.
+
+### Extraction prompt v2 (Gemma-4-26B-A4B)
+
+v1 read "accomplishments with metrics" narrowly: it left `metrics` empty and skipped small personal actions, so most stated quantities were lost. v2 asks for exhaustive extraction, counts small personal actions as accomplishments, lists what belongs in `metrics` with examples, forbids empty `metrics` when a quantity is stated, and puts planned work with deadlines in `tags`.
+
+| Model / prompt | Short key facts (12) | Long key facts (6) | Schema valid | Flags |
+|---|---|---|---|---|
+| 26B-A4B, extract v1 | 0.70 | - | 1.00 | 0 |
+| Qwen3.5-9B, extract v1 | 0.86 | - | 1.00 | 0 |
+| **26B-A4B, extract v2** | **0.97** | **0.90** | 1.00 | 0 |
+
+- Long-entry extractions need 730-1280 output tokens; the bench default `max_tokens` is now 3072 (1024 truncated 2 of 6). The backend default is 4096.
+- About $0.0017 per short entry and $0.003 per long entry for extraction.
+- Decision: Gemma-4-26B-A4B for summary, extraction, review and compile; Phi-4-mini for cleanup.
