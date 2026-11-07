@@ -72,8 +72,10 @@ Compile prompt (3 sets):
 | Gemma-4-E2B Q8_0 (baseline) | 0.81 | 0.79 | 0.79 | 0.077 | 0.0012 | 81 |
 | Gemma-4-E4B Q8_0 | 0.65 | 0.64 | 0.85 | 0.055 | 0.0020 | 50 |
 | Qwen3.5-9B Q8_0 | **0.93** | **0.86** | 0.72 | 0.11 | 0.0023 | 37 |
-| Gemma-4-26B-A4B UD-Q4_K_XL | not run: 17 GB cold download never finished; worker containers were stopped every ~8.5 min during startup |
+| Gemma-4-26B-A4B UD-Q4_K_XL (24 GB L4) | **0.95** | 0.70 | **0.83** | 0.071 | 0.0021 | 42 |
 
 - E4B compresses long entries to 27% and drops specifics; one compile bullet inverted a latency regression into a "reduction".
+- 26B-A4B (MoE, ~4B active): best long summary and compile recall, short summary recall 0.98 at 81% length, cleanup preservation 0.94; extraction recall is lower than Qwen. Its 2 compile "leaks" and all flags are metric false positives ("minus 10" vs "-10", "52 percent" vs "52%", "merged in 2.5.0" vs trap "released 2.5.0", corrected "6 hours" vs trap "4 hours"). Cold start from the staged volume took ~6 min (17 GB read from the network volume).
+- Weights were staged with a short-lived CPU pod (huggingface_hub with Xet disabled; 8 GB RAM was OOM-killed with Xet) into llama.cpp's HF cache layout; llama.cpp used them without re-downloading.
 - Large weights must be staged on the volume ahead of time rather than downloaded by a serverless worker on first request.
 - The compile leak metric over-matches shared words ("6 hours to 40 minutes" vs. trap "4 hours to 40 minutes"); needs a numeric-aware check.
