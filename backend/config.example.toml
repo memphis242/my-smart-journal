@@ -1,0 +1,47 @@
+# Copy this file outside the source checkout and set MSJ_CONFIG_FILE to its path.
+# Set RUNPOD_API_KEY in the process environment; never put credentials here.
+
+batch_interval_s = 86400
+max_attempts = 3
+retry_base_s = 30
+provider_timeout_s = 900
+lease_s = 1200
+poll_initial_s = 1
+poll_max_s = 10
+runpod_max_payload_bytes = 9500000
+# Tolerate this many consecutive transient status failures; 0 disables tolerance.
+runpod_status_max_failures = 3
+
+[review]
+max_turns = 3
+enabled_for = ["cleanup", "summarize", "extract"]
+
+[tasks.transcribe]
+provider = "runpod"
+endpoint_id = "your-whisper-endpoint-id"
+model = "turbo"
+expect_model = "large-v3-turbo"
+
+[tasks.cleanup]
+provider = "runpod"
+endpoint_id = "your-phi-endpoint-id"
+model = "any"
+expect_model = "Phi-4-mini"
+
+[tasks.review]
+provider = "runpod"
+endpoint_id = "your-gemma-endpoint-id"
+model = "any"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
+
+[tasks.summarize]
+provider = "runpod"
+endpoint_id = "your-gemma-endpoint-id"
+model = "any"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
+
+[tasks.extract]
+provider = "runpod"
+endpoint_id = "your-gemma-endpoint-id"
+model = "any"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
