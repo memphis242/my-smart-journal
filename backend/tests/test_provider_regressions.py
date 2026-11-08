@@ -118,7 +118,7 @@ def test_runpod_paused_error_preserves_actionable_control_plane_detail(
     message = str(raised.value)
     assert "HTTP 409" in message
     assert "ENDPOINT_PAUSED" in message
-    assert body["detail"] in message
+    assert body["detail"] not in message
     assert "max workers >= 1" in message
     assert "ep-17" in message
     assert "private journal" not in message
@@ -159,7 +159,28 @@ def test_http_401_is_nonretryable_and_names_key_without_value(
     assert not raised.value.retryable
 
 
-def test_openai_http_errors_include_endpoint_and_provider_fields() -> None:
+def test_http_401_uses_route_provider_kind_for_credential_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("RUNPOD_API_KEY", "runpod-secret")
+    transport = httpx.MockTransport(lambda _: httpx.Response(401))
+    with httpx.Client(transport=transport) as client:
+        adapter = InferenceProvider(settings(), client, openai_transport=transport)
+        with pytest.raises(ProviderError) as raised:
+            adapter.generate(
+                "cleanup",
+                TaskRoute(provider="openai", base_url="https://api.runpod.ai/v2/local/v1"),
+                "source",
+            )
+    message = str(raised.value)
+    assert "OPENAI_API_KEY" in message
+    assert "RUNPOD_API_KEY" not in message
+    assert "openai-secret" not in message
+    assert "runpod-secret" not in message
+
+
+def test_openai_http_errors_include_endpoint_and_allowlisted_code() -> None:
     body = {"error": "quota exceeded", "code": "QUOTA_LIMIT"}
 
     def handler(_: httpx.Request) -> httpx.Response:
@@ -176,9 +197,42 @@ def test_openai_http_errors_include_endpoint_and_provider_fields() -> None:
             )
     assert "HTTP 429" in str(raised.value)
     assert "QUOTA_LIMIT" in str(raised.value)
-    assert "quota exceeded" in str(raised.value)
+    assert "quota exceeded" not in str(raised.value)
     assert "http://local/v1" in str(raised.value)
     assert raised.value.transient
+
+
+def test_provider_echoed_journal_content_and_credentials_are_never_logged_or_returned(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    journal_text = "private-journal-echo-9f71"
+    credential = "secret-provider-credential-cd21"
+    monkeypatch.setenv("OPENAI_API_KEY", credential)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={
+                "code": journal_text,
+                "detail": f"Rejected content: {journal_text}; credential={credential}",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        provider = InferenceProvider(settings(), client, openai_transport=transport)
+        with pytest.raises(ProviderError) as raised:
+            provider.generate(
+                "cleanup",
+                TaskRoute(provider="openai", base_url="http://local/v1"),
+                journal_text,
+            )
+    diagnostics = str(raised.value) + caplog.text
+    assert "HTTP 403" in str(raised.value)
+    assert "OPENAI_API_KEY" in str(raised.value)
+    assert journal_text not in diagnostics
+    assert credential not in diagnostics
 
 
 def test_status_transient_failures_reset_after_success(monkeypatch: pytest.MonkeyPatch) -> None:

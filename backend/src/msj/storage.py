@@ -9,17 +9,19 @@ import logging
 import os
 import sqlite3
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from importlib.resources import files
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from uuid import uuid4
 
 from .config import Settings, TaskRoute
+from .ownership import OwnerIdentity
 
 _logger = logging.getLogger(__name__)
+_SEARCH_PROJECTION_MIGRATION: Final = "008_final_search_projection.sql"
 
 
 class NotFound(ValueError):
@@ -28,6 +30,17 @@ class NotFound(ValueError):
 
 class Conflict(ValueError):
     """The requested transition is not valid for the resource's state."""
+
+
+class AudioCleanupPending(RuntimeError):
+    """Audio creation failed and removal of its untracked file is still pending."""
+
+    def __init__(self, filename: str, errno: int | None) -> None:
+        self.filename = filename
+        self.errno = errno
+        super().__init__(
+            f"Audio creation failed; cleanup remains pending for {filename} (errno {errno})."
+        )
 
 
 def timestamp() -> str:
@@ -70,6 +83,7 @@ class Store:
             )
             applied = {row[0] for row in db.execute("SELECT version FROM schema_migrations")}
             resources = files("msj").joinpath("resources/migrations")
+            rebuild_search = False
             for resource in sorted(resources.iterdir(), key=lambda path: path.name):
                 if resource.name.endswith(".sql") and resource.name not in applied:
                     # Execute complete statements without executescript's implicit commit.
@@ -81,8 +95,17 @@ class Store:
                             statement = ""
                     assert not statement.strip()
                     _ = db.execute("INSERT INTO schema_migrations VALUES (?)", (resource.name,))
+                    if resource.name == _SEARCH_PROJECTION_MIGRATION:
+                        rebuild_search = True
             self._reconcile_review_sessions(db)
-        self._drain_deletions()
+            from .embedding import EmbeddingService
+
+            EmbeddingService(self, self.settings).reconcile(db)
+            if rebuild_search:
+                entry_ids = [row[0] for row in db.execute("SELECT id FROM entries")]
+                for entry_id in entry_ids:
+                    self._refresh_search(db, entry_id)
+        _ = self._drain_deletions()
 
     def _reconcile_review_sessions(self, db: sqlite3.Connection) -> None:
         rows = db.execute(
@@ -156,9 +179,71 @@ class Store:
                     {"entry_id": session["entry_id"], "revision": session["revision"]},
                     str(gate["id"]),
                 )
+        self._invalidate_outputs_behind_cleanup_review(db)
+
+    def _invalidate_outputs_behind_cleanup_review(self, db: sqlite3.Connection) -> None:
+        """Requeue published outputs when a newly pending cleanup review can change them."""
+        entries = db.execute(
+            "SELECT s.entry_id,s.revision FROM review_sessions s "
+            "WHERE s.target='cleanup' AND s.status='pending' "
+            "AND EXISTS (SELECT 1 FROM jobs j WHERE j.entry_id=s.entry_id "
+            "AND j.revision=s.revision AND j.kind='cleanup' AND j.status='done') "
+            "AND EXISTS (SELECT 1 FROM jobs j WHERE j.entry_id=s.entry_id "
+            "AND j.revision=s.revision AND j.kind IN ('summarize','extract') "
+            "AND j.status='done')"
+        ).fetchall()
+        for entry in entries:
+            entry_id, revision = str(entry["entry_id"]), int(entry["revision"])
+            cleaned = self._find_source_id(
+                db,
+                {"entry_id": entry_id, "revision": revision},
+                "summarize",
+            )
+            _ = db.execute(
+                "UPDATE jobs SET status='queued',attempts=0,last_error=NULL,finished_at=NULL,"
+                "not_before=0,lease_until=NULL,claim_token=NULL,claim_protocol=0 "
+                "WHERE entry_id=? AND revision=? AND target IN ('summarize','extract') "
+                "AND status IN ('done','failed','superseded')",
+                (entry_id, revision),
+            )
+            _ = db.execute(
+                "DELETE FROM jobs WHERE entry_id=? AND revision=? "
+                "AND kind IN ('review','revise') AND target IN ('summarize','extract')",
+                (entry_id, revision),
+            )
+            gate = db.execute(
+                "SELECT id FROM jobs WHERE entry_id=? AND revision=? AND target='cleanup' "
+                "AND kind IN ('review','revise') AND status IN ('queued','running','failed') "
+                "ORDER BY turn DESC,created_at DESC LIMIT 1",
+                (entry_id, revision),
+            ).fetchone()
+            if gate is not None:
+                self._gate_cleanup_children(
+                    db,
+                    {"entry_id": entry_id, "revision": revision},
+                    str(gate["id"]),
+                )
+            _ = db.execute(
+                "UPDATE review_sessions SET status='pending',source_artifact_id=?,"
+                "candidate_artifact_id=NULL,final_artifact_id=NULL,turns_used=0,"
+                "remaining_claims='[]',producer_route=NULL WHERE entry_id=? AND revision=? "
+                "AND target IN ('summarize','extract')",
+                (cleaned, entry_id, revision),
+            )
+            _ = db.execute(
+                "DELETE FROM embeddings WHERE entry_id=? AND revision=?", (entry_id, revision)
+            )
+            _ = db.execute(
+                "UPDATE jobs SET status='queued',attempts=0,last_error=NULL,finished_at=NULL,"
+                "not_before=0,lease_until=NULL,claim_token=NULL,claim_protocol=0 "
+                "WHERE entry_id=? AND revision=? AND kind='embed' "
+                "AND status IN ('done','failed','superseded')",
+                (entry_id, revision),
+            )
+            self._refresh_search(db, entry_id)
 
     @staticmethod
-    def _find_source_id(db: sqlite3.Connection, job: sqlite3.Row, target: str) -> str | None:
+    def _find_source_id(db: sqlite3.Connection, job: Mapping[str, Any], target: str) -> str | None:
         kinds = ("raw_transcript", "user_text") if target == "cleanup" else ("cleaned",)
         for kind in kinds:
             row = db.execute(
@@ -192,6 +277,7 @@ class Store:
         target: str | None = None,
         turn: int = 0,
         reviewed_artifact_id: str | None = None,
+        content_type: str | None = None,
     ) -> str:
         artifact_id = identifier()
         previous = db.execute(
@@ -202,7 +288,7 @@ class Store:
         _ = db.execute(
             "INSERT INTO artifacts "
             "(id,entry_id,kind,content,model,prompt_sha256,created_at,revision,target,turn,"
-            "reviewed_artifact_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "reviewed_artifact_id,content_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 artifact_id,
                 entry_id,
@@ -215,6 +301,7 @@ class Store:
                 target,
                 turn,
                 reviewed_artifact_id,
+                content_type,
             ),
         )
         for row in previous:
@@ -259,6 +346,9 @@ class Store:
                     "pending" if enabled else "disabled",
                 ),
             )
+        from .embedding import EmbeddingService
+
+        EmbeddingService(self, self.settings).reconcile(db, entry_ids={entry_id})
 
     @staticmethod
     def _canonical_date(value: str) -> str:
@@ -273,6 +363,7 @@ class Store:
         title: str | None = None,
         tags: list[str] | None = None,
         entry_date: str | None = None,
+        audio_content_type: str | None = None,
     ) -> dict[str, Any]:
         if (text is None) == (audio is None):
             raise ValueError("Provide exactly one of text or audio")
@@ -293,19 +384,28 @@ class Store:
         entry_id = identifier()
         stored_file: Path | None = None
         content = text
+        audio_relative: Path | None = None
         try:
             if audio is not None:
                 digest = hashlib.sha256(audio).hexdigest()
                 relative = Path("audio") / entry_id / f"{digest}.{extension}"
+                audio_relative = relative
                 stored_file = self.data_dir / relative
-                (self.data_dir / "audio").mkdir(exist_ok=True, mode=0o700)
-                stored_file.parent.mkdir(mode=0o700)
-                _ = stored_file.write_bytes(audio)
-                stored_file.chmod(0o600)
+                self._reserve_audio_write(relative)
                 content = str(relative)
             assert content is not None
             with self.connect() as db:
                 _ = db.execute("BEGIN IMMEDIATE")
+                if audio_relative is not None:
+                    # Keep the cleanup obligation present through the file and entry commit.
+                    _ = db.execute(
+                        "INSERT OR IGNORE INTO file_deletions VALUES (?)", (str(audio_relative),)
+                    )
+                    assert audio is not None and stored_file is not None
+                    (self.data_dir / "audio").mkdir(exist_ok=True, mode=0o700)
+                    stored_file.parent.mkdir(mode=0o700)
+                    _ = stored_file.write_bytes(audio)
+                    stored_file.chmod(0o600)
                 _ = db.execute(
                     "INSERT INTO entries (id,created_at,entry_date,title,tags,source) "
                     "VALUES (?,?,?,?,?,?)",
@@ -321,22 +421,55 @@ class Store:
                     ),
                 )
                 _ = self._artifact(
-                    db, entry_id, 1, "raw_audio" if audio is not None else "user_text", content
+                    db,
+                    entry_id,
+                    1,
+                    "raw_audio" if audio is not None else "user_text",
+                    content,
+                    content_type=audio_content_type if audio is not None else None,
                 )
                 self._queue(db, entry_id, 1, audio is not None)
                 self._refresh_search(db, entry_id)
-        except Exception:
-            if stored_file is not None:
-                with suppress(OSError):
-                    stored_file.unlink(missing_ok=True)
-                with suppress(OSError):
-                    stored_file.parent.rmdir()
+                if audio_relative is not None:
+                    _ = db.execute(
+                        "DELETE FROM file_deletions WHERE path=?", (str(audio_relative),)
+                    )
+                    _ = db.execute(
+                        "DELETE FROM file_write_reservations WHERE path=?",
+                        (str(audio_relative),),
+                    )
+        except Exception as original_error:
+            if audio_relative is not None:
+                try:
+                    self._reserve_file_deletion(audio_relative)
+                    self._release_audio_write(audio_relative)
+                    failures = self._drain_deletions()
+                except Exception as cleanup_error:
+                    _logger.error(
+                        "Audio cleanup retry failed (errno=%s)",
+                        getattr(cleanup_error, "errno", None),
+                    )
+                    raise AudioCleanupPending(
+                        audio_relative.name, getattr(cleanup_error, "errno", None)
+                    ) from original_error
+                pending = next(
+                    (item for item in failures if item[0] == str(audio_relative)), None
+                )
+                if pending is not None:
+                    raise AudioCleanupPending(audio_relative.name, pending[1]) from original_error
             raise
         return self.get_entry(entry_id)
 
     @staticmethod
     def _read_entry(db: sqlite3.Connection, entry_id: str, history: bool) -> dict[str, Any]:
         entry = Store._entry(db, entry_id)
+        entry["compilation_count"] = int(
+            db.execute(
+                "SELECT COUNT(*) FROM compilations c JOIN json_each(c.entry_ids) ids "
+                "ON ids.value=?",
+                (entry_id,),
+            ).fetchone()[0]
+        )
         rows = db.execute(
             "SELECT * FROM artifacts WHERE entry_id=? "
             + ("" if history else "AND revision=? AND superseded_by IS NULL ")
@@ -390,6 +523,9 @@ class Store:
                 ],
             }
         entry["review_sessions"] = session_views
+        from .entry_views import summary_fields
+
+        entry.update(summary_fields(entry))
         return entry
 
     def get_entry(self, entry_id: str, history: bool = False) -> dict[str, Any]:
@@ -408,6 +544,15 @@ class Store:
                 )
             ]
             return [self._read_entry(db, entry_id, False) for entry_id in ids]
+
+    def all_entries(self, *, db: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+        """Read the complete current corpus from one consistent SQLite snapshot."""
+        if db is not None:
+            ids = [row[0] for row in db.execute("SELECT id FROM entries ORDER BY created_at,id")]
+            return [self._read_entry(db, entry_id, False) for entry_id in ids]
+        with self.connect() as db:
+            _ = db.execute("BEGIN")
+            return self.all_entries(db=db)
 
     def patch_entry(self, entry_id: str, changes: dict[str, Any]) -> dict[str, Any]:
         allowed = {"title", "tags", "entry_date", "text"}
@@ -462,15 +607,79 @@ class Store:
             for path in paths:
                 _ = db.execute("INSERT OR IGNORE INTO file_deletions VALUES (?)", (path,))
             _ = db.execute("DELETE FROM search_index WHERE entry_id=?", (entry_id,))
+            _ = db.execute(
+                "DELETE FROM compilations WHERE EXISTS "
+                "(SELECT 1 FROM json_each(compilations.entry_ids) WHERE value=?)",
+                (entry_id,),
+            )
             _ = db.execute("DELETE FROM entries WHERE id=?", (entry_id,))
-        self._drain_deletions()
+        _ = self._drain_deletions()
 
-    def _drain_deletions(self) -> None:
+    def _reserve_file_deletion(self, relative: Path) -> None:
+        with self.connect() as db:
+            _ = db.execute("BEGIN IMMEDIATE")
+            _ = db.execute("INSERT OR IGNORE INTO file_deletions VALUES (?)", (str(relative),))
+
+    def _reserve_audio_write(self, relative: Path) -> None:
+        owner = OwnerIdentity.current()
+        with self.connect() as db:
+            _ = db.execute("BEGIN IMMEDIATE")
+            _ = db.execute("INSERT OR IGNORE INTO file_deletions VALUES (?)", (str(relative),))
+            _ = db.execute(
+                "INSERT INTO file_write_reservations "
+                "(path,owner_host,owner_pid,owner_boot_id,owner_started_at,created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    str(relative),
+                    owner.host,
+                    owner.pid,
+                    owner.boot_id,
+                    owner.started_at,
+                    time.time(),
+                ),
+            )
+
+    def _release_audio_write(self, relative: Path) -> None:
+        with self.connect() as db:
+            _ = db.execute("BEGIN IMMEDIATE")
+            _ = db.execute("DELETE FROM file_write_reservations WHERE path=?", (str(relative),))
+
+    def _write_owner_alive(self, row: sqlite3.Row) -> bool:
+        if row["owner_host"] != OwnerIdentity.current().host:
+            max_age_s = max(3600.0, self.settings.lease_s * 2)
+            if time.time() - float(row["created_at"]) > max_age_s:
+                _logger.warning(
+                    "Reclaiming stale audio write reservation for managed file %s from host %s",
+                    Path(row["path"]).name,
+                    row["owner_host"],
+                )
+                return False
+            return True
+        return OwnerIdentity.alive(row)
+
+    def _drain_deletions(self) -> list[tuple[str, int | None]]:
         # Durable outbox: deletion failures can be retried at the next startup.
+        failures: list[tuple[str, int | None]] = []
         with self.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
             paths = [row[0] for row in db.execute("SELECT path FROM file_deletions")]
             for relative in paths:
+                reservation = db.execute(
+                    "SELECT * FROM file_write_reservations WHERE path=?", (relative,)
+                ).fetchone()
+                if reservation is not None and self._write_owner_alive(reservation):
+                    continue
+                if reservation is not None:
+                    _ = db.execute(
+                        "DELETE FROM file_write_reservations WHERE path=?", (relative,)
+                    )
+                referenced = db.execute(
+                    "SELECT 1 FROM artifacts WHERE kind='raw_audio' AND content=? LIMIT 1",
+                    (relative,),
+                ).fetchone()
+                if referenced is not None:
+                    _ = db.execute("DELETE FROM file_deletions WHERE path=?", (relative,))
+                    continue
                 path = self.data_dir / relative
                 try:
                     path.unlink(missing_ok=True)
@@ -478,12 +687,16 @@ class Store:
                         path.parent.rmdir()
                 except OSError as exc:
                     _logger.warning(
-                        "Audio cleanup failed for managed file %s (%s); will retry later",
+                        "Audio cleanup failed for managed file %s (errno=%s, cause=%s); "
+                        "will retry later",
                         path.name,
+                        exc.errno,
                         type(exc).__name__,
                     )
+                    failures.append((str(relative), exc.errno))
                 else:
                     _ = db.execute("DELETE FROM file_deletions WHERE path=?", (relative,))
+        return failures
 
     def list_jobs(self, status: str | None = None) -> list[dict[str, Any]]:
         if status is not None and status not in {
@@ -508,46 +721,25 @@ class Store:
     def _job_views(db: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
         if not rows:
             return []
-        entry_ids = sorted({row["entry_id"] for row in rows})
-        placeholders = ",".join("?" for _ in entry_ids)
-        jobs = {
-            row["id"]: dict(row)
-            for row in db.execute(
-                f"SELECT * FROM jobs WHERE entry_id IN ({placeholders})", entry_ids
-            )
-        }
-        dependencies: dict[str, list[str]] = {}
-        for row in db.execute(
-            "SELECT d.job_id,d.depends_on FROM job_dependencies d "
-            "JOIN jobs j ON j.id=d.job_id "
-            f"WHERE j.entry_id IN ({placeholders})",
-            entry_ids,
+        blocked: dict[str, list[dict[str, str]]] = {}
+        for parent in db.execute(
+            "WITH RECURSIVE ancestors(job_id,ancestor_id) AS ("
+            "SELECT job_id,depends_on FROM job_dependencies "
+            "WHERE job_id IN (SELECT value FROM json_each(?)) UNION "
+            "SELECT a.job_id,d.depends_on FROM ancestors a "
+            "JOIN job_dependencies d ON d.job_id=a.ancestor_id) "
+            "SELECT a.job_id,p.id,p.kind FROM ancestors a JOIN jobs p ON p.id=a.ancestor_id "
+            "WHERE p.status='failed' ORDER BY a.job_id,p.id",
+            (json.dumps([row["id"] for row in rows]),),
         ):
-            dependencies.setdefault(row["job_id"], []).append(row["depends_on"])
-
-        results: list[dict[str, Any]] = []
-        for row in rows:
-            job = dict(row)
-            ancestors: set[str] = set()
-            pending = list(dependencies.get(job["id"], []))
-            while pending:
-                parent_id = pending.pop()
-                if parent_id in ancestors:
-                    continue
-                ancestors.add(parent_id)
-                pending.extend(dependencies.get(parent_id, []))
-            blocked_by = [
+            blocked.setdefault(parent["job_id"], []).append(
                 {
-                    "job_id": parent_id,
-                    "kind": jobs[parent_id]["kind"],
-                    "message": f"blocked by failed {jobs[parent_id]['kind']} job {parent_id}",
+                    "job_id": parent["id"],
+                    "kind": parent["kind"],
+                    "message": f"blocked by failed {parent['kind']} job {parent['id']}",
                 }
-                for parent_id in sorted(ancestors)
-                if jobs[parent_id]["status"] == "failed"
-            ]
-            job["blocked_by"] = blocked_by
-            results.append(job)
-        return results
+            )
+        return [dict(row) | {"blocked_by": blocked.get(row["id"], [])} for row in rows]
 
     def retry_job(self, job_id: str) -> dict[str, Any]:
         with self.connect() as db:
@@ -555,51 +747,102 @@ class Store:
             job = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             if job is None:
                 raise NotFound("Job not found")
-            entry = self._entry(db, job["entry_id"])
-            if job["status"] != "failed" or job["revision"] != entry["revision"]:
+            entry = self._entry(db, job["entry_id"]) if job["entry_id"] is not None else None
+            if job["status"] != "failed" or (
+                entry is not None and job["revision"] != entry["revision"]
+            ):
                 raise Conflict("Only failed jobs for the current entry revision can be retried")
             _ = db.execute(
                 "UPDATE jobs SET status='queued',attempts=0,last_error=NULL,"
                 "finished_at=NULL,not_before=?,claim_protocol=0 WHERE id=?",
                 (time.time(), job_id),
             )
+            if job["kind"] == "compile":
+                _ = db.execute(
+                    "UPDATE compilations SET status='queued',last_error=NULL WHERE id=?",
+                    (job["compilation_id"],),
+                )
             result = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             assert result is not None
             return self._job_views(db, [result])[0]
 
-    def claim(self, eligible_ids: set[str]) -> dict[str, Any] | None:
+    @staticmethod
+    def _batch_owned(db: sqlite3.Connection, job: Mapping[str, Any]) -> bool:
+        batch_id = job.get("_batch_id")
+        if batch_id is None:
+            return True
+        return db.execute(
+            "SELECT 1 FROM batch_state WHERE id=1 AND batch_id=? AND lease_until>?",
+            (batch_id, time.time()),
+        ).fetchone() is not None
+
+    def claim(
+        self, eligible_ids: set[str], *, batch_id: str | None = None
+    ) -> dict[str, Any] | None:
         if not eligible_ids:
             return None
         with self.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
+            if not self._batch_owned(db, {"_batch_id": batch_id}):
+                raise Conflict("Batch lease was lost; retry the batch after checking worker health")
             now = time.time()
             # A crashed worker's lease is recovered by the next batch.
             _ = db.execute(
                 "UPDATE jobs SET status=CASE WHEN attempts>=? THEN 'failed' ELSE 'queued' END,"
-                "last_error='Worker lease expired; retry after checking worker health',"
+                "last_error=CASE WHEN batch_id IS NOT NULL THEN 'Reclaimed after batch owner ' "
+                "|| batch_id || ' stopped; if this repeats, the job may be crashing the worker - "
+                "check worker memory limits and logs' ELSE 'Worker lease expired; retry after "
+                "checking worker health' END,"
                 "finished_at=CASE WHEN attempts>=? THEN ? ELSE NULL END,claim_token=NULL,"
                 "lease_until=NULL,claim_protocol=0 WHERE status='running' AND lease_until<=?",
                 (self.settings.max_attempts, self.settings.max_attempts, timestamp(), now),
             )
+            if batch_id is not None:
+                _ = db.execute(
+                    "UPDATE jobs SET status='queued',last_error='Reclaimed after batch owner ' "
+                    "|| COALESCE(batch_id,'unknown') || ' stopped; if this repeats, the job may "
+                    "be crashing the worker - check worker memory limits and logs',"
+                    "finished_at=NULL,"
+                    "not_before=?,lease_until=NULL,claim_token=NULL,claim_protocol=0 "
+                    "WHERE status='running' AND (batch_id IS NULL OR batch_id!=?)",
+                    (now, batch_id),
+                )
             _ = db.execute(
                 "UPDATE jobs SET status='failed',"
-                "last_error='Attempt limit reached; retry after checking worker health',"
+                "last_error=CASE WHEN last_error LIKE 'Reclaimed after batch owner %' "
+                "THEN last_error || '; attempt limit reached; retry after checking worker health' "
+                "ELSE 'Attempt limit reached; retry after checking worker health' END,"
                 "finished_at=?,claim_token=NULL,lease_until=NULL,claim_protocol=0 "
                 "WHERE status='queued' AND attempts>=?",
                 (timestamp(), self.settings.max_attempts),
             )
+            from .compilations import CompilationService
+
+            CompilationService.reconcile(db)
             rows = db.execute(
-                "SELECT j.* FROM jobs j JOIN entries e ON e.id=j.entry_id "
-                "WHERE j.status='queued' AND j.not_before<=? AND j.revision=e.revision "
+                "SELECT j.* FROM jobs j LEFT JOIN entries e ON e.id=j.entry_id "
+                "WHERE j.status='queued' AND j.not_before<=? "
+                "AND (j.kind='compile' OR j.revision=e.revision) "
                 "AND NOT EXISTS (SELECT 1 FROM job_dependencies d JOIN jobs p ON p.id=d.depends_on "
-                "WHERE d.job_id=j.id AND p.status!='done') ORDER BY j.created_at,j.id",
+                "WHERE d.job_id=j.id AND p.status!='done') "
+                "AND (j.kind!='embed' OR NOT EXISTS (SELECT 1 FROM review_sessions s "
+                "WHERE s.entry_id=j.entry_id AND s.revision=j.revision "
+                "AND s.target IN ('cleanup','summarize') AND s.status='pending')) "
+                "ORDER BY j.created_at,j.id",
                 (now,),
             ).fetchall()
+            _ = db.execute(
+                "UPDATE compilations SET status=(SELECT status FROM jobs "
+                "WHERE compilation_id=compilations.id),last_error=(SELECT last_error FROM jobs "
+                "WHERE compilation_id=compilations.id) WHERE status IN ('queued','running')"
+            )
             candidates = [dict(row) for row in rows if row["id"] in eligible_ids]
             if not candidates:
                 return None
 
             def group(job: dict[str, Any]) -> tuple[int, str, str, str, str]:
+                if job["kind"] == "embed":
+                    return (20, "local", "", "", str(job["id"]))
                 route = self._job_route(db, job)
                 target = job["target"]
                 turn = int(job["turn"])
@@ -610,6 +853,7 @@ class Store:
                     "revise": 2 * turn + 1 if target == "cleanup" else 8 + 2 * turn,
                     "summarize": 8,
                     "extract": 8,
+                    "compile": 21,
                 }[job["kind"]]
                 return (
                     stage,
@@ -621,16 +865,23 @@ class Store:
 
             job = min(candidates, key=group)
             claim_token = identifier()
+            if job["kind"] == "compile":
+                _ = CompilationService.job_inputs(db, job["compilation_id"])
             _ = db.execute(
                 "UPDATE jobs SET status='running',attempts=attempts+1,lease_until=?,"
-                "claim_token=?,claim_protocol=4 WHERE id=?",
-                (now + self.settings.lease_s, claim_token, job["id"]),
+                "claim_token=?,claim_protocol=4,batch_id=? WHERE id=?",
+                (now + self.settings.lease_s, claim_token, batch_id, job["id"]),
             )
+            if job["kind"] == "compile":
+                _ = db.execute(
+                    "UPDATE compilations SET status='running' WHERE id=?", (job["compilation_id"],)
+                )
             return job | {
                 "status": "running",
                 "attempts": job["attempts"] + 1,
                 "claim_token": claim_token,
                 "claim_protocol": 4,
+                "_batch_id": batch_id,
             }
 
     def _job_route(self, db: sqlite3.Connection, job: dict[str, Any]) -> TaskRoute:
@@ -651,6 +902,10 @@ class Store:
 
     def job_inputs(self, job: dict[str, Any]) -> tuple[str, str | None, bytes | None]:
         with self.connect() as db:
+            if job["kind"] == "compile":
+                from .compilations import CompilationService
+
+                return CompilationService.job_inputs(db, job["compilation_id"]), None, None
             if job["kind"] in {"review", "revise"}:
                 session = db.execute(
                     "SELECT * FROM review_sessions WHERE entry_id=? AND revision=? AND target=?",
@@ -714,6 +969,27 @@ class Store:
     ) -> bool:
         with self.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
+            if not self._batch_owned(db, job):
+                return False
+            if job["kind"] == "compile":
+                current_compile = db.execute(
+                    "SELECT 1 FROM jobs WHERE id=? AND status='running' AND claim_token=?",
+                    (job["id"], job["claim_token"]),
+                ).fetchone()
+                if current_compile is None:
+                    return False
+                from .compilations import CompilationService
+
+                assert prompt_sha256 is not None
+                CompilationService.finish_job(
+                    db, job["compilation_id"], content, model, prompt_sha256
+                )
+                _ = db.execute(
+                    "UPDATE jobs SET status='done',finished_at=?,last_error=NULL,"
+                    "lease_until=NULL,claim_token=NULL,claim_protocol=0 WHERE id=?",
+                    (timestamp(), job["id"]),
+                )
+                return True
             current = db.execute(
                 "SELECT j.* FROM jobs j JOIN entries e ON e.id=j.entry_id "
                 "WHERE j.id=? AND j.status='running' AND j.claim_token=? "
@@ -879,6 +1155,9 @@ class Store:
                 (timestamp(), job["id"]),
             )
             self._refresh_search(db, job["entry_id"])
+            from .embedding import EmbeddingService
+
+            EmbeddingService(self, self.settings).reconcile(db, entry_ids={job["entry_id"]})
             return True
 
     @staticmethod
@@ -956,6 +1235,9 @@ class Store:
         terminal = not retryable or job["attempts"] >= self.settings.max_attempts
         delay = self.settings.retry_base_s * 2 ** min(job["attempts"] - 1, 16)
         with self.connect() as db:
+            _ = db.execute("BEGIN IMMEDIATE")
+            if not self._batch_owned(db, job):
+                return False
             result = db.execute(
                 "UPDATE jobs SET status=?,last_error=?,not_before=?,finished_at=?,lease_until=NULL,"
                 "claim_token=NULL,claim_protocol=0 "
@@ -969,27 +1251,22 @@ class Store:
                     job["claim_token"],
                 ),
             )
+            if result.rowcount == 1 and job["kind"] == "compile":
+                from .compilations import CompilationService
+
+                CompilationService.fail_job(db, job["compilation_id"], error, terminal=terminal)
             return result.rowcount == 1
 
     @staticmethod
     def _refresh_search(db: sqlite3.Connection, entry_id: str) -> None:
-        entry = Store._entry(db, entry_id)
-        texts = {
-            row["kind"]: row["content"]
-            for row in db.execute(
-                "SELECT kind,content FROM artifacts WHERE entry_id=? AND revision=? "
-                "AND superseded_by IS NULL",
-                (entry_id, entry["revision"]),
-            )
-        }
-        text = texts.get("cleaned", texts.get("user_text", texts.get("raw_transcript", "")))
+        entry = Store._read_entry(db, entry_id, False)
         _ = db.execute("DELETE FROM search_index WHERE entry_id=?", (entry_id,))
         _ = db.execute(
             "INSERT INTO search_index VALUES (?,?,?,?,?)",
             (
                 entry_id,
-                text,
-                texts.get("summary", ""),
+                entry["text"],
+                entry["summary"] or "",
                 entry["title"] or "",
                 " ".join(entry["tags"]),
             ),
@@ -1005,13 +1282,15 @@ class Store:
                 )
             ]
 
-    def fts_search(self, query: str) -> list[dict[str, Any]]:
+    def fts_search(
+        self, query: str, *, db: sqlite3.Connection | None = None
+    ) -> list[dict[str, Any]]:
         # Quote each token to keep user input out of the FTS query language.
         tokens = query.split()
         expression = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
         if not expression:
             return []
-        with self.connect() as db:
+        if db is not None:
             return [
                 dict(row)
                 for row in db.execute(
@@ -1020,14 +1299,18 @@ class Store:
                     (expression,),
                 )
             ]
+        with self.connect() as connection:
+            return self.fts_search(query, db=connection)
 
     def set_token_hash(self, token_hash: str) -> None:
         with self.connect() as db:
+            _ = db.execute("BEGIN IMMEDIATE")
             _ = db.execute(
                 "INSERT INTO auth VALUES (1,?) ON CONFLICT(id) "
                 "DO UPDATE SET token_hash=excluded.token_hash",
                 (token_hash,),
             )
+            _ = db.execute("DELETE FROM sessions")
 
     def token_hash(self) -> str | None:
         with self.connect() as db:

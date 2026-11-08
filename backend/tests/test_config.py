@@ -51,7 +51,7 @@ model = "gemma"
     assert settings.tasks["cleanup"].provider == "openai"
     assert settings.tasks["cleanup"].model == "custom-phi"
     assert settings.tasks["review"].model == "gemma"
-    assert len(settings.tasks) == 5
+    assert len(settings.tasks) == 6
 
 
 def test_existing_storage_directory_is_private(tmp_path: Path) -> None:
