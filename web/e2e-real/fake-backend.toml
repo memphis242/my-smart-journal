@@ -1,0 +1,47 @@
+# Backend configuration for running the web UI against a local `msj serve` and
+# `msj worker`: every task on the deterministic fake provider, fake embeddings,
+# no network, no credentials. Development and end-to-end tests only.
+#
+# Use in place: MSJ_CONFIG_FILE=web/e2e-real/fake-backend.toml (see web/README.md).
+
+# A batch every 10 minutes, and a worker that checks for requests every second.
+batch_interval_s = 600
+worker_tick_s = 1
+# The session cookie works over plain HTTP; loopback only.
+insecure_cookies = true
+# The end-to-end suite loads the page signed out many times; keep the failed-auth buckets out of its way.
+bearer_rate_limit = 1000
+login_rate_limit = 1000
+max_attempts = 3
+retry_base_s = 5
+
+[embedding]
+provider = "fake"
+
+[review]
+max_turns = 1
+enabled_for = ["cleanup", "summarize", "extract"]
+
+[tasks.transcribe]
+provider = "fake"
+model = "fake"
+
+[tasks.cleanup]
+provider = "fake"
+model = "fake"
+
+[tasks.review]
+provider = "fake"
+model = "fake"
+
+[tasks.summarize]
+provider = "fake"
+model = "fake"
+
+[tasks.extract]
+provider = "fake"
+model = "fake"
+
+[tasks.compile]
+provider = "fake"
+model = "fake"

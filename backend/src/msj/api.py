@@ -692,7 +692,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> StreamingResponse:
         if not _valid_query(q):
             raise APIProblem(
-                422, "Validation Error", "q must contain 1-500 characters.", "INVALID_QUERY"
+                422,
+                "Validation Error",
+                "q must contain 1-500 characters and no control characters (tabs, newlines, NUL).",
+                "INVALID_QUERY",
             )
         try:
             selected = tuple(int(value) for value in tiers.split(","))

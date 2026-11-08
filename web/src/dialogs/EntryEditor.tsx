@@ -114,6 +114,8 @@ export function EntryEditor(props: EntryEditorProps): JSX.Element {
         toast('Entry added to the queue', { label: 'Run batch now', run: () => void runBatchNow() });
       } else if (take !== null) {
         await api().createAudioEntry({ audio: take.blob, mimeType: take.mimeType, fileName: take.fileName, title: titleValue, tags, entry_date: date });
+        // The title, tags and date belonged to this recording; written text not yet added stays as the draft.
+        saveNewDraft({ text, title: '', tags: [], date: today.value });
         toast('Recording uploaded and queued', { label: 'Run batch now', run: () => void runBatchNow() });
       }
       bumpData();

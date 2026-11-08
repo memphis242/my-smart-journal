@@ -4,12 +4,10 @@ import type { JSX } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { AppError } from '../api/errors';
 import { formatBytes, formatClock } from '../lib/format';
-import { RecorderSession, bareMimeType, extensionFor, recordingUnsupported, type Recording } from '../lib/recorder';
+import { ACCEPTED_AUDIO_TYPES, RecorderSession, extensionFor, recordingUnsupported, uploadAudioType, type Recording } from '../lib/recorder';
 import { ErrorNotice } from './ErrorNotice';
 import { Icon } from './Icon';
 
-/** Upload types the server accepts (backend `_AUDIO_TYPES`). */
-const ACCEPTED = ['audio/wav', 'audio/x-wav', 'audio/mpeg', 'audio/mp4', 'audio/webm', 'audio/ogg', 'audio/flac', 'audio/x-flac'] as const;
 const FILE_EXTENSIONS: Readonly<Record<string, string>> = {
   'audio/wav': 'wav',
   'audio/x-wav': 'wav',
@@ -122,8 +120,8 @@ export function AudioRecorder({ onTake, onRecordingChange }: AudioRecorderProps)
 
   const pickFile = (file: File): void => {
     setError(null);
-    const type = bareMimeType(file.type);
-    if (!(ACCEPTED as readonly string[]).includes(type)) {
+    const type = uploadAudioType(file.name, file.type);
+    if (type === null) {
       setError(
         new AppError({
           code: 'UNSUPPORTED_AUDIO_TYPE',
@@ -202,6 +200,7 @@ export function AudioRecorder({ onTake, onRecordingChange }: AudioRecorderProps)
               type="button"
               class="button"
               title="Upload an existing recording: WAV, MP3, M4A, WebM, Ogg or FLAC"
+              data-testid="audio-choose"
               onClick={() => {
                 fileInput.current?.click();
               }}
@@ -214,7 +213,7 @@ export function AudioRecorder({ onTake, onRecordingChange }: AudioRecorderProps)
             ref={fileInput}
             class="visually-hidden"
             type="file"
-            accept={ACCEPTED.join(',')}
+            accept={[...ACCEPTED_AUDIO_TYPES, '.webm', '.weba', '.m4a', '.ogg', '.oga', '.opus', '.mp3', '.wav', '.flac'].join(',')}
             tabIndex={-1}
             data-testid="audio-file"
             onChange={(event) => {

@@ -17,7 +17,8 @@
     "lint": "eslint --max-warnings 0 .",
     "test": "vitest run",
     "e2e": "playwright test --project=desktop --project=phone",
-    "screenshots": "playwright test --project=screenshots"
+    "screenshots": "playwright test --project=screenshots",
+    "e2e:real": "playwright test -c playwright.real.config.ts"
   },
   "dependencies": {
     "@fontsource-variable/source-serif-4": "5.3.1",

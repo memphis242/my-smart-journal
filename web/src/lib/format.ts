@@ -118,7 +118,7 @@ export function entryPlainText(entry: EntrySummary): string {
   }
   const text = entry.text.trim();
   if (text !== '') lines.push('', text);
-  if (entry.tags.length > 0) lines.push('', `Tags: ${entry.tags.join(', ')}`);
+  if (entry.tags.length > 0) lines.push('', 'Tags:', entry.tags.join(', '));
   return lines.join('\n');
 }
 

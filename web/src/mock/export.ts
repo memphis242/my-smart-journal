@@ -61,10 +61,11 @@ function textEntry(entry: EntryDetail, include: ExportInclude): string {
   const header = headerTitle === null
     ? headerDate
     : headerDate === '' ? headerTitle : `${headerDate}  ${headerTitle}`;
-  const lines = [header];
+  // As the backend's exporting._text_entry: labels on their own lines, tags only when there are some.
+  const lines = header === '' ? [] : [header];
   if (include.summary && entry.summary !== null) lines.push('', 'Summary:', entry.summary);
   if (include.text && entry.text !== '') lines.push('', entry.text);
-  if (include.tags) lines.push('', `Tags: ${entry.tags.join(', ')}`);
+  if (include.tags && entry.tags.length > 0) lines.push('', 'Tags:', entry.tags.join(', '));
   if (include.extraction) {
     const extracted = plainExtraction(entry);
     if (extracted.length > 0) lines.push('', ...extracted);
@@ -75,11 +76,12 @@ function textEntry(entry: EntryDetail, include: ExportInclude): string {
 function markdownEntry(entry: EntryDetail, include: ExportInclude): string {
   const headerDate = include.date ? entry.entry_date : '';
   const headerTitle = include.title && entry.title !== '' ? entry.title : null;
-  const heading = [headerDate, headerTitle].filter((part): part is string => part !== null && part !== '').join(' ');
-  const sections = [`## ${heading}`];
-  if (include.summary && entry.summary !== null) sections.push(`**Summary**\n\n${entry.summary}`);
-  if (include.text && entry.text !== '') sections.push(entry.text);
-  if (include.tags) sections.push(`**Tags**\n\n${entry.tags.join(', ')}`);
+  // As the backend's exporting._markdown_entry.
+  const heading = [headerDate, headerTitle].filter((part): part is string => part !== null && part !== '').join('  ');
+  const sections = heading === '' ? [] : [`# ${heading}`];
+  if (include.summary && entry.summary !== null) sections.push(`## Summary\n${entry.summary}`);
+  if (include.text && entry.text !== '') sections.push(`## Text\n${entry.text}`);
+  if (include.tags && entry.tags.length > 0) sections.push(`Tags: ${entry.tags.join(', ')}`);
   if (include.extraction) {
     const extracted = currentExtraction(entry);
     if (extracted !== null) {

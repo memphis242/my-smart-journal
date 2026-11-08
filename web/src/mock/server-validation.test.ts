@@ -202,7 +202,7 @@ describe('journal API mock validation and boundary behavior', () => {
       include: { title: true, date: true, tags: false, summary: false, text: false, extraction: false },
     });
     expect(markdown.contentType).toBe('text/markdown; charset=utf-8');
-    expect(markdown.body).toBe('## 2026-09-29 Build notes');
+    expect(markdown.body).toBe('# 2026-09-29  Build notes');
   });
 
   it('returns retry conflicts and missing-job errors', async () => {

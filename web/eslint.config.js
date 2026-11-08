@@ -35,7 +35,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['e2e/**/*.ts', 'scripts/**/*.{ts,mjs}', '**/*.test.ts', '*.config.{ts,js}'],
+    files: ['e2e/**/*.ts', 'e2e-real/**/*.ts', 'scripts/**/*.{ts,mjs}', '**/*.test.ts', '*.config.{ts,js}'],
     languageOptions: { globals: { ...globals.node } },
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',

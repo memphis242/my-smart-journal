@@ -18,6 +18,50 @@ const EXTENSIONS: Readonly<Record<string, string>> = {
   'audio/ogg': 'ogg',
 };
 
+/** Upload types the server accepts (backend `_AUDIO_TYPES`). */
+export const ACCEPTED_AUDIO_TYPES = ['audio/wav', 'audio/x-wav', 'audio/mpeg', 'audio/mp4', 'audio/webm', 'audio/ogg', 'audio/flac', 'audio/x-flac'] as const;
+
+/** Types browsers report for audio files that the server knows under another name. */
+const TYPE_ALIASES: Readonly<Record<string, string>> = {
+  'video/webm': 'audio/webm',
+  'video/mp4': 'audio/mp4',
+  'audio/x-m4a': 'audio/mp4',
+  'audio/m4a': 'audio/mp4',
+  'audio/mp3': 'audio/mpeg',
+  'audio/x-mpeg': 'audio/mpeg',
+  'audio/wave': 'audio/wav',
+  'audio/vnd.wave': 'audio/wav',
+  'application/ogg': 'audio/ogg',
+  'audio/opus': 'audio/ogg',
+};
+
+const EXTENSION_TYPES: Readonly<Record<string, string>> = {
+  webm: 'audio/webm',
+  weba: 'audio/webm',
+  m4a: 'audio/mp4',
+  mp4: 'audio/mp4',
+  ogg: 'audio/ogg',
+  oga: 'audio/ogg',
+  opus: 'audio/ogg',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  flac: 'audio/flac',
+};
+
+/**
+ * The type to upload a chosen file as, or null when it is not audio the server
+ * accepts. Browsers label files by extension and often pick a video or vendor
+ * type (Chrome: `.webm` is video/webm, `.m4a` is audio/x-m4a).
+ */
+export function uploadAudioType(fileName: string, declaredType: string): string | null {
+  const declared = bareMimeType(declaredType);
+  if ((ACCEPTED_AUDIO_TYPES as readonly string[]).includes(declared)) return declared;
+  const alias = TYPE_ALIASES[declared];
+  if (alias !== undefined) return alias;
+  const extension = /\.([a-z0-9]+)$/i.exec(fileName)?.[1]?.toLowerCase();
+  return extension === undefined ? null : (EXTENSION_TYPES[extension] ?? null);
+}
+
 export function bareMimeType(mimeType: string): string {
   return (mimeType.split(';')[0] ?? mimeType).trim().toLowerCase();
 }

@@ -282,7 +282,8 @@ describe('journal API mock through ApiClient', () => {
       '',
       'I reduced Atlas latency with TypeScript. The service now returns in 18 ms and feels fast.',
       '',
-      'Tags: Work, journal',
+      'Tags:',
+      'Work, journal',
       '',
       '--------------------',
       '',
@@ -293,7 +294,8 @@ describe('journal API mock through ApiClient', () => {
       '',
       'I delivered a dashboard using TypeScript.',
       '',
-      'Tags: Work',
+      'Tags:',
+      'Work',
     ].join('\n'));
 
     const created = await client.createCompilation({ entry_ids: [first.id, second.id], purpose: 'career update', period: 'November' });

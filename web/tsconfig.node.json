@@ -20,5 +20,5 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["vite.config.ts", "playwright.config.ts", "e2e", "scripts"]
+  "include": ["vite.config.ts", "playwright.config.ts", "playwright.real.config.ts", "e2e", "e2e-real", "scripts"]
 }

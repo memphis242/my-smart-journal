@@ -54,6 +54,50 @@ Switches, added to the page URL:
 
 The mock is loaded only in mock mode; production builds do not contain it.
 
+## Run against a local backend
+
+The real API and worker on this machine, with every model task on the backend's deterministic fake provider (no network, no credentials): `e2e-real/fake-backend.toml`. Run from `web/`; generated data stays outside the source tree.
+
+One-time setup (a Python 3.14 environment with the backend installed in editable mode, a data directory, and an access token):
+
+```sh
+export MSJ_INT=/workspace/build/my-smart-journal-integration     # any directory outside the checkout
+python3.14 -m venv "$MSJ_INT/.venv"
+"$MSJ_INT/.venv/bin/pip" install -e ../backend
+mkdir -p "$MSJ_INT/data" "$MSJ_INT/logs" && chmod 700 "$MSJ_INT/data"
+export MSJ_CONFIG_FILE="$PWD/e2e-real/fake-backend.toml" MSJ_DATA_DIR="$MSJ_INT/data" MSJ_INSECURE_COOKIES=1 PYTHONDONTWRITEBYTECODE=1
+"$MSJ_INT/.venv/bin/msj" migrate
+(umask 077; "$MSJ_INT/.venv/bin/msj" create-token > "$MSJ_INT/token.out")   # creating a new token ends every session
+```
+
+Start the stack (the server serves the production build and the API on one port; the worker processes batches):
+
+```sh
+pnpm build
+export MSJ_INT=/workspace/build/my-smart-journal-integration
+export MSJ_CONFIG_FILE="$PWD/e2e-real/fake-backend.toml" MSJ_DATA_DIR="$MSJ_INT/data" MSJ_INSECURE_COOKIES=1 PYTHONDONTWRITEBYTECODE=1
+export MSJ_WEB_DIR=/workspace/build/my-smart-journal-web-ui/dist   # <build root>/dist
+nohup "$MSJ_INT/.venv/bin/msj" serve --host 127.0.0.1 --port 18765 > "$MSJ_INT/logs/serve.log" 2>&1 & echo $! > "$MSJ_INT/serve.pid"
+nohup "$MSJ_INT/.venv/bin/msj" worker > "$MSJ_INT/logs/worker.log" 2>&1 & echo $! > "$MSJ_INT/worker.pid"
+curl -s http://127.0.0.1:18765/api/v1/health                      # {"status":"ok"}
+```
+
+Open http://127.0.0.1:18765 and sign in with the token in `$MSJ_INT/token.out`. `pnpm dev` (port 15173) proxies `/api` to the same server for UI work with hot reload. After `pnpm build`, a reload picks up the new bundle; the server needs no restart.
+
+End-to-end tests against this stack (not part of `pnpm e2e`): a desktop run of the whole journey (sign in; add a written entry, a recorded one through a synthetic microphone, and an uploaded Opus file; Run now until every entry is done; step through the modal; edit; filter by date, tag, project and skill; keyword search across all five tiers; relevance, select, and a plain-text export that copies and downloads; compile; delete with the compilations warning; sign out), and the GUI sweep at 360 px under the CSP the backend sends. Any console error fails a test.
+
+```sh
+MSJ_E2E_TOKEN_FILE="$MSJ_INT/token.out" pnpm e2e:real          # MSJ_E2E_BASE_URL overrides http://127.0.0.1:18765
+```
+
+The suite seeds 36 tagged entries on first use and tags each run's entries `e2e-<run id>`, so it can run repeatedly against the same data directory. It needs `ffmpeg` with libopus for the upload test. With the fake provider, extraction finds no projects or skills, so those filters are tested against empty lists.
+
+Stop the stack (only these two processes):
+
+```sh
+kill "$(cat "$MSJ_INT/serve.pid")" "$(cat "$MSJ_INT/worker.pid")"
+```
+
 ## Build and deploy
 
 ```sh
@@ -77,7 +121,8 @@ Microphone recording needs a secure context (HTTPS, or `localhost`). Over plain 
 pnpm typecheck    # app (src) and tooling (configs, e2e, scripts)
 pnpm lint         # ESLint with typescript-eslint strict + stylistic, type-aware
 pnpm test         # Vitest: API client, guards, NDJSON reader, dates, formatting, the mock API
-pnpm e2e          # Playwright, desktop (1440 px) and phone (360 px) projects
+pnpm e2e          # Playwright, desktop (1440 px) and phone (360 px) projects, against the mock build
+pnpm e2e:real     # Playwright against a running local backend; see "Run against a local backend"
 pnpm screenshots  # Screenshots of every main view in both themes at both widths -> <build root>/shots
 ```
 

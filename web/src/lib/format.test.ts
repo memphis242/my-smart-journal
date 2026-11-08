@@ -20,7 +20,7 @@ const ENTRY: EntrySummary = {
 describe('format', () => {
   it('copies an entry in the plain-text export layout', () => {
     expect(entryPlainText(ENTRY)).toBe(
-      '2026-11-08  Index rebuild\n\nSummary:\nRebuilt the index.\n\nFirst paragraph.\n\nSecond paragraph.\n\nTags: work, on-call',
+      '2026-11-08  Index rebuild\n\nSummary:\nRebuilt the index.\n\nFirst paragraph.\n\nSecond paragraph.\n\nTags:\nwork, on-call',
     );
     expect(entryPlainText({ ...ENTRY, title: null, summary: null, tags: [] })).toBe('2026-11-08\n\nFirst paragraph.\n\nSecond paragraph.');
   });
