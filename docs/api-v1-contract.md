@@ -104,7 +104,8 @@ The ranking combines semantic scores with tier 4 BM25 through reciprocal rank fu
             "last_finished_at": "…"|null, "last_result": {"processed": 3, "failed": 0}|null,
             "last_error": {"code": "BATCH_FAILED"|"BATCH_LEASE_LOST", "detail": "…"}|null,
             "request_pending": true|false},
-  "worker": {"last_seen_at": "…"|null, "interval_s": 900, "next_run_at": "…"|null},
+  "worker": {"last_seen_at": "…"|null, "stale": true|false, "interval_s": 86400,
+             "next_run_at": "…"|null, "next_batch_at": "…"|null},
   "counts": {"queued": 4, "running": 1, "failed": 0, "blocked": 0},
   "items": [{"entry_id":"…","entry_title":"…"|null,"entry_date":"…","job_id":"…",
              "kind":"cleanup","target":null|"cleanup","turn":null|1,
@@ -115,7 +116,7 @@ The ranking combines semantic scores with tier 4 BM25 through reciprocal rank fu
 
 `items` covers the current revisions' non-terminal and failed jobs, oldest first, capped at 200.
 
-The worker writes a heartbeat during its short wake cycle and while processing. `last_seen_at` reports liveness only. `next_run_at` is the wall-clock time of the next scheduled batch or lease-conflict retry, whichever is earlier. A new manual request makes it due immediately until observed by the worker; an observed request blocked on a lease shows the retry deadline. Heartbeats during processing preserve that deadline. Lease ownership is rechecked at least every tick so an early release does not delay requests until lease expiry. The default tick is 2 seconds; heartbeat age above max(10 seconds, 3 ticks) indicates a stale worker.
+The worker writes a heartbeat during its short wake cycle and while processing. `last_seen_at` reports liveness only. `next_run_at` is the wall-clock time of the next scheduled batch or lease-conflict retry, whichever is earlier. A new manual request makes it due immediately until observed by the worker; an observed request blocked on a lease shows the retry deadline. Heartbeats during processing preserve that deadline. Lease ownership is rechecked at least every tick so an early release does not delay requests until lease expiry. The default tick is 2 seconds; heartbeat age above max(10 seconds, 3 ticks), or no heartbeat at all, sets `worker.stale`, computed on the server so client clock skew does not matter. `next_batch_at` carries the same value as `next_run_at` for clients that display the next batch time.
 
 `POST /batches/run` records a durable request and returns 202 `{"requested": true}`. Repeated requests while one is pending are idempotent. If the heartbeat is stale, the response also contains `"worker": {"stale": true}` so the UI can warn. `msj worker` picks the request up within a tick; the server performs no batch inference. An active batch returns 409 `BATCH_ALREADY_RUNNING`. `msj run-batch` runs inline with the same renewable SQLite lease. Lease records identify host, PID, boot and process start; dead local owners are reclaimed, and replaced owners cannot publish their claimed jobs. Failed batches expose a stable `last_error` code and actionable privacy-safe detail.
 

@@ -59,3 +59,15 @@ def test_audio_preserves_full_declared_type(tmp_path: Path, declared_type: str) 
         ).json()
         audio = next(artifact for artifact in entry["artifacts"] if artifact["kind"] == "raw_audio")
         assert audio["content_type"] == declared_type
+
+
+def test_worker_stale_threshold() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from msj.batch import worker_stale
+
+    now = datetime.now(UTC)
+    assert worker_stale(None, 2)
+    assert not worker_stale((now - timedelta(seconds=3)).isoformat(), 2)
+    assert worker_stale((now - timedelta(seconds=11)).isoformat(), 2)
+    assert not worker_stale((now - timedelta(seconds=12)).isoformat(), 5)

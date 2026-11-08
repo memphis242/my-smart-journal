@@ -395,12 +395,23 @@ def queue_status(store: Store) -> dict[str, Any]:
         },
         "worker": {
             "last_seen_at": state["worker_last_seen_at"],
+            "stale": worker_stale(state["worker_last_seen_at"], store.settings.worker_tick_s),
             "interval_s": store.settings.batch_interval_s,
             "next_run_at": state["worker_next_run_at"],
+            "next_batch_at": state["worker_next_run_at"],
         },
         "counts": counts,
         "items": items,
     }
+
+
+def worker_stale(last_seen_at: str | None, tick_s: float) -> bool:
+    """Return whether the worker heartbeat is missing or older than three ticks (10 s minimum)."""
+    assert tick_s > 0
+    if last_seen_at is None:
+        return True
+    seen = datetime.fromisoformat(last_seen_at.replace("Z", "+00:00"))
+    return (datetime.now(UTC) - seen).total_seconds() > max(10.0, tick_s * 3)
 
 
 def _timestamp_from_epoch(value: Any) -> str | None:

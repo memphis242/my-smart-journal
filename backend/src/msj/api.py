@@ -3,7 +3,7 @@
 import json
 import logging
 from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Query, Request
@@ -933,10 +933,7 @@ def _install_additional_routes(
                 "A batch is already running; wait for it to finish.",
                 "BATCH_ALREADY_RUNNING",
             )
-        last_seen = coordinator.status()["worker"]["last_seen_at"]
-        stale = last_seen is None or (
-            datetime.now(UTC) - datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
-        ).total_seconds() > max(10.0, settings.worker_tick_s * 3)
+        stale = bool(coordinator.status()["worker"]["stale"])
         response: dict[str, Any] = {"requested": True}
         if stale:
             response["worker"] = {"stale": True}
