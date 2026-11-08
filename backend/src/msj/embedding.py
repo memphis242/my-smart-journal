@@ -345,7 +345,7 @@ class EmbeddingService:
                 if self.settings.provider == "fake":
                     self._model = "fake"
                 else:
-                    from sentence_transformers import SentenceTransformer
+                    from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found,unused-ignore]
 
                     self._model = SentenceTransformer(
                         self.settings.model,
