@@ -4,12 +4,13 @@ import json
 import logging
 from dataclasses import dataclass
 from importlib.resources import files
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 from jsonschema import Draft202012Validator
 
 from .config import Settings, TaskKind
+from .diagnostics import safe_exception
 from .providers import (
     InferenceProvider,
     Provider,
@@ -19,6 +20,9 @@ from .providers import (
     revision_messages,
 )
 from .storage import Store
+
+if TYPE_CHECKING:
+    from .embedding import EmbeddingService
 
 _logger = logging.getLogger(__name__)
 
@@ -37,7 +41,7 @@ def validate_output(kind: str, content: str, *, retryable: bool = True) -> Valid
         raise SafeProviderError(
             "Inference returned empty text; check model and token limit", retryable=retryable
         )
-    if kind not in {"extract", "review"}:
+    if kind not in {"extract", "review", "compile"}:
         return ValidationResult()
     try:
         data = json.loads(content)
@@ -50,6 +54,10 @@ def validate_output(kind: str, content: str, *, retryable: bool = True) -> Valid
     if kind == "extract":
         schema = json.loads(
             files("msj").joinpath("resources/extraction.schema.json").read_text(encoding="utf-8")
+        )
+    elif kind == "compile":
+        schema = json.loads(
+            files("msj").joinpath("resources/compile.schema.json").read_text(encoding="utf-8")
         )
     else:
         schema = {
@@ -73,15 +81,29 @@ def validate_output(kind: str, content: str, *, retryable: bool = True) -> Valid
 
 
 class Runner:
-    def __init__(self, store: Store, settings: Settings, provider: Provider | None = None) -> None:
+    def __init__(
+        self,
+        store: Store,
+        settings: Settings,
+        provider: Provider | None = None,
+        embedding: EmbeddingService | None = None,
+    ) -> None:
         self.store = store
         self.settings = settings
         self._provider = provider
+        self._embedding: EmbeddingService | None = embedding
 
-    def run_batch(self) -> dict[str, Any]:
+    def run_batch(self, *, _lease_id: str | None = None) -> dict[str, Any]:
+        from .batch import BatchCoordinator
+
+        if _lease_id is not None:
+            return self._execute_batch(_lease_id)
+        return BatchCoordinator(self.store, self).run_sync("manual")
+
+    def _execute_batch(self, lease_id: str) -> dict[str, Any]:
         # Session follow-ups stay in the batch; new entry revisions wait for another pass.
         snapshot = {
-            (job["entry_id"], job["revision"])
+            (job["entry_id"], job["revision"], job.get("compilation_id"))
             for job in self.store.list_jobs()
             if job["status"] in {"queued", "running"}
         }
@@ -93,15 +115,63 @@ class Runner:
                 eligible = {
                     job["id"]
                     for job in self.store.list_jobs()
-                    if (job["entry_id"], job["revision"]) in snapshot
+                    if (job["entry_id"], job["revision"], job.get("compilation_id")) in snapshot
                     and job["status"] in {"queued", "running"}
                     and job["id"] not in attempted
                 }
-                job = self.store.claim(eligible)
+                from .batch import BatchCoordinator
+
+                BatchCoordinator(self.store, self).renew(lease_id)
+                job = self.store.claim(eligible, batch_id=lease_id)
                 if job is None:
                     break
                 attempted.add(job["id"])
                 try:
+                    if job["kind"] == "embed":
+                        from .embedding import EmbeddingService
+
+                        if self._embedding is None:
+                            self._embedding = EmbeddingService(self.store, self.settings)
+                        if self.settings.embedding.provider == "none":
+                            with self.store.connect() as db:
+                                self._embedding.reconcile(db, entry_ids={job["entry_id"]})
+                            stats["discarded"] += 1
+                            continue
+                        try:
+                            published = self._embedding.process(job)
+                        except Exception as exc:
+                            diagnostic = safe_exception(exc)
+                            _logger.error("Embedding job failed: %s", diagnostic)
+                            from .embedding import EmbeddingFailure
+
+                            cause: BaseException | None = exc
+                            while cause is not None and not isinstance(cause, EmbeddingFailure):
+                                cause = cause.__cause__
+                            failure_code = (
+                                cause.code
+                                if isinstance(cause, EmbeddingFailure)
+                                else "EMBEDDING_ENCODING_FAILED"
+                            )
+                            guidance = {
+                                "EMBEDDING_DEPENDENCY_MISSING": (
+                                    "install `my-smart-journal[semantic]` to process embedding jobs"
+                                ),
+                                "EMBEDDING_MODEL_LOAD_FAILED": (
+                                    "verify embedding.model, embedding.revision, cache access, "
+                                    "and model availability"
+                                ),
+                                "EMBEDDING_ENCODING_FAILED": (
+                                    "verify model compatibility and vector dimensions"
+                                ),
+                            }[failure_code]
+                            message = f"{failure_code}: {guidance}; see worker logs for details"
+                            recorded = self.store.fail_job(
+                                job, message
+                            )
+                            stats["failed" if recorded else "discarded"] += 1
+                            continue
+                        stats["done" if published else "discarded"] += 1
+                        continue
                     source, candidate, audio = self.store.job_inputs(job)
                     kind = cast(TaskKind, job["target"] if job["kind"] == "revise" else job["kind"])
                     route = self.store.job_route(job)
@@ -152,7 +222,7 @@ class Runner:
                     )
                     stats["failed" if recorded else "discarded"] += 1
                 except Exception as exc:
-                    _logger.error("Unexpected job exception: %s", type(exc).__name__)
+                    _logger.error("Unexpected job exception: %s", safe_exception(exc))
                     recorded = self.store.fail_job(
                         job,
                         "Unexpected processing failure; retry the job and check provider "

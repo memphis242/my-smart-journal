@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 
 from msj.api import create_app
 from msj.auth import create_token
+from msj.batch import BatchCoordinator
 from msj.config import TASKS, Settings, TaskKind, TaskRoute
+from msj.pipeline import Runner
 from msj.providers import Generation, InferenceProvider
 
 
@@ -36,7 +38,9 @@ class UnexpectedFailureProvider:
 @pytest.fixture
 def batch_client(tmp_path: Path) -> Iterator[tuple[TestClient, dict[str, str], Settings]]:
     settings = Settings(
-        data_dir=tmp_path, tasks={kind: TaskRoute(provider="fake") for kind in TASKS}
+        data_dir=tmp_path,
+        embedding={"provider": "fake"},
+        tasks={kind: TaskRoute(provider="fake") for kind in TASKS},
     )
     app = create_app(settings)
     token = create_token(app.state.store)
@@ -58,12 +62,13 @@ def test_unexpected_job_errors_do_not_abort_batch_or_disclose_text(
     ).json()
     with httpx.Client() as http:
         delegate = InferenceProvider(settings, http)
-        client.app.state.runner._provider = UnexpectedFailureProvider(
-            delegate, exception_type(private)
+        result = _run_batch_and_wait(
+            client,
+            headers,
+            settings,
+            UnexpectedFailureProvider(delegate, exception_type(private)),
         )
-        response = client.post("/api/v1/batches/run", headers=headers)
-    assert response.status_code == 200
-    assert response.json() == {"done": 6, "failed": 1, "discarded": 0}
+    assert result == {"processed": 7, "failed": 1}
     jobs: list[dict[str, Any]] = client.get("/api/v1/jobs", headers=headers).json()
     failed = next(
         job for job in jobs if job["entry_id"] == first["id"] and job["kind"] == "cleanup"
@@ -84,7 +89,12 @@ def test_oversized_runpod_audio_fails_once_without_submission(
 ) -> None:
     routes = {kind: TaskRoute(provider="fake") for kind in TASKS}
     routes["transcribe"] = TaskRoute(provider="runpod", endpoint_id="test-endpoint", model="turbo")
-    settings = Settings(data_dir=tmp_path, tasks=routes, runpod_max_payload_bytes=128)
+    settings = Settings(
+        data_dir=tmp_path,
+        tasks=routes,
+        embedding={"provider": "fake"},
+        runpod_max_payload_bytes=128,
+    )
     app = create_app(settings)
     headers = {"Authorization": "Bearer " + create_token(app.state.store)}
     monkeypatch.setenv("RUNPOD_API_KEY", "mock-key-unused-by-network")
@@ -95,7 +105,7 @@ def test_oversized_runpod_audio_fails_once_without_submission(
         raise AssertionError("An oversized RunPod request must not be submitted")
 
     with httpx.Client(transport=httpx.MockTransport(reject_submission)) as http:
-        app.state.runner._provider = InferenceProvider(settings, http)
+        worker_provider = InferenceProvider(settings, http)
         with TestClient(app) as client:
             response = client.post(
                 "/api/v1/entries",
@@ -103,7 +113,7 @@ def test_oversized_runpod_audio_fails_once_without_submission(
                 files={"file": ("voice.wav", b"audio" * 64, "audio/wav")},
             )
             assert response.status_code == 201
-            assert client.post("/api/v1/batches/run", headers=headers).json()["failed"] == 1
+            assert _run_batch_and_wait(client, headers, settings, worker_provider)["failed"] == 1
             jobs = client.get("/api/v1/jobs", headers=headers).json()
             job = next(job for job in jobs if job["kind"] == "transcribe")
             assert job["status"] == "failed"
@@ -118,7 +128,7 @@ def test_oversized_runpod_audio_fails_once_without_submission(
                 for dependent in entry["jobs"]
                 if dependent["id"] != failed_id
             )
-            assert client.post("/api/v1/batches/run", headers=headers).json()["failed"] == 0
+            assert _run_batch_and_wait(client, headers, settings, worker_provider)["failed"] == 0
             jobs = client.get("/api/v1/jobs", headers=headers).json()
             assert next(job for job in jobs if job["id"] == failed_id)["attempts"] == 1
     assert requests == []
@@ -129,7 +139,12 @@ def test_paused_runpod_error_retries_then_remains_visible_in_job_error(
 ) -> None:
     routes = {kind: TaskRoute(provider="fake") for kind in TASKS}
     routes["cleanup"] = TaskRoute(provider="runpod", endpoint_id="paused-endpoint", model="model")
-    settings = Settings(data_dir=tmp_path, tasks=routes, max_attempts=2)
+    settings = Settings(
+        data_dir=tmp_path,
+        tasks=routes,
+        embedding={"provider": "fake"},
+        max_attempts=2,
+    )
     app = create_app(settings)
     headers = {"Authorization": "Bearer " + create_token(app.state.store)}
     monkeypatch.setenv("RUNPOD_API_KEY", "test-key-not-for-errors")
@@ -142,20 +157,20 @@ def test_paused_runpod_error_retries_then_remains_visible_in_job_error(
     }
     transport = httpx.MockTransport(lambda _: httpx.Response(409, json=response_body))
     with httpx.Client(transport=transport) as http:
-        app.state.runner._provider = InferenceProvider(settings, http)
+        worker_provider = InferenceProvider(settings, http)
         with TestClient(app) as client:
             entry = client.post("/api/v1/entries", headers=headers, json={"text": "private"}).json()
-            assert client.post("/api/v1/batches/run", headers=headers).json()["failed"] == 1
+            assert _run_batch_and_wait(client, headers, settings, worker_provider)["failed"] == 1
             job = next(
                 item for item in client.get("/api/v1/jobs", headers=headers).json()
                 if item["entry_id"] == entry["id"] and item["kind"] == "cleanup"
             )
             assert job["status"] == "queued"
             assert "ENDPOINT_PAUSED" in job["last_error"]
-            assert paused_detail in job["last_error"]
+            assert paused_detail not in job["last_error"]
             with app.state.store.connect() as db:
                 _ = db.execute("UPDATE jobs SET not_before=0 WHERE id=?", (job["id"],))
-            assert client.post("/api/v1/batches/run", headers=headers).json()["failed"] == 1
+            assert _run_batch_and_wait(client, headers, settings, worker_provider)["failed"] == 1
             final_job = next(
                 item for item in client.get("/api/v1/jobs", headers=headers).json()
                 if item["id"] == job["id"]
@@ -169,12 +184,19 @@ def test_paused_runpod_error_retries_then_remains_visible_in_job_error(
 def test_revising_a_failed_entry_supersedes_its_terminal_failure(tmp_path: Path) -> None:
     routes = {kind: TaskRoute(provider="fake") for kind in TASKS}
     routes["cleanup"] = TaskRoute(provider="fake", expect_model="real-model")
-    app = create_app(Settings(data_dir=tmp_path, tasks=routes, max_attempts=1))
+    app = create_app(
+        Settings(
+            data_dir=tmp_path,
+            tasks=routes,
+            embedding={"provider": "fake"},
+            max_attempts=1,
+        )
+    )
     headers = {"Authorization": "Bearer " + create_token(app.state.store)}
     with TestClient(app) as client:
         created = client.post("/api/v1/entries", headers=headers, json={"text": "First version"})
         entry_id = created.json()["id"]
-        assert client.post("/api/v1/batches/run", headers=headers).json()["failed"] == 1
+        assert _run_batch_and_wait(client, headers, app.state.store.settings)["failed"] == 1
         failed = client.get("/api/v1/jobs?status=failed", headers=headers).json()
         assert len(failed) == 1
         revised = client.patch(
@@ -184,3 +206,20 @@ def test_revising_a_failed_entry_supersedes_its_terminal_failure(tmp_path: Path)
         assert client.get("/api/v1/jobs?status=failed", headers=headers).json() == []
         superseded = client.get("/api/v1/jobs?status=superseded", headers=headers).json()
         assert failed[0]["id"] in {job["id"] for job in superseded}
+
+
+def _run_batch_and_wait(
+    client: TestClient,
+    headers: dict[str, str],
+    settings: Settings,
+    provider: InferenceProvider | UnexpectedFailureProvider | None = None,
+) -> dict[str, Any]:
+    started = client.post("/api/v1/batches/run", headers=headers)
+    assert started.status_code == 202
+    assert started.json()["requested"] is True
+    coordinator = BatchCoordinator(
+        client.app.state.store, Runner(client.app.state.store, settings, provider)
+    )
+    result = coordinator.run_requested()
+    assert result is not None
+    return {"processed": result["done"], "failed": result["failed"]}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "resume_bullets": {"type":"array", "items":{"type":"object","additionalProperties":false,"properties":{"text":{"type":"string"},"evidence_dates":{"type":"array","items":{"type":"string"}}},"required":["text","evidence_dates"]}},
+    "star_stories": {"type":"array", "items":{"type":"object","additionalProperties":false,"properties":{"title":{"type":"string"},"situation":{"type":"string"},"task":{"type":"string"},"action":{"type":"string"},"result":{"type":"string"},"evidence_dates":{"type":"array","items":{"type":"string"}},"competencies":{"type":"array","items":{"type":"string"}}},"required":["title","situation","task","action","result","evidence_dates","competencies"]}},
+    "technical_topics": {"type":"array", "items":{"type":"object","additionalProperties":false,"properties":{"topic":{"type":"string"},"depth_notes":{"type":"string"},"evidence_dates":{"type":"array","items":{"type":"string"}}},"required":["topic","depth_notes","evidence_dates"]}},
+    "open_threads": {"type":"array", "items":{"type":"string"}}
+  },
+  "required":["resume_bullets","star_stories","technical_topics","open_threads"]
+}

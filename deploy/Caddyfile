@@ -1,0 +1,12 @@
+# Replace with the journal's public DNS name. Caddy obtains and renews TLS.
+journal.example.com {
+    # 50 MiB upload_limit_bytes + 16 KiB multipart metadata allowance.
+    # Change this together with MSJ_UPLOAD_LIMIT_BYTES.
+    request_body {
+        max_size 52445184
+    }
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    reverse_proxy 127.0.0.1:8765
+}
+
+# Caddy serves HTTPS with HTTP/2 by default. Keep the backend on loopback.

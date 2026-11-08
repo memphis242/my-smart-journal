@@ -221,21 +221,21 @@ def test_migration_preserves_legacy_rows_and_creates_review_session(tmp_path: Pa
         and job["status"] == "queued"
         for job in jobs
     )
+    entry = store.get_entry(entry_id, history=True)
     for target in ("summarize", "extract"):
-        followup = find_job(store, entry_id, "review", target, 1)
-        assert followup["status"] == "queued"
-        source, candidate, _ = store.job_inputs(followup)
-        assert source == "cleaned"
-        assert candidate in {"summary", "{}"}
-        assert store.claim({followup["id"]}) is None
-        with store.connect() as db:
-            dependency = db.execute(
-                "SELECT 1 FROM job_dependencies WHERE job_id=? AND depends_on IN "
-                "(SELECT id FROM jobs WHERE entry_id=? AND target='cleanup' AND kind='review' "
-                "AND turn=1)",
-                (followup["id"], entry_id),
-            ).fetchone()
-        assert dependency is not None
+        producer = find_job(store, entry_id, target, target, 0)
+        assert producer["status"] == "queued"
+        assert store.claim({producer["id"]}) is None
+        assert not any(job["kind"] == "review" and job["target"] == target for job in jobs)
+        assert entry["review_sessions"][target]["status"] == "pending"
+        assert entry["review_sessions"][target]["final_artifact"] is None
+    assert {artifact["id"] for artifact in entry["artifacts"]} >= {
+        raw_id,
+        clean_id,
+        review_artifact_id,
+        summary_artifact_id,
+        extract_artifact_id,
+    }
 
 
 def test_historical_attention_does_not_change_current_entry_status(tmp_path: Path) -> None:

@@ -6,10 +6,11 @@ build-backend = "hatchling.build"
 name = "my-smart-journal"
 version = "0.1.0"
 requires-python = ">=3.14"
-dependencies = ["fastapi", "uvicorn[standard]", "pydantic>=2", "pydantic-settings", "httpx", "rapidfuzz", "jsonschema", "python-multipart"]
+dependencies = ["fastapi", "uvicorn[standard]", "pydantic>=2", "pydantic-settings", "httpx", "rapidfuzz", "jsonschema", "python-multipart", "numpy"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-xdist", "pytest-asyncio", "ruff", "mypy", "types-jsonschema"]
+semantic = ["sentence-transformers"]
 
 [project.scripts]
 msj = "msj.cli:main"

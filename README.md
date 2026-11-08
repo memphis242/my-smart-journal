@@ -17,3 +17,12 @@ Phase 0 - benchmarking speech-to-text and small LLMs on local CPU vs. RunPod.
 3. Semantic search, extraction, rollups, compile output
 4. VPS deployment, restic backups
 5. Text-to-speech
+
+## Backend
+
+The [backend](backend/README.md) provides authenticated entries, browser sessions,
+search/retrieval, exports and compilations. Run `msj serve` and `msj worker` as
+separate processes. HTTP batch requests are durable; the worker picks them up
+within seconds. See the [API contract](docs/api-v1-contract.md) and
+[VPS deployment](docs/deploy-vps.md) for token re-issue migration, pinned/offline
+embedding setup and hardened service examples.
