@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f4f2ec" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Journal</title>
+    <meta name="description" content="Private journal: entries, search, processing queue, export and compilations." />
+    <!-- Runs before first paint so the page never flashes the other theme. External: the CSP allows no inline script. -->
+    <script src="/theme-init.js"></script>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <noscript>This journal needs JavaScript.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

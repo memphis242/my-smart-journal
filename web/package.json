@@ -1,0 +1,42 @@
+{
+  "name": "my-smart-journal-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@12.8.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite --port 15173 --strictPort",
+    "dev:mock": "vite --mode mock --port 15173 --strictPort",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "build:mock": "vite build --mode mock",
+    "preview": "vite preview --port 15175 --strictPort",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "lint": "eslint --max-warnings 0 .",
+    "test": "vitest run",
+    "e2e": "playwright test --project=desktop --project=phone",
+    "screenshots": "playwright test --project=screenshots"
+  },
+  "dependencies": {
+    "@fontsource-variable/source-serif-4": "5.3.1",
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@fontsource/ibm-plex-sans": "5.3.0",
+    "@preact/signals": "2.11.4",
+    "preact": "10.29.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.61.1",
+    "@preact/preset-vite": "2.10.6",
+    "@types/node": "22.20.5",
+    "eslint": "10.14.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.14.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1",
+    "vite": "8.3.6",
+    "vitest": "5.0.4"
+  }
+}
