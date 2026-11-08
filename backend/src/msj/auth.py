@@ -8,24 +8,32 @@ import secrets
 import stat
 import tempfile
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
+
+from .config import Settings
+from .diagnostics import SafeMessageError
 
 _logger = logging.getLogger(__name__)
 
 
 class TokenStore(Protocol):
-    settings: Any
+    @property
+    def settings(self) -> Settings: ...
 
     def set_token_hash(self, value: str) -> None: ...
     def token_hash(self) -> str | None: ...
 
 
-class TokenReissueRequired(RuntimeError):
+class TokenReissueRequired(SafeMessageError):
     """A legacy token digest cannot be verified with the current secret scheme."""
 
+    code = "TOKEN_REISSUE_REQUIRED"
 
-class TokenSecretError(RuntimeError):
+
+class TokenSecretError(SafeMessageError):
     """The private bearer-token key is missing, unsafe, or unreadable."""
+
+    code = "TOKEN_SECRET_INVALID"
 
 
 def _secret_path(store: TokenStore) -> Path:
@@ -33,12 +41,16 @@ def _secret_path(store: TokenStore) -> Path:
     return Path(data_dir).expanduser() / "token.secret"
 
 
-def _secret(store: TokenStore) -> bytes:
+def _secret(store: TokenStore, *, create: bool) -> bytes:
     path = _secret_path(store)
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         path.lstat()
     except FileNotFoundError:
+        if not create:
+            raise TokenReissueRequired(
+                f"Bearer-token key {path} is missing; run `msj create-token` to issue a new token."
+            ) from None
         temporary_path: Path | None = None
         try:
             descriptor, temporary_name = tempfile.mkstemp(prefix=".token.secret.", dir=path.parent)
@@ -62,7 +74,8 @@ def _secret(store: TokenStore) -> bytes:
             return _read_secret(path)
         except OSError as exc:
             raise TokenSecretError(
-                f"Cannot create or read bearer-token key {path} (errno {exc.errno})."
+                f"Cannot create or read bearer-token key {path} (errno {exc.errno}); "
+                "check data-directory ownership and key permissions, then run `msj create-token`."
             ) from exc
         finally:
             if temporary_path is not None:
@@ -77,7 +90,8 @@ def _secret(store: TokenStore) -> bytes:
                     )
     except OSError as exc:
         raise TokenSecretError(
-            f"Cannot create or read bearer-token key {path} (errno {exc.errno})."
+            f"Cannot create or read bearer-token key {path} (errno {exc.errno}); "
+            "check data-directory ownership and key permissions, then run `msj create-token`."
         ) from exc
     return _read_secret(path)
 
@@ -88,42 +102,74 @@ def _read_secret(path: Path) -> bytes:
         with os.fdopen(descriptor, "rb") as secret_file:
             metadata = os.fstat(secret_file.fileno())
             if not stat.S_ISREG(metadata.st_mode):
-                raise TokenSecretError(f"Bearer-token key {path} must be a regular file.")
+                raise TokenSecretError(
+                    f"Bearer-token key {path} must be a regular file; restore a private key "
+                    "backup or remove the invalid file and run `msj create-token`."
+                )
             mode = stat.S_IMODE(metadata.st_mode)
-            if mode != 0o600:
+            if mode & 0o077:
                 raise TokenSecretError(
                     f"Bearer-token key {path} has mode {mode:04o}; set its permissions to 0600."
                 )
             value = secret_file.read(33)
     except OSError as exc:
-        raise TokenSecretError(f"Cannot read bearer-token key {path} (errno {exc.errno}).") from exc
+        raise TokenSecretError(
+            f"Cannot read bearer-token key {path} (errno {exc.errno}); "
+            "check file ownership and owner-read permissions, then retry."
+        ) from exc
     if len(value) != 32:
         raise TokenSecretError(
-            f"Bearer-token key {path} must contain exactly 32 bytes; found at least {len(value)}."
+            f"Bearer-token key {path} must contain exactly 32 bytes; found at least {len(value)}. "
+            "Restore a key backup or remove the invalid key and run `msj create-token`."
         )
     return value
 
 
 def token_secret(store: TokenStore) -> bytes:
     """Return the private HMAC key used for bearer token digests."""
-    return _secret(store)
+    return _secret(store, create=False)
 
 
 def create_token(store: TokenStore) -> str:
     """Create a 256-bit access token and persist only its keyed digest."""
     token = secrets.token_urlsafe(32)
-    store.set_token_hash(_format_digest(token, _secret(store)))
+    store.set_token_hash(_format_digest(token, _secret(store, create=True)))
     return token
 
 
 def _format_digest(token: str, secret: bytes) -> str:
     digest = hmac.new(secret, token.encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"hmac-sha256${digest}"
+    key_id = hashlib.sha256(secret).hexdigest()[:16]
+    return f"hmac-sha256${key_id}${digest}"
 
 
 def verify_token(store: TokenStore, token: str) -> bool:
     """Verify an access token without exposing stored hash details."""
-    return verify_token_hash(token, store.token_hash(), _secret(store))
+    return verify_token_hash(token, store.token_hash(), _secret(store, create=False))
+
+
+def check_token_secret(store: TokenStore) -> None:
+    """Validate that the stored token digest can be served without exposing a token."""
+    stored = store.token_hash()
+    if stored is None:
+        return
+    if stored in {"reissue-required"} or stored.startswith("scrypt$"):
+        raise TokenReissueRequired("Bearer token must be re-issued: run `msj create-token`.")
+    try:
+        algorithm, key_id, expected = stored.split("$", maxsplit=2)
+    except ValueError:
+        raise TokenReissueRequired(
+            "Bearer token must be re-issued: run `msj create-token`."
+        ) from None
+    if algorithm != "hmac-sha256" or len(key_id) != 16 or len(expected) != 64:
+        raise TokenReissueRequired("Bearer token must be re-issued: run `msj create-token`.")
+    actual_key_id = hashlib.sha256(_secret(store, create=False)).hexdigest()[:16]
+    if not hmac.compare_digest(key_id, actual_key_id):
+        raise TokenReissueRequired(
+            f"Bearer-token key {_secret_path(store)} does not match the stored token; "
+            "run `msj create-token` "
+            "to issue a new token."
+        )
 
 
 def verify_token_hash(token: str, stored: str | None, secret: bytes) -> bool:
@@ -132,11 +178,20 @@ def verify_token_hash(token: str, stored: str | None, secret: bytes) -> bool:
         return False
     if stored in {"reissue-required"} or stored.startswith("scrypt$"):
         raise TokenReissueRequired("Bearer token must be re-issued: run `msj create-token`.")
+    if stored.startswith("hmac-sha256$") and stored.count("$") == 1:
+        raise TokenReissueRequired(
+            "Bearer token digest has no key ID; run `msj create-token` to issue a new token."
+        )
     try:
-        algorithm, expected = stored.split("$", maxsplit=1)
-        if algorithm != "hmac-sha256" or len(expected) != 64:
+        algorithm, stored_key_id, expected = stored.split("$", maxsplit=2)
+        if algorithm != "hmac-sha256" or len(expected) != 64 or len(stored_key_id) != 16:
             return False
-        actual = _format_digest(token, secret).split("$", maxsplit=1)[1]
+        _algorithm, current_key_id, actual = _format_digest(token, secret).split("$")
     except ValueError, TypeError:
         return False
+    if not hmac.compare_digest(stored_key_id, current_key_id):
+        raise TokenReissueRequired(
+            "Bearer-token key does not match the stored token; run `msj create-token` "
+            "to issue a new token."
+        )
     return hmac.compare_digest(actual, expected)

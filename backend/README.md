@@ -34,7 +34,7 @@ Provider HTTP failures appear in the job's `last_error` with the HTTP status, co
 
 ## Run
 
-Create a single-user API token once. The displayed bearer token cannot be recovered later; only its HMAC-SHA256 digest is stored. A 256-bit key lives in `token.secret` (0600) in the data directory. Migration 009 invalidates legacy scrypt digests: `TOKEN_REISSUE_REQUIRED` means token must be re-issued: run `msj create-token`. Back up the secret with the journal database.
+Create a single-user API token once. The displayed bearer token cannot be recovered later; only its key-identified digest (`hmac-sha256$<kid>$<hex>`) is stored. Only `msj create-token` creates the 256-bit key in `token.secret` in the data directory. The key must be a regular 32-byte file with no group/other permissions (0600 or owner-only 0400 are accepted). Legacy digests, a missing key, or a key-ID mismatch return `TOKEN_REISSUE_REQUIRED`: run `msj create-token`. An unsafe or unreadable key returns actionable `TOKEN_SECRET_INVALID`; logs name the key file. Worker and inline batch processing continue with a warning when token reissue is needed. Back up the secret with the journal database.
 
 ```sh
 export MSJ_CONFIG_FILE=/path/to/config.toml
@@ -77,13 +77,13 @@ Entry responses include `review_sessions`, keyed by `cleanup`, `summarize`, and 
 
 Migration 004 preserves existing artifacts, jobs, and dependency edges while adding session state and review links. Legacy one-pass review records use turn 0, link to their original cleaned artifact when available, and remain in artifact history. Startup initializes review state for existing current-revision work. Stop old serve/worker processes before upgrading and restart them with the new package. Migration invalidates in-flight legacy claims and requeues producer work; a database claim-protocol constraint prevents old worker code from reclaiming jobs after the upgrade. New workers resume processing with fresh leases. Work that already used its attempt budget becomes failed and needs an explicit retry. The session bound also bounds automatic follow-up jobs: three enabled producers require six LLM jobs when every first review accepts, and at most eighteen LLM jobs when each needs all three review turns, plus one transcription job for audio.
 
-Pluggable providers should raise `ProviderError` on failure. Its message is treated as private and replaced with a generic actionable job error; retryability is preserved. Built-in providers and validation code use sanitized error templates for size limits, schema paths, deadlines, and model mismatches. Exception values and model output are never included in diagnostic logs.
+Pluggable providers should raise `ProviderError` on failure. Its message is treated as private and replaced with a generic actionable job error; retryability is preserved. Built-in providers and validation code use sanitized `SafeProviderError` templates for size limits, schema paths, deadlines, and model mismatches; diagnostics preserve these messages with code `PROVIDER_ERROR`. Private exception values and model output are excluded from diagnostic logs.
 
 Search sends each entry at most once, in the first tier that matches: case-sensitive phrase, case-insensitive substring, fuzzy match, then SQLite FTS5 relevance with a recency boost. Results arrive as NDJSON tier events followed by a completion event. Tier 5 ranks overlapping local embedding chunks by cosine similarity and includes the best matching passage. Encryption at rest is not implemented.
 
 ## API examples
 
-Create text with `POST /api/v1/entries`, JSON `{"text":"I worked on Atlas.","tags":["work"],"entry_date":"2026-11-06"}`. For audio, send multipart field `file` with a supported audio MIME type; optional `title`, `entry_date`, and `tags` (a JSON array string) carry metadata. Both return the created entry and queued processing jobs. Upload file size is bounded by `upload_limit_bytes`, with an additional 16 KiB allowance for request metadata. MIME declarations are checked; decoding failures are reported by transcription jobs.
+Create text with `POST /api/v1/entries`, JSON `{"text":"I worked on Atlas.","tags":["work"],"entry_date":"2026-11-06"}`. For audio, send multipart field `file` with a supported audio MIME type; optional `title`, `entry_date`, and `tags` (a JSON array string) carry metadata. Both return the created entry and queued processing jobs. Upload file size is bounded by `upload_limit_bytes`, with an additional 16 KiB allowance for request metadata. MIME validation compares the base type, accepting `audio/webm;codecs=opus` and `audio/mp4;codecs=mp4a.40.2`; the full declared value is retained in the `raw_audio` artifact's nullable `content_type` field. Decoding failures are reported by transcription jobs.
 
 `GET /api/v1/entries` returns `{items,total}` with `view=summary` by default; `view=full` includes artifacts, jobs, and review sessions. It accepts inclusive `from`/`to` calendar-date bounds, repeated `tag`/`project`/`skill` values (case-insensitive exact matching, OR within a kind and AND across kinds), `order=asc|desc`, `limit` (1-500), and `offset`. Ordering uses entry date, creation time, then ID. Summary and detail views include final summary, cleaned or raw text, projects, skills, and derived status with precedence failed, processing, queued, needs_attention, done. `GET /api/v1/entries/{id}/neighbors` applies the same filters and returns newer/older IDs. `GET /api/v1/facets` counts current tags, projects, and skills case-insensitively, displaying their most frequent spelling. `GET /api/v1/entries/{id}` returns current-revision artifacts; `?history=1` includes all revisions. `PATCH /api/v1/entries/{id}` accepts `text`, `title` (nullable), `tags`, and `entry_date`. Valid compact and ISO-week date input is stored canonically as `YYYY-MM-DD`. Editing text queues a fresh pipeline and marks queued, running, and failed jobs from older revisions `superseded`, distinct from current processing failures. Completed jobs, source recordings, and transcripts remain in history. Migration 003 rebuilds the jobs table while preserving dependencies and converts obsolete-revision failures to `superseded`.
 
@@ -101,10 +101,10 @@ Jobs in the jobs API and entry views include a computed `blocked_by` list identi
 `GET /api/v1/search?q=Atlas` streams one NDJSON event per tier:
 
 ```json
-{"tier":1,"name":"exact","results":[{"entry_id":"...","score":1.0,"snippet":"I worked on Atlas."}],"elapsed_ms":0.1}
+{"tier":1,"name":"exact","results":[{"entry_id":"...","score":1.0,"snippet":"I worked on Atlas.","entry":{"id":"...","text":"I worked on Atlas.","status":"done"}}],"elapsed_ms":0.1}
 ```
 
-Tiers 2-5 follow, including empty results, then `{"done":true,"elapsed_ms":1.2}`. Each entry appears only in its earliest matching tier. Exact and substring matching use the current text, summary, title, and tags; fuzzy matching uses RapidFuzz partial/token-set ratios. FTS queries quote user tokens and combine them with OR, then rank by weighted BM25 plus a bounded 30-day recency boost. Use `tiers=1,2,3,4` to skip local embedding work, or select any increasing subset of tiers 1-5. Search accepts the same date and facet filters as entries. Tier 5 uses the same entry-ID deduplication contract.
+Tiers 2-5 follow, including empty results, then `{"done":true,"elapsed_ms":1.2}`. Every result includes `entry`, the full summary-view item (abbreviated above), so clients can render without refetching. Each entry appears only in its earliest matching tier. Exact and substring matching use the current text, summary, title, and tags; fuzzy matching uses RapidFuzz partial/token-set ratios. FTS queries quote user tokens and combine them with OR, then rank by weighted BM25 plus a bounded 30-day recency boost. Use `tiers=1,2,3,4` to skip local embedding work, or select any increasing subset of tiers 1-5. Search accepts the same date and facet filters as entries. Tier 5 uses the same entry-ID deduplication contract.
 
 ## Semantic search, retrieval, and compilation
 
@@ -141,8 +141,14 @@ Run `msj worker` separately: it checks requests and the batch schedule every
 `worker_tick_s` (2 seconds by default) with interruptible waits. `msj run-batch`
 runs inline using the same lease. Local dead owners (host/PID/boot/process start)
 are reclaimed. Replaced batch claims are recovered even if individual job leases
-have time remaining. Worker conflicts log at INFO and retry after the remaining
-lease time. Queue `next_run_at` is the next wake, and `batch.last_error` contains
+have time remaining and retain an actionable reclaim reason in job `last_error`.
+Audio-write reservations carry a creation time. Remote-host reservations expire
+after `max(3600, 2 * lease_s)` seconds and are logged when skipped; local ones use
+process liveness. Worker conflicts log at INFO and
+recheck ownership every tick, including after an early lease release. Queue
+`next_run_at` is the earlier wall-clock schedule or retry deadline (immediately
+due for a new request until the worker observes it); `last_seen_at` reports liveness. Heartbeats during
+processing preserve the deadline. `batch.last_error` contains
 `{code,detail}` (`BATCH_FAILED` or `BATCH_LEASE_LOST`). Worker heartbeat age above
 max(10 seconds, 3 ticks) is stale. The server loads one query embedding model
 lazily off the event loop; the worker loads its own shared service.
@@ -207,8 +213,9 @@ Entry detail includes `compilation_count` for a deletion confirmation.
 
 All problem responses and NDJSON failure events contain a stable code. Internal
 ValueErrors yield logged 500 `INTERNAL_ERROR`; logs retain errno/filename, SQLite
-codes, validation field/type and traceback file:line evidence without exception
-messages, tokens or journal text. API JSON, search and exports use `no-store`.
+codes, validation field/type and traceback file:line evidence. Authored safe errors
+also retain their actionable message and stable code; private exception messages,
+tokens and journal text remain excluded. API JSON, search and exports use `no-store`.
 Queries reject control characters (`INVALID_QUERY`), and retrieval `k` is a strict
 integer (no bool, float or string). Retrieval reads one SQLite snapshot.
 

@@ -31,6 +31,7 @@ def test_tokens_use_private_hmac_secret_and_reject_legacy_digest(tmp_path: Path)
     assert secret_path.stat().st_mode & 0o777 == 0o600
     assert len(secret_path.read_bytes()) == 32
     assert store.token_hash().startswith("hmac-sha256$")
+    assert len((store.token_hash() or "").split("$")) == 3
     assert verify_token(store, token)
     assert not verify_token(store, "invalid")
     store.set_token_hash("scrypt$legacy$hash")
@@ -44,15 +45,13 @@ def test_tokens_use_private_hmac_secret_and_reject_legacy_digest(tmp_path: Path)
 def test_concurrent_first_use_publishes_one_complete_secret(tmp_path: Path) -> None:
     store = _store(tmp_path)
     barrier = threading.Barrier(16)
-    keys: list[bytes] = []
+    tokens: list[str] = []
     errors: list[BaseException] = []
 
     def load_key() -> None:
         try:
             barrier.wait(timeout=5)
-            from msj.auth import token_secret
-
-            keys.append(token_secret(store))
+            tokens.append(create_token(store))
         except BaseException as exc:
             errors.append(exc)
 
@@ -62,11 +61,12 @@ def test_concurrent_first_use_publishes_one_complete_secret(tmp_path: Path) -> N
     for thread in threads:
         thread.join(timeout=5)
     assert not errors
-    assert len(keys) == 16
-    assert len(set(keys)) == 1
+    assert len(tokens) == 16
+    assert len(set(tokens)) == 16
     secret_path = tmp_path / "token.secret"
     assert len(secret_path.read_bytes()) == 32
     assert secret_path.stat().st_mode & 0o777 == 0o600
+    assert any(verify_token(store, token) for token in tokens)
 
 
 @pytest.mark.parametrize(
@@ -84,6 +84,33 @@ def test_existing_secret_must_have_private_mode_and_expected_length(
     secret_path.chmod(mode)
     with pytest.raises(TokenSecretError, match=expected):
         token_secret(store)
+
+
+def test_reading_missing_secret_requires_reissue_without_creating_file(tmp_path: Path) -> None:
+    from msj.auth import token_secret
+
+    store = _store(tmp_path)
+    secret_path = tmp_path / "token.secret"
+    with pytest.raises(TokenReissueRequired, match="msj create-token"):
+        token_secret(store)
+    assert not secret_path.exists()
+
+
+def test_secret_key_id_mismatch_requires_token_reissue(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    token = create_token(store)
+    secret_path = tmp_path / "token.secret"
+    secret_path.write_bytes(b"y" * 32)
+    secret_path.chmod(0o600)
+    with pytest.raises(TokenReissueRequired, match="does not match"):
+        verify_token(store, token)
+
+
+def test_read_only_private_secret_mode_is_accepted(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    token = create_token(store)
+    (tmp_path / "token.secret").chmod(0o400)
+    assert verify_token(store, token)
 
 
 def test_session_validation_does_not_request_a_write_lock(tmp_path: Path) -> None:

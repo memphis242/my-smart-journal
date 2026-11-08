@@ -6,6 +6,16 @@ from typing import Any
 
 from pydantic import ValidationError
 
+
+class SafeMessageError(Exception):
+    """An application error with a message safe to log and return to the caller."""
+
+    code = "INTERNAL_ERROR"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
 # Only schema-owned names may reach diagnostic logs; arbitrary mapping keys are private.
 _FIELDS = frozenset(
     """
@@ -41,6 +51,9 @@ def safe_exception(exc: BaseException, *, trusted_paths: tuple[str, ...] = ()) -
 
     def evidence(error: BaseException) -> dict[str, Any]:
         result: dict[str, Any] = {"type": type(error).__name__}
+        if isinstance(error, SafeMessageError):
+            result["message"] = error.message
+            result["code"] = error.code
         frames: list[str] = []
         trace = error.__traceback__
         while trace is not None:

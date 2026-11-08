@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from msj.api import create_app
 from msj.auth import create_token
+from msj.batch import BatchCoordinator
 from msj.config import TASKS, Settings, TaskRoute
 from msj.pipeline import Runner
 
@@ -213,7 +214,9 @@ def test_batch_request_contract_is_durable_and_conflicts_with_active_lease(tmp_p
     assert first.status_code == 202
     assert first.json() == {"requested": True, "worker": {"stale": True}}
     assert client.post("/api/v1/batches/run", headers=auth).json() == first.json()
-    coordinator = client.app.state.batch_coordinator
+    coordinator = BatchCoordinator(
+        client.app.state.store, Runner(client.app.state.store, client.app.state.store.settings)
+    )
     assert not hasattr(client.app.state, "runner")
     batch_id = coordinator.acquire("manual")
     assert batch_id is not None

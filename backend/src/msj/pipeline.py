@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from importlib.resources import files
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 from jsonschema import Draft202012Validator
@@ -20,6 +20,9 @@ from .providers import (
     revision_messages,
 )
 from .storage import Store
+
+if TYPE_CHECKING:
+    from .embedding import EmbeddingService
 
 _logger = logging.getLogger(__name__)
 
@@ -83,12 +86,12 @@ class Runner:
         store: Store,
         settings: Settings,
         provider: Provider | None = None,
-        embedding: Any | None = None,
+        embedding: EmbeddingService | None = None,
     ) -> None:
         self.store = store
         self.settings = settings
         self._provider = provider
-        self._embedding: Any = embedding
+        self._embedding: EmbeddingService | None = embedding
 
     def run_batch(self, *, _lease_id: str | None = None) -> dict[str, Any]:
         from .batch import BatchCoordinator

@@ -2,15 +2,13 @@
 
 import json
 import logging
-import os
-import socket
 import threading
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from .diagnostics import safe_exception
+from .diagnostics import SafeMessageError, safe_exception
+from .ownership import OwnerIdentity
 from .storage import Conflict, Store, identifier, timestamp
 
 if TYPE_CHECKING:
@@ -20,7 +18,14 @@ _logger = logging.getLogger(__name__)
 Trigger = Literal["manual", "schedule"]
 
 
+class BatchStateUnavailable(SafeMessageError):
+    code = "BATCH_STATE_UNAVAILABLE"
+
+
 def _safe_detail(diagnostic: dict[str, Any]) -> str:
+    message = diagnostic.get("message")
+    if isinstance(message, str):
+        return message
     details = [str(diagnostic.get("type", "Exception"))]
     for key in ("errno", "filename", "sqlite_errorcode", "sqlite_errorname"):
         value = diagnostic.get(key)
@@ -39,61 +44,87 @@ def _safe_detail(diagnostic: dict[str, Any]) -> str:
     )
 
 
-def _boot_id() -> str:
-    try:
-        return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
-    except OSError:
-        return "unknown"
-
-
-def _process_start(pid: int) -> str | None:
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-        fields = stat[stat.rfind(")") + 2 :].split()
-        return fields[19]
-    except OSError, IndexError:
-        return None
-
-
-class BatchCoordinator:
-    def __init__(self, store: Store, runner: Runner | None = None) -> None:
+class BatchRequestCoordinator:
+    def __init__(self, store: Store) -> None:
         self._store = store
-        self._runner = runner
 
-    def _owner(self) -> tuple[str, int, str, str]:
-        pid = os.getpid()
-        return socket.gethostname(), pid, _boot_id(), _process_start(pid) or timestamp()
-
-    @staticmethod
-    def _owner_alive(row: Any) -> bool:
-        host, pid, boot = row["owner_host"], row["owner_pid"], row["owner_boot_id"]
-        if not host or pid is None or not boot:
-            return False
-        if host != socket.gethostname():
-            return True
-        if boot != _boot_id():
-            return False
-        try:
-            os.kill(int(pid), 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        recorded_start = row["owner_started_at"]
-        current_start = _process_start(int(pid))
-        return current_start is None or recorded_start == current_start
-
-    def acquire(self, trigger: Trigger) -> str | None:
-        batch_id = identifier()
+    def request(self) -> bool:
+        """Persist a manual request; return false when a batch currently owns the lease."""
         now = time.time()
-        host, pid, boot, started = self._owner()
         with self._store.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM batch_state WHERE id=1").fetchone()
             if row is None:
-                raise RuntimeError("Batch state is unavailable; run `msj migrate` and restart")
+                raise BatchStateUnavailable(
+                    "Batch state is unavailable; run `msj migrate` and restart"
+                )
+            if row["batch_id"] is not None and row["lease_until"] is not None:
+                if float(row["lease_until"]) > now and OwnerIdentity.alive(row):
+                    return False
+            _ = db.execute(
+                "UPDATE batch_state SET request_pending=1,request_created_at=COALESCE("
+                "request_created_at,?),worker_next_run_at=? WHERE id=1",
+                (timestamp(), timestamp()),
+            )
+        return True
+
+    def status(self) -> dict[str, Any]:
+        return queue_status(self._store)
+
+    def has_pending_request(self) -> bool:
+        return self.pending_request_at() is not None
+
+    def pending_request_at(self) -> str | None:
+        with self._store.connect() as db:
+            row = db.execute(
+                "SELECT request_pending,request_created_at FROM batch_state WHERE id=1"
+            ).fetchone()
+        if row is None:
+            raise BatchStateUnavailable("Batch state is unavailable; run `msj migrate` and restart")
+        return str(row["request_created_at"]) if row["request_pending"] else None
+
+    def heartbeat_worker(
+        self, next_run_at: str | None = None, *, observed_request_at: str | None = None
+    ) -> None:
+        with self._store.connect() as db:
+            if next_run_at is None:
+                _ = db.execute(
+                    "UPDATE batch_state SET worker_last_seen_at=? WHERE id=1", (timestamp(),)
+                )
+            else:
+                _ = db.execute(
+                    "UPDATE batch_state SET worker_last_seen_at=?,worker_next_run_at="
+                    "CASE WHEN request_pending=1 AND request_created_at IS NOT ? "
+                    "THEN COALESCE(worker_next_run_at,?) ELSE ? END "
+                    "WHERE id=1",
+                    (timestamp(), observed_request_at, timestamp(), next_run_at),
+                )
+
+    def touch_worker(self) -> None:
+        self.heartbeat_worker()
+
+
+class BatchCoordinator(BatchRequestCoordinator):
+    def __init__(self, store: Store, runner: Runner) -> None:
+        super().__init__(store)
+        self._runner = runner
+
+    def _owner(self) -> OwnerIdentity:
+        return OwnerIdentity.current()
+
+    def acquire(self, trigger: Trigger) -> str | None:
+        batch_id = identifier()
+        now = time.time()
+        owner = self._owner()
+        with self._store.connect() as db:
+            _ = db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM batch_state WHERE id=1").fetchone()
+            if row is None:
+                raise BatchStateUnavailable(
+                    "Batch state is unavailable; run `msj migrate` and restart"
+                )
             active = row["batch_id"] is not None and row["lease_until"] is not None
-            if active and float(row["lease_until"]) > now and self._owner_alive(row):
+            if active and float(row["lease_until"]) > now and OwnerIdentity.alive(row):
                 return None
             if active:
                 _ = db.execute(
@@ -109,66 +140,19 @@ class BatchCoordinator:
                 )
             _ = db.execute(
                 "UPDATE batch_state SET batch_id=?,started_at=?,trigger=?,lease_until=?,"
-                "owner_host=?,owner_pid=?,owner_boot_id=?,owner_started_at=? "
-                "WHERE id=1",
+                "owner_host=?,owner_pid=?,owner_boot_id=?,owner_started_at=? WHERE id=1",
                 (
                     batch_id,
                     timestamp(),
                     trigger,
                     now + self._store.settings.lease_s,
-                    host,
-                    pid,
-                    boot,
-                    started,
+                    owner.host,
+                    owner.pid,
+                    owner.boot_id,
+                    owner.started_at,
                 ),
             )
         return batch_id
-
-    def request(self) -> bool:
-        """Persist a manual request; return false when a batch currently owns the lease."""
-        now = time.time()
-        with self._store.connect() as db:
-            _ = db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM batch_state WHERE id=1").fetchone()
-            if row is None:
-                raise RuntimeError("Batch state is unavailable; run `msj migrate` and restart")
-            if row["batch_id"] is not None and row["lease_until"] is not None:
-                if float(row["lease_until"]) > now and self._owner_alive(row):
-                    return False
-            _ = db.execute(
-                "UPDATE batch_state SET request_pending=1,request_created_at=COALESCE("
-                "request_created_at,?),worker_next_run_at=? WHERE id=1",
-                (timestamp(), timestamp()),
-            )
-        return True
-
-    def status(self) -> dict[str, Any]:
-        return queue_status(self._store)
-
-    def has_pending_request(self) -> bool:
-        with self._store.connect() as db:
-            row = db.execute("SELECT request_pending FROM batch_state WHERE id=1").fetchone()
-        return bool(row is not None and row["request_pending"])
-
-    def heartbeat_worker(self, next_run_at: str | None = None) -> None:
-        with self._store.connect() as db:
-            _ = db.execute(
-                "UPDATE batch_state SET worker_last_seen_at=?,worker_next_run_at=? WHERE id=1",
-                (timestamp(), next_run_at),
-            )
-
-    def touch_worker(self) -> None:
-        interval = min(
-            max(0.2, self._store.settings.worker_tick_s), max(0.2, self._store.settings.lease_s / 3)
-        )
-        self.heartbeat_worker(datetime.fromtimestamp(time.time() + interval, UTC).isoformat())
-
-    def lease_remaining_s(self) -> float:
-        with self._store.connect() as db:
-            row = db.execute("SELECT lease_until FROM batch_state WHERE id=1").fetchone()
-        if row is None or row["lease_until"] is None:
-            return 0.0
-        return max(0.0, float(row["lease_until"]) - time.time())
 
     def renew(self, batch_id: str) -> None:
         now = time.time()
@@ -192,14 +176,12 @@ class BatchCoordinator:
             if result is not None
             else None
         )
-        lost = False
         with self._store.connect() as db:
             changed = db.execute(
                 "UPDATE batch_state SET batch_id=NULL,started_at=NULL,trigger=NULL,"
-                "lease_until=NULL,"
-                "owner_host=NULL,owner_pid=NULL,owner_boot_id=NULL,owner_started_at=NULL,"
-                "request_pending=0,request_created_at=NULL,last_finished_at=?,"
-                "last_result=?,last_error=? WHERE id=1 AND batch_id=?",
+                "lease_until=NULL,owner_host=NULL,owner_pid=NULL,owner_boot_id=NULL,"
+                "owner_started_at=NULL,request_pending=0,request_created_at=NULL,"
+                "last_finished_at=?,last_result=?,last_error=? WHERE id=1 AND batch_id=?",
                 (
                     timestamp(),
                     json.dumps(persisted_result) if persisted_result is not None else None,
@@ -207,8 +189,7 @@ class BatchCoordinator:
                     batch_id,
                 ),
             )
-            if changed.rowcount != 1:
-                lost = True
+            lost = changed.rowcount != 1
         if lost:
             lost_error = json.dumps(
                 {
@@ -224,7 +205,6 @@ class BatchCoordinator:
             raise Conflict("Batch lease was replaced before release; owner no longer matches")
 
     def run_sync(self, trigger: Trigger = "manual", *, worker: bool = False) -> dict[str, Any]:
-        assert self._runner is not None
         batch_id = self.acquire(trigger)
         if batch_id is None:
             raise Conflict("A batch is already running; wait for it to finish before retrying")
@@ -279,29 +259,29 @@ class BatchCoordinator:
         heartbeat = threading.Thread(target=renew_until_done, name="msj-batch-lease", daemon=True)
         heartbeat.start()
         try:
-            assert self._runner is not None
             result = self._runner.run_batch(_lease_id=batch_id)
-            if lease_lost.is_set():
-                raise Conflict("Batch lease was lost while processing")
-            return result
         finally:
             stop.set()
-            heartbeat.join(timeout=1)
+            heartbeat.join()
+        if lease_lost.is_set():
+            raise Conflict("Batch lease was lost while processing")
+        return result
 
     def run_requested(self) -> dict[str, Any] | None:
-        assert self._runner is not None
         now = time.time()
         batch_id = identifier()
-        host, pid, boot, started = self._owner()
+        owner = self._owner()
         with self._store.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM batch_state WHERE id=1").fetchone()
             if row is None:
-                raise RuntimeError("Batch state is unavailable; run `msj migrate` and restart")
+                raise BatchStateUnavailable(
+                    "Batch state is unavailable; run `msj migrate` and restart"
+                )
             if not row["request_pending"]:
                 return None
             if row["batch_id"] is not None and row["lease_until"] is not None:
-                if float(row["lease_until"]) > now and self._owner_alive(row):
+                if float(row["lease_until"]) > now and OwnerIdentity.alive(row):
                     raise Conflict("A batch is already running; retry after its lease finishes")
                 _ = db.execute(
                     "UPDATE batch_state SET last_error=? WHERE id=1",
@@ -321,10 +301,10 @@ class BatchCoordinator:
                     batch_id,
                     timestamp(),
                     now + self._store.settings.lease_s,
-                    host,
-                    pid,
-                    boot,
-                    started,
+                    owner.host,
+                    owner.pid,
+                    owner.boot_id,
+                    owner.started_at,
                 ),
             )
         return self._run_claimed(batch_id, worker=True)
@@ -335,7 +315,7 @@ def queue_status(store: Store) -> dict[str, Any]:
     with store.connect() as db:
         state = db.execute("SELECT * FROM batch_state WHERE id=1").fetchone()
         if state is None:
-            raise RuntimeError("Queue state is unavailable; run `msj migrate` and restart")
+            raise BatchStateUnavailable("Queue state is unavailable; run `msj migrate` and restart")
         current = "(j.entry_id IS NULL OR j.revision=e.revision)"
         status_counts = {
             str(row["status"]): int(row["count"])
@@ -363,7 +343,7 @@ def queue_status(store: Store) -> dict[str, Any]:
         }
     batch_running = state["batch_id"] is not None and state["lease_until"] is not None
     batch_running = bool(
-        batch_running and float(state["lease_until"]) > now and BatchCoordinator._owner_alive(state)
+        batch_running and float(state["lease_until"]) > now and OwnerIdentity.alive(state)
     )
     result = json.loads(state["last_result"]) if state["last_result"] else None
     last_error = json.loads(state["last_error"]) if state["last_error"] else None

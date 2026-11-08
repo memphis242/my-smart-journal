@@ -10,6 +10,8 @@ This contract covers the endpoints the web UI needs. The backend and the web UI 
 - Every other endpoint except `/health` accepts either `Authorization: Bearer` or the cookie. Mutating requests (POST, PATCH or DELETE) that authenticate by cookie must also send `X-MSJ-CSRF: 1`; without it the response is 403 with code `CSRF_HEADER_MISSING`.
 - The cookie stores an opaque server-side session id, never the token itself. Sessions live in SQLite, and only a hash of each session id is stored. Changing the token with `msj create-token` invalidates every session.
 
+Valid bearer tokens remain accepted when the client's failed-auth bucket is full. Only `msj create-token` creates `token.secret`. Digests use `hmac-sha256$<kid>$<hex>` so a missing or mismatched key returns 401 `TOKEN_REISSUE_REQUIRED`, with instructions to run `msj create-token`; logs identify the key file. Legacy digests also require reissue. An unsafe or unreadable key returns 500 `TOKEN_SECRET_INVALID` with an actionable detail. The key must be a regular 32-byte file with no group/other permission bits; owner-only read mode `0400` is accepted.
+
 ## Entries
 
 `GET /entries` takes these query parameters, all optional:
@@ -49,7 +51,7 @@ The response is `{"items": [...], "total": <count matching the filters>}`. This 
 
 When several conditions hold, the first row in the table wins.
 
-`GET /entries/{id}` includes `compilation_count`, the number of compilations that cite this entry. Deleting an entry also deletes those compilations, their source snapshots, jobs, and results; use this count in the deletion confirmation. Its response also gains the summary-view fields above, so the detail modal can render without picking through artifacts. `POST /entries` is unchanged; the UI uses JSON for text entries and multipart for audio recorded with MediaRecorder (`audio/webm;codecs=opus` or `audio/mp4`).
+`GET /entries/{id}` includes `compilation_count`, the number of compilations that cite this entry. Deleting an entry also deletes those compilations, their source snapshots, jobs, and results; use this count in the deletion confirmation. Its response also gains the summary-view fields above, so the detail modal can render without picking through artifacts. `POST /entries` uses JSON for text entries and multipart for audio recorded with MediaRecorder. Audio MIME validation compares the base type, accepting parameters such as `audio/webm;codecs=opus` and `audio/mp4;codecs=mp4a.40.2`. The full declared value is stored in the `raw_audio` artifact's nullable `content_type` field; existing recordings without a declaration have null.
 
 `GET /entries/{id}/neighbors` takes the same filter parameters as `GET /entries` and returns `{"newer": id|null, "older": id|null}` within that filtered ordering. The detail modal's left and right bars use it at the edges of the loaded page.
 
@@ -66,6 +68,8 @@ Facet values come from the user's tags and from the final extraction's `projects
 ## Search, tiers 1-5
 
 `GET /search?q=…` keeps the existing NDJSON contract and accepts the same filter parameters as `GET /entries`. A `tiers` parameter, a comma list defaulting to `1,2,3,4,5`, allows a cheap search that skips the semantic tier.
+
+Every tier result includes `entry_id`, `score`, `snippet`, and `entry`, the complete summary-view item described above. Clients can render a search card without fetching the entry again.
 
 Tier 5 is `{"tier":5,"name":"semantic","results":[…],"elapsed_ms":…}`. Each result also carries `"passage": "<best matching chunk>"`. Entries already returned by an earlier tier are excluded, which keeps the existing deduplication contract.
 
@@ -111,9 +115,11 @@ The ranking combines semantic scores with tier 4 BM25 through reciprocal rank fu
 
 `items` covers the current revisions' non-terminal and failed jobs, oldest first, capped at 200.
 
-The worker writes a heartbeat during its short wake cycle and while processing. `next_run_at` records the actual next wake, including lease-conflict retries. The default tick is 2 seconds; heartbeat age above max(10 seconds, 3 ticks) indicates a stale worker.
+The worker writes a heartbeat during its short wake cycle and while processing. `last_seen_at` reports liveness only. `next_run_at` is the wall-clock time of the next scheduled batch or lease-conflict retry, whichever is earlier. A new manual request makes it due immediately until observed by the worker; an observed request blocked on a lease shows the retry deadline. Heartbeats during processing preserve that deadline. Lease ownership is rechecked at least every tick so an early release does not delay requests until lease expiry. The default tick is 2 seconds; heartbeat age above max(10 seconds, 3 ticks) indicates a stale worker.
 
 `POST /batches/run` records a durable request and returns 202 `{"requested": true}`. Repeated requests while one is pending are idempotent. If the heartbeat is stale, the response also contains `"worker": {"stale": true}` so the UI can warn. `msj worker` picks the request up within a tick; the server performs no batch inference. An active batch returns 409 `BATCH_ALREADY_RUNNING`. `msj run-batch` runs inline with the same renewable SQLite lease. Lease records identify host, PID, boot and process start; dead local owners are reclaimed, and replaced owners cannot publish their claimed jobs. Failed batches expose a stable `last_error` code and actionable privacy-safe detail.
+
+Worker and inline batch processing continue when authentication needs token reissue, logging a warning with the remedy. Reclaimed jobs retain an actionable reason in `last_error`. Audio-write reservations include their creation time. Reservations from other hosts expire after `max(3600, 2 * lease_s)` seconds and are logged when skipped; local reservations use process liveness. Missing batch state returns 500 `BATCH_STATE_UNAVAILABLE` with migration instructions.
 
 ## Export
 
@@ -166,6 +172,6 @@ Unknown ids return 404 with code `ENTRY_NOT_FOUND`, and the detail lists the mis
 
 Every problem response includes a stable `code`, including framework errors: `NOT_FOUND`, `CONFLICT`, `PAYLOAD_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE`, `VALIDATION_ERROR`, `INVALID_REQUEST`, `METHOD_NOT_ALLOWED`, `HTTP_ERROR`, and `INTERNAL_ERROR`, and `AUDIO_CLEANUP_PENDING` (creation failed and durable audio removal will be retried). Existing endpoint-specific codes remain: `UNAUTHORIZED`, `BAD_TOKEN`, `CSRF_HEADER_MISSING`, `RATE_LIMITED`, `INVALID_ENTRY_QUERY`, `INVALID_DATE_FILTER`, `INVALID_JOB_STATUS`, `INVALID_QUERY`, `INVALID_SEARCH_FILTER`, `INVALID_RETRIEVAL_REQUEST`, `INVALID_RETRIEVAL_FILTER`, `INVALID_EXPORT_REQUEST`, `ENTRY_NOT_FOUND`, `INVALID_COMPILATION_REQUEST`, and `BATCH_ALREADY_RUNNING`. Validation issues expose `field` and `type`, never the rejected input. Unexpected internal ValueErrors are logged 500 `INTERNAL_ERROR`. An NDJSON failure ends with `{"done":true,"error":{"status":500,"code":"INTERNAL_ERROR","detail":"…"}}`.
 
-Migration invalidates legacy scrypt tokens and revokes their browser sessions. API authentication returns 401 `TOKEN_REISSUE_REQUIRED` with "token must be re-issued: run `msj create-token`"; CLI commands provide the same instruction. New tokens contain 256 random bits and only HMAC-SHA256 digests are stored, keyed with a private 0600 server secret in the data directory. Rotate the token after upgrading. All API responses, including JSON, errors, NDJSON and exports, carry `Cache-Control: no-store`.
+Migration invalidates legacy scrypt tokens and revokes their browser sessions. API authentication returns 401 `TOKEN_REISSUE_REQUIRED` with instructions to run `msj create-token`; CLI commands provide the same instruction. New tokens contain 256 random bits and only key-identified HMAC-SHA256 digests are stored, keyed with a private server secret in the data directory. Rotate the token after upgrading. All API responses, including JSON, errors, NDJSON and exports, carry `Cache-Control: no-store`.
 
 Trust forwarded client addresses only from the explicit `forwarded_allow_ips` setting (`MSJ_FORWARDED_ALLOW_IPS`, default `127.0.0.1,::1`). Configure the precise proxy address when Caddy is remote or containerized; never trust arbitrary internet senders. The deployment units bound memory and privileges, disable model downloads (`HF_HUB_OFFLINE=1`), and Caddy adds HSTS.

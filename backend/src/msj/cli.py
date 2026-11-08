@@ -13,7 +13,7 @@ from typing import Any
 import uvicorn
 
 from .api import create_app
-from .auth import TokenReissueRequired, create_token
+from .auth import TokenReissueRequired, TokenSecretError, check_token_secret, create_token
 from .batch import BatchCoordinator
 from .config import Settings, load_settings
 from .diagnostics import safe_exception
@@ -36,11 +36,13 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _store(settings: Settings, *, allow_token_reissue: bool = False) -> Store:
+def _store(settings: Settings) -> Store:
     store = Store(settings)
     store.migrate()
-    if not allow_token_reissue and store.token_hash() == "reissue-required":
-        raise TokenReissueRequired("Bearer token must be re-issued: run `msj create-token`.")
+    try:
+        check_token_secret(store)
+    except (TokenReissueRequired, TokenSecretError) as exc:
+        logging.warning("%s: %s", exc.code, exc.message)
     return store
 
 
@@ -76,34 +78,36 @@ def _worker(settings: Settings) -> None:
     tick_s = settings.worker_tick_s
     next_schedule = time.monotonic()
     wake = threading.Event()
-    retry_after = 0.0
+    schedule_pending = False
     while not wake.is_set():
         now = time.monotonic()
-        scheduled = now >= next_schedule
+        if now >= next_schedule:
+            schedule_pending = True
+            next_schedule = now + settings.batch_interval_s
         try:
-            requested = coordinator.has_pending_request()
+            request_at = coordinator.pending_request_at()
+            requested = request_at is not None
         except Exception as exc:
             logging.warning(
                 "Worker request check failed: %s",
                 safe_exception(exc, trusted_paths=_trusted_paths(settings)),
             )
-            wake.wait(tick_s)
+            _ = wake.wait(tick_s)
             continue
-        should_run = (scheduled or requested) and now >= retry_after
-        delay = min(tick_s, max(0.0, next_schedule - now))
-        if not should_run and now < retry_after:
-            delay = min(tick_s, retry_after - now)
-        next_wake_at = time.time() + delay
-        try:
-            coordinator.heartbeat_worker(datetime.fromtimestamp(next_wake_at, UTC).isoformat())
-        except Exception as exc:
-            logging.warning(
-                "Worker heartbeat update failed: %s",
-                safe_exception(exc, trusted_paths=_trusted_paths(settings)),
-            )
-            wake.wait(tick_s)
-            continue
-        if should_run:
+        retry_at: float | None = None
+        if schedule_pending or requested:
+            try:
+                coordinator.heartbeat_worker(
+                    datetime.fromtimestamp(
+                        time.time() + max(0.0, next_schedule - time.monotonic()), UTC
+                    ).isoformat(),
+                    observed_request_at=request_at,
+                )
+            except Exception as exc:
+                logging.warning(
+                    "Worker heartbeat update failed: %s",
+                    safe_exception(exc, trusted_paths=_trusted_paths(settings)),
+                )
             try:
                 if requested:
                     result = coordinator.run_requested()
@@ -112,22 +116,36 @@ def _worker(settings: Settings) -> None:
                 if result is not None:
                     logging.info("Batch finished: %s", result)
                 next_schedule = time.monotonic() + settings.batch_interval_s
-                retry_after = 0.0
+                schedule_pending = False
             except Conflict as exc:
-                remaining = coordinator.lease_remaining_s()
                 logging.info(
                     "Batch deferred while another owner holds lease (%s)",
                     safe_exception(exc, trusted_paths=_trusted_paths(settings)),
                 )
-                retry_after = time.monotonic() + remaining
+                # Recheck ownership every tick so a released lease is picked up promptly.
+                retry_at = time.monotonic() + tick_s
             except Exception as exc:
                 logging.error(
                     "Scheduled batch failed: %s",
                     safe_exception(exc, trusted_paths=_trusted_paths(settings)),
                 )
                 next_schedule = time.monotonic() + settings.batch_interval_s
-            continue
-        wake.wait(delay)
+                schedule_pending = False
+        now = time.monotonic()
+        next_run = min(next_schedule, retry_at) if retry_at is not None else next_schedule
+        next_run_at = time.time() + max(0.0, next_run - now)
+        try:
+            coordinator.heartbeat_worker(
+                datetime.fromtimestamp(next_run_at, UTC).isoformat(),
+                observed_request_at=request_at,
+            )
+        except Exception as exc:
+            logging.warning(
+                "Worker heartbeat update failed: %s",
+                safe_exception(exc, trusted_paths=_trusted_paths(settings)),
+            )
+        delay = min(tick_s, max(0.0, next_run - now))
+        _ = wake.wait(delay)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -137,7 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = load_settings()
         match args.command:
             case "serve":
-                store = _store(settings, allow_token_reissue=True)
+                store = _store(settings)
                 if store.token_hash() == "reissue-required":
                     logging.warning(
                         "TOKEN_REISSUE_REQUIRED: token must be re-issued: run `msj create-token`."
@@ -160,7 +178,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = _run_batch(settings)
                 print(result)
             case "migrate":
-                store = _store(settings, allow_token_reissue=True)
+                store = _store(settings)
                 print(f"Database ready at {settings.data_dir.expanduser() / 'journal.db'}")
                 if store.token_hash() == "reissue-required":
                     print(
@@ -168,7 +186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 del store
             case "create-token":
-                store = _store(settings, allow_token_reissue=True)
+                store = _store(settings)
                 print(create_token(store))
             case "embedding-download":
                 from sentence_transformers import SentenceTransformer

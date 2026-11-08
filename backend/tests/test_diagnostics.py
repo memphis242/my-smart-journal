@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from msj.api import EntryCreate
 from msj.diagnostics import safe_exception
+from msj.providers import ProviderError, SafeProviderError
 
 
 def test_untrusted_exception_filenames_and_validation_keys_are_redacted() -> None:
@@ -22,6 +23,17 @@ def test_untrusted_exception_filenames_and_validation_keys_are_redacted() -> Non
     detail = safe_exception(error.value)
     assert private not in json.dumps(detail)
     assert detail["validation"][0]["type"] == "extra_forbidden"
+
+
+def test_authored_provider_error_is_preserved_but_private_error_is_redacted() -> None:
+    message = "Inference returned empty text; check model and token limit"
+    error = SafeProviderError(message, retryable=False, transient=True)
+    detail = safe_exception(error)
+    assert detail["message"] == message
+    assert detail["code"] == "PROVIDER_ERROR"
+    assert error.retryable is False and error.transient is True
+    private = ProviderError("private journal text")
+    assert "private journal text" not in json.dumps(safe_exception(private))
 
 
 def test_trusted_resource_and_causal_evidence_are_preserved(tmp_path: Path) -> None:

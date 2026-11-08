@@ -7,7 +7,6 @@ import hashlib
 import json
 import logging
 import os
-import socket
 import sqlite3
 import time
 from collections.abc import Iterator, Mapping
@@ -19,6 +18,7 @@ from typing import Any, Final
 from uuid import uuid4
 
 from .config import Settings, TaskRoute
+from .ownership import OwnerIdentity
 
 _logger = logging.getLogger(__name__)
 _SEARCH_PROJECTION_MIGRATION: Final = "008_final_search_projection.sql"
@@ -277,6 +277,7 @@ class Store:
         target: str | None = None,
         turn: int = 0,
         reviewed_artifact_id: str | None = None,
+        content_type: str | None = None,
     ) -> str:
         artifact_id = identifier()
         previous = db.execute(
@@ -287,7 +288,7 @@ class Store:
         _ = db.execute(
             "INSERT INTO artifacts "
             "(id,entry_id,kind,content,model,prompt_sha256,created_at,revision,target,turn,"
-            "reviewed_artifact_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "reviewed_artifact_id,content_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 artifact_id,
                 entry_id,
@@ -300,6 +301,7 @@ class Store:
                 target,
                 turn,
                 reviewed_artifact_id,
+                content_type,
             ),
         )
         for row in previous:
@@ -361,6 +363,7 @@ class Store:
         title: str | None = None,
         tags: list[str] | None = None,
         entry_date: str | None = None,
+        audio_content_type: str | None = None,
     ) -> dict[str, Any]:
         if (text is None) == (audio is None):
             raise ValueError("Provide exactly one of text or audio")
@@ -418,7 +421,12 @@ class Store:
                     ),
                 )
                 _ = self._artifact(
-                    db, entry_id, 1, "raw_audio" if audio is not None else "user_text", content
+                    db,
+                    entry_id,
+                    1,
+                    "raw_audio" if audio is not None else "user_text",
+                    content,
+                    content_type=audio_content_type if audio is not None else None,
                 )
                 self._queue(db, entry_id, 1, audio is not None)
                 self._refresh_search(db, entry_id)
@@ -613,16 +621,22 @@ class Store:
             _ = db.execute("INSERT OR IGNORE INTO file_deletions VALUES (?)", (str(relative),))
 
     def _reserve_audio_write(self, relative: Path) -> None:
-        pid = os.getpid()
-        host = socket.gethostname()
-        boot_id = self._boot_id()
-        process_start = self._process_start(pid) or timestamp()
+        owner = OwnerIdentity.current()
         with self.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
             _ = db.execute("INSERT OR IGNORE INTO file_deletions VALUES (?)", (str(relative),))
             _ = db.execute(
-                "INSERT INTO file_write_reservations VALUES (?,?,?,?,?)",
-                (str(relative), host, pid, boot_id, process_start),
+                "INSERT INTO file_write_reservations "
+                "(path,owner_host,owner_pid,owner_boot_id,owner_started_at,created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    str(relative),
+                    owner.host,
+                    owner.pid,
+                    owner.boot_id,
+                    owner.started_at,
+                    time.time(),
+                ),
             )
 
     def _release_audio_write(self, relative: Path) -> None:
@@ -630,37 +644,18 @@ class Store:
             _ = db.execute("BEGIN IMMEDIATE")
             _ = db.execute("DELETE FROM file_write_reservations WHERE path=?", (str(relative),))
 
-    @staticmethod
-    def _boot_id() -> str:
-        try:
-            return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
-        except OSError:
-            return "unknown"
-
-    @staticmethod
-    def _process_start(pid: int) -> str | None:
-        try:
-            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-            fields = stat[stat.rfind(")") + 2 :].split()
-            return fields[19]
-        except (OSError, IndexError):
-            return None
-
-    @classmethod
-    def _write_owner_alive(cls, row: sqlite3.Row) -> bool:
-        if row["owner_host"] != socket.gethostname():
+    def _write_owner_alive(self, row: sqlite3.Row) -> bool:
+        if row["owner_host"] != OwnerIdentity.current().host:
+            max_age_s = max(3600.0, self.settings.lease_s * 2)
+            if time.time() - float(row["created_at"]) > max_age_s:
+                _logger.warning(
+                    "Reclaiming stale audio write reservation for managed file %s from host %s",
+                    Path(row["path"]).name,
+                    row["owner_host"],
+                )
+                return False
             return True
-        if row["owner_boot_id"] != cls._boot_id():
-            return False
-        pid = int(row["owner_pid"])
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        start = cls._process_start(pid)
-        return start is None or start == row["owner_started_at"]
+        return OwnerIdentity.alive(row)
 
     def _drain_deletions(self) -> list[tuple[str, int | None]]:
         # Durable outbox: deletion failures can be retried at the next startup.
@@ -794,21 +789,29 @@ class Store:
             # A crashed worker's lease is recovered by the next batch.
             _ = db.execute(
                 "UPDATE jobs SET status=CASE WHEN attempts>=? THEN 'failed' ELSE 'queued' END,"
-                "last_error='Worker lease expired; retry after checking worker health',"
+                "last_error=CASE WHEN batch_id IS NOT NULL THEN 'Reclaimed after batch owner ' "
+                "|| batch_id || ' stopped; if this repeats, the job may be crashing the worker - "
+                "check worker memory limits and logs' ELSE 'Worker lease expired; retry after "
+                "checking worker health' END,"
                 "finished_at=CASE WHEN attempts>=? THEN ? ELSE NULL END,claim_token=NULL,"
                 "lease_until=NULL,claim_protocol=0 WHERE status='running' AND lease_until<=?",
                 (self.settings.max_attempts, self.settings.max_attempts, timestamp(), now),
             )
             if batch_id is not None:
                 _ = db.execute(
-                    "UPDATE jobs SET status='queued',last_error=NULL,finished_at=NULL,"
+                    "UPDATE jobs SET status='queued',last_error='Reclaimed after batch owner ' "
+                    "|| COALESCE(batch_id,'unknown') || ' stopped; if this repeats, the job may "
+                    "be crashing the worker - check worker memory limits and logs',"
+                    "finished_at=NULL,"
                     "not_before=?,lease_until=NULL,claim_token=NULL,claim_protocol=0 "
                     "WHERE status='running' AND (batch_id IS NULL OR batch_id!=?)",
                     (now, batch_id),
                 )
             _ = db.execute(
                 "UPDATE jobs SET status='failed',"
-                "last_error='Attempt limit reached; retry after checking worker health',"
+                "last_error=CASE WHEN last_error LIKE 'Reclaimed after batch owner %' "
+                "THEN last_error || '; attempt limit reached; retry after checking worker health' "
+                "ELSE 'Attempt limit reached; retry after checking worker health' END,"
                 "finished_at=?,claim_token=NULL,lease_until=NULL,claim_protocol=0 "
                 "WHERE status='queued' AND attempts>=?",
                 (timestamp(), self.settings.max_attempts),

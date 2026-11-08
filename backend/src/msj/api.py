@@ -19,7 +19,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .auth import TokenReissueRequired, token_secret, verify_token, verify_token_hash
 from .config import Settings
-from .diagnostics import safe_exception, validation_issues
+from .diagnostics import SafeMessageError, safe_exception, validation_issues
 from .entry_views import export_item, facet_values, filter_entries, summary_fields, summary_item
 from .search import tiered_search
 from .storage import AudioCleanupPending, Conflict, NotFound, Store
@@ -276,6 +276,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def conflict_handler(_request: Request, exc: Conflict) -> JSONResponse:
         return _problem(409, "Conflict", str(exc))
 
+    @app.exception_handler(SafeMessageError)
+    async def safe_message_handler(request: Request, exc: SafeMessageError) -> JSONResponse:
+        _log_request_failure(request.scope, exc)
+        if isinstance(exc, TokenReissueRequired):
+            _logger.warning(
+                "TOKEN_REISSUE_REQUIRED key_file=%s; run `msj create-token`",
+                actual_settings.data_dir.expanduser() / "token.secret",
+            )
+            return _problem(401, "Unauthorized", exc.message, exc.code)
+        return _problem(500, "Internal Server Error", exc.message, exc.code)
+
     @app.exception_handler(Exception)
     async def internal_error_handler(_request: Request, _exc: Exception) -> JSONResponse:
         _log_request_failure(_request.scope, _exc)
@@ -337,14 +348,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if credentials is None:
             return False
         key = client_limit_key(request.client.host if request.client else "unknown")
-        retry = bearer_limiter.retry_after(key)
-        if retry is not None:
-            raise APIProblem(
-                429,
-                "Too Many Requests",
-                f"Bearer authentication is rate limited; retry in {retry} seconds.",
-                "RATE_LIMITED",
-            )
         valid = await run_in_threadpool(verify_token, store, credentials.credentials)
         if not valid:
             retry = bearer_limiter.retry_after(key)
@@ -357,15 +360,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             bearer_limiter.record_failure(key)
         return valid
-
-    @app.exception_handler(TokenReissueRequired)
-    async def reissue_handler(_request: Request, _exc: TokenReissueRequired) -> JSONResponse:
-        return _problem(
-            401,
-            "Unauthorized",
-            "Bearer token must be re-issued: run `msj create-token`.",
-            "TOKEN_REISSUE_REQUIRED",
-        )
 
     async def authorized(
         request: Request,
@@ -514,8 +508,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise APIProblem(
                     422, "Validation Error", "Include an audio file in the multipart field 'file'."
                 )
-            declared_type = str(upload.content_type or "").split(";", maxsplit=1)[0].strip().lower()
-            extension = _AUDIO_TYPES.get(declared_type)
+            declared_type = str(upload.content_type or "")
+            base_type = declared_type.split(";", maxsplit=1)[0].strip().lower()
+            extension = _AUDIO_TYPES.get(base_type)
             if extension is None:
                 raise APIProblem(
                     415,
@@ -556,6 +551,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return await run_in_threadpool(
                 store.create_entry,
                 audio=audio,
+                audio_content_type=declared_type,
                 extension=extension,
                 title=str(form.get("title")) if form.get("title") else None,
                 tags=tags_value,
@@ -723,6 +719,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             skills=skill,
         )
         allowed_ids = {item["id"] for item in all_items}
+        summaries = {item["id"]: summary_item(item) for item in all_items}
         documents = [
             item
             for item in await run_in_threadpool(store.search_documents)
@@ -740,6 +737,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def stream() -> Iterator[bytes]:
             try:
                 for event in events:
+                    if "results" in event:
+                        event = event | {"results": [
+                            result | {"entry": summaries[result["entry_id"]]}
+                            for result in event["results"]
+                        ]}
                     yield (
                         json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
                     ).encode()
@@ -910,10 +912,10 @@ def _install_additional_routes(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
-    from .batch import BatchCoordinator
+    from .batch import BatchRequestCoordinator
     from .compilations import CompilationService
 
-    coordinator = BatchCoordinator(store)
+    coordinator = BatchRequestCoordinator(store)
     app.state.batch_coordinator = coordinator
     compilation_service = CompilationService(store)
     app.state.compilation_service = compilation_service

@@ -3,6 +3,7 @@
 import socket
 import sqlite3
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 
 from msj import storage
 from msj.config import Settings
+from msj.ownership import OwnerIdentity
 
 AudioCleanupPending = getattr(storage, "AudioCleanupPending", RuntimeError)
 NotFound = storage.NotFound
@@ -79,6 +81,37 @@ def test_delete_and_startup_keep_undeletable_paths_for_later_retry(
     assert not audio_path.exists()
     with reopened.connect() as db:
         assert db.execute("SELECT count(*) FROM file_deletions").fetchone()[0] == 0
+
+
+def test_remote_audio_reservation_expires_and_logs_reclamation(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = store_at(tmp_path)
+    reservation = {
+        "path": "audio/orphan.wav",
+        "owner_host": "unreachable-host",
+        "owner_pid": 1,
+        "owner_boot_id": "unknown",
+        "owner_started_at": "unknown",
+        "created_at": time.time() - 3601,
+    }
+
+    assert store._write_owner_alive(reservation) is False
+    assert "Reclaiming stale audio write reservation" in caplog.text
+
+
+def test_recent_remote_audio_reservation_remains_protected(tmp_path: Path) -> None:
+    store = store_at(tmp_path)
+    reservation = {
+        "path": "audio/live.wav",
+        "owner_host": "remote-host",
+        "owner_pid": 1,
+        "owner_boot_id": "unknown",
+        "owner_started_at": "unknown",
+        "created_at": time.time(),
+    }
+
+    assert store._write_owner_alive(reservation) is True
 
 
 def test_patch_supersedes_old_revision_jobs_and_status_filter_excludes_them(
@@ -265,8 +298,17 @@ def test_startup_reclaims_audio_reservation_from_a_dead_writer(tmp_path: Path) -
         _ = db.execute("BEGIN IMMEDIATE")
         _ = db.execute("INSERT INTO file_deletions VALUES (?)", (str(relative),))
         _ = db.execute(
-            "INSERT INTO file_write_reservations VALUES (?,?,?,?,?)",
-            (str(relative), socket.gethostname(), 2_000_000_000, store._boot_id(), "dead-start"),
+            "INSERT INTO file_write_reservations "
+            "(path,owner_host,owner_pid,owner_boot_id,owner_started_at,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                str(relative),
+                socket.gethostname(),
+                2_000_000_000,
+                OwnerIdentity.current().boot_id,
+                "dead-start",
+                time.time(),
+            ),
         )
 
     Store(store.settings).migrate()

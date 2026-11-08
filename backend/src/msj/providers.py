@@ -19,6 +19,7 @@ from urllib.parse import quote
 import httpx
 
 from .config import Settings, TaskKind, TaskRoute
+from .diagnostics import SafeMessageError
 
 _logger = logging.getLogger(__name__)
 _ERROR_BODY_LIMIT = 8 * 1024
@@ -41,8 +42,14 @@ class ProviderError(RuntimeError):
         self.transient = transient
 
 
-class SafeProviderError(ProviderError):
+class SafeProviderError(ProviderError, SafeMessageError):
     """Built-in error assembled from fixed templates and non-content metadata."""
+
+    code = "PROVIDER_ERROR"
+
+    def __init__(self, message: str, *, retryable: bool = True, transient: bool = False) -> None:
+        super().__init__(message, retryable=retryable, transient=transient)
+        self.message = message
 
 
 @dataclass(frozen=True)
