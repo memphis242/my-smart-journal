@@ -80,10 +80,11 @@ def test_missing_model_has_stable_unavailable_code(
     service = EmbeddingService(Store(settings), settings)
     service._model_error = True
     service._model_retry_after = float("inf")
+    service._model_failure_code = "EMBEDDING_MODEL_LOAD_FAILED"
     results, unavailable = service.search("secret journal contents")
     assert results == []
     assert unavailable is not None
-    assert unavailable["code"] == "EMBEDDING_MODEL_UNAVAILABLE"
+    assert unavailable["code"] == "EMBEDDING_MODEL_LOAD_FAILED"
     assert "secret journal contents" not in caplog.text
 
 
@@ -106,7 +107,8 @@ def test_model_load_recovers_after_bounded_backoff(
         def encode(self, texts: list[str], **_kwargs: Any) -> np.ndarray[Any, Any]:
             return np.ones((len(texts), 4), dtype=np.float32)
 
-    def load_model(_model_name: str, *, device: str) -> LoadedModel:
+    def load_model(_model_name: str, *, device: str, revision: str) -> LoadedModel:
+        assert revision == settings.embedding.revision
         attempts.append(device)
         if len(attempts) == 1:
             raise RuntimeError("private provider value")
@@ -118,7 +120,7 @@ def test_model_load_recovers_after_bounded_backoff(
     monkeypatch.setattr("msj.embedding.monotonic", lambda: now[0])
 
     _results, unavailable = service.search("secret query")
-    assert unavailable is not None and unavailable["code"] == "EMBEDDING_MODEL_UNAVAILABLE"
+    assert unavailable is not None and unavailable["code"] == "EMBEDDING_MODEL_LOAD_FAILED"
     assert attempts == ["cpu"]
     _results, still_unavailable = service.search("another query")
     assert still_unavailable is not None
@@ -129,6 +131,31 @@ def test_model_load_recovers_after_bounded_backoff(
     assert results == []
     assert recovered is None
     assert attempts == ["cpu", "cpu"]
+
+
+def test_missing_embedding_dependency_keeps_its_code_during_backoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        data_dir=tmp_path,
+        embedding=EmbeddingSettings(provider="sentence-transformers", model="test-model"),
+    )
+    service = EmbeddingService(Store(settings), settings)
+
+    def missing_dependency(*_args: Any, **_kwargs: Any) -> Any:
+        raise ModuleNotFoundError("private module detail")
+
+    module = types.ModuleType("sentence_transformers")
+    module.SentenceTransformer = missing_dependency
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+
+    first = service.search("secret query")[1]
+    second = service.search("secret query")[1]
+
+    assert first is not None and first["code"] == "EMBEDDING_DEPENDENCY_MISSING"
+    assert second is not None and second["code"] == "EMBEDDING_DEPENDENCY_MISSING"
+    assert "my-smart-journal[semantic]" in first["detail"]
+    assert "private module detail" not in first["detail"]
 
 
 def test_pending_detail_counts_only_filtered_entries(tmp_path: Path) -> None:

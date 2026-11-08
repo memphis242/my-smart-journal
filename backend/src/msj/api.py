@@ -3,7 +3,7 @@
 import json
 import logging
 from collections.abc import Iterator
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Query, Request
@@ -17,16 +17,17 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request as StarletteRequest
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .auth import verify_token, verify_token_hash
+from .auth import TokenReissueRequired, token_secret, verify_token, verify_token_hash
 from .config import Settings
+from .diagnostics import safe_exception, validation_issues
 from .entry_views import export_item, facet_values, filter_entries, summary_fields, summary_item
-from .pipeline import Runner
 from .search import tiered_search
-from .storage import Conflict, NotFound, Store
+from .storage import AudioCleanupPending, Conflict, NotFound, Store
 from .web_auth import (
     SESSION_TTL_S,
     LoginLimiter,
     TokenChanged,
+    client_limit_key,
     new_session,
     revoke_session,
     valid_session,
@@ -51,12 +52,52 @@ _WEB_CSP = (
 )
 
 
+def _log_request_failure(scope: Any, exc: Exception) -> None:
+    route = scope.get("route")
+    route_name = route if isinstance(route, str) else getattr(route, "path", "<unmatched>")
+    _logger.error(
+        "Request failed method=%s route=%s evidence=%s",
+        scope.get("method", "unknown"),
+        route_name,
+        safe_exception(exc),
+    )
+
+
+def _valid_query(query: str) -> bool:
+    return (
+        bool(query.strip())
+        and len(query) <= 500
+        and not any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in query)
+    )
+
+
+def _validate_date_bounds(from_date: str | None, to_date: str | None) -> None:
+    for value in (from_date, to_date):
+        if value is None:
+            continue
+        try:
+            canonical = date.fromisoformat(value).isoformat()
+        except ValueError:
+            canonical = None
+        if canonical != value:
+            raise APIProblem(
+                422, "Validation Error", "Date bounds must use YYYY-MM-DD.", "INVALID_DATE_FILTER"
+            )
+
+
 class EntryCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1)
     title: str | None = None
     tags: list[str] = Field(default_factory=list)
     entry_date: str | None = None
+
+    @field_validator("text")
+    @classmethod
+    def nonblank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Text must contain non-whitespace characters")
+        return value
 
     @field_validator("entry_date")
     @classmethod
@@ -131,12 +172,23 @@ def _problem(status: int, title: str, detail: str, code: str | None = None) -> J
         "status": status,
         "detail": detail,
     }
-    if code is not None:
-        content["code"] = code
+    content["code"] = code or {
+        400: "INVALID_REQUEST",
+        401: "UNAUTHORIZED",
+        403: "FORBIDDEN",
+        404: "NOT_FOUND",
+        405: "METHOD_NOT_ALLOWED",
+        409: "CONFLICT",
+        413: "PAYLOAD_TOO_LARGE",
+        415: "UNSUPPORTED_MEDIA_TYPE",
+        422: "VALIDATION_ERROR",
+        429: "RATE_LIMITED",
+    }.get(status, "INTERNAL_ERROR" if status >= 500 else "HTTP_ERROR")
     return JSONResponse(
         status_code=status,
         media_type="application/problem+json",
         content=content,
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -171,12 +223,19 @@ class _PrivateErrorMiddleware:
                     started = True
                 case "http.response.body":
                     complete = not message.get("more_body", False)
+            if message["type"] == "http.response.start" and (
+                scope.get("path", "") == "/api" or scope.get("path", "").startswith("/api/")
+            ):
+                headers = list(message.get("headers", []))
+                headers = [(k, v) for k, v in headers if k.lower() != b"cache-control"]
+                headers.append((b"cache-control", b"no-store"))
+                message["headers"] = headers
             await send(message)
 
         try:
             await self.app(scope, receive, track_send)
         except Exception as exc:
-            _logger.error("Request failed (%s); check service configuration", type(exc).__name__)
+            _log_request_failure(scope, exc)
             if not started:
                 response = _problem(
                     500,
@@ -194,7 +253,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     actual_settings = settings or load_settings()
     store = Store(actual_settings)
     store.migrate()
-    runner = Runner(store, actual_settings)
     from .embedding import EmbeddingService
 
     embedding_service = EmbeddingService(store, actual_settings)
@@ -202,7 +260,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="my-smart-journal", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None
     )
     app.state.store = store
-    app.state.runner = runner
     app.state.settings = actual_settings
     app.state.embedding = embedding_service
     app.add_middleware(_PrivateErrorMiddleware)
@@ -219,16 +276,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def conflict_handler(_request: Request, exc: Conflict) -> JSONResponse:
         return _problem(409, "Conflict", str(exc))
 
-    @app.exception_handler(ValueError)
-    async def value_error_handler(_request: Request, exc: ValueError) -> JSONResponse:
-        return _problem(422, "Validation Error", str(exc))
-
     @app.exception_handler(Exception)
     async def internal_error_handler(_request: Request, _exc: Exception) -> JSONResponse:
-        _logger.error("Request failed (%s); check storage configuration", type(_exc).__name__)
+        _log_request_failure(_request.scope, _exc)
         return _problem(
             500, "Internal Server Error", "The request failed unexpectedly; check service logs."
         )
+
+    @app.exception_handler(AudioCleanupPending)
+    async def audio_cleanup_handler(request: Request, exc: AudioCleanupPending) -> JSONResponse:
+        _log_request_failure(request.scope, exc)
+        return _problem(500, "Audio Cleanup Pending", str(exc), "AUDIO_CLEANUP_PENDING")
 
     @app.exception_handler(HTTPException)
     async def http_error_handler(_request: Request, exc: HTTPException) -> JSONResponse:
@@ -239,8 +297,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+        _logger.warning(
+            "Request validation failed method=%s route=%s issues=%s",
+            _request.method,
+            getattr(_request.scope.get("route"), "path", "<unmatched>"),
+            validation_issues(exc.errors()),
+        )
         issues = [
-            {"field": ".".join(str(part) for part in item["loc"]), "message": item["msg"]}
+            {"field": ".".join(str(part) for part in item["loc"]), "type": item["type"]}
             for item in exc.errors()
         ]
         return JSONResponse(
@@ -251,24 +315,64 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "title": "Validation Error",
                 "status": 422,
                 "detail": "Request parameters are invalid.",
+                "code": "VALIDATION_ERROR",
                 "errors": issues,
             },
         )
 
     @app.exception_handler(ValidationError)
     async def pydantic_handler(_request: Request, _exc: ValidationError) -> JSONResponse:
+        _log_request_failure(_request.scope, _exc)
         return _problem(422, "Validation Error", "Request body is invalid.")
 
+    cookie_name = "msj_session" if actual_settings.insecure_cookies else "__Host-msj_session"
     limiter = LoginLimiter(actual_settings.login_rate_limit, actual_settings.login_rate_window_s)
+    bearer_limiter = LoginLimiter(
+        actual_settings.bearer_rate_limit, actual_settings.bearer_rate_window_s
+    )
+
+    async def bearer_authorized(
+        request: Request, credentials: HTTPAuthorizationCredentials | None
+    ) -> bool:
+        if credentials is None:
+            return False
+        key = client_limit_key(request.client.host if request.client else "unknown")
+        retry = bearer_limiter.retry_after(key)
+        if retry is not None:
+            raise APIProblem(
+                429,
+                "Too Many Requests",
+                f"Bearer authentication is rate limited; retry in {retry} seconds.",
+                "RATE_LIMITED",
+            )
+        valid = await run_in_threadpool(verify_token, store, credentials.credentials)
+        if not valid:
+            retry = bearer_limiter.retry_after(key)
+            if retry is not None:
+                raise APIProblem(
+                    429,
+                    "Too Many Requests",
+                    f"Bearer authentication is rate limited; retry in {retry} seconds.",
+                    "RATE_LIMITED",
+                )
+            bearer_limiter.record_failure(key)
+        return valid
+
+    @app.exception_handler(TokenReissueRequired)
+    async def reissue_handler(_request: Request, _exc: TokenReissueRequired) -> JSONResponse:
+        return _problem(
+            401,
+            "Unauthorized",
+            "Bearer token must be re-issued: run `msj create-token`.",
+            "TOKEN_REISSUE_REQUIRED",
+        )
 
     async def authorized(
         request: Request,
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
     ) -> None:
-        bearer_valid = credentials is not None and await run_in_threadpool(
-            verify_token, store, credentials.credentials
-        )
-        cookie_value = request.cookies.get("msj_session")
+        bearer_valid = await bearer_authorized(request, credentials)
+        cookie_value = request.cookies.get(cookie_name)
         cookie_valid = not bearer_valid and await run_in_threadpool(
             valid_session, store, cookie_value
         )
@@ -293,7 +397,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/v1/session", status_code=204)
     async def login(request: Request) -> Response:
-        address = request.client.host if request.client is not None else "unknown"
+        address = client_limit_key(request.client.host if request.client else "unknown")
         retry = limiter.retry_after(address)
         if retry is not None:
             return Response(
@@ -313,12 +417,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             payload = json.loads(await _body(request, 4096))
             token = payload.get("token") if isinstance(payload, dict) else None
-        except ValueError, AttributeError:
+        except ValueError, AttributeError, RecursionError:
             token = None
         stored_hash = await run_in_threadpool(store.token_hash)
         if not isinstance(token, str) or not await run_in_threadpool(
-            verify_token_hash, token, stored_hash
+            verify_token_hash, token, stored_hash, await run_in_threadpool(token_secret, store)
         ):
+            limiter.record_failure(address)
             raise APIProblem(401, "Unauthorized", "The supplied token is invalid.", "BAD_TOKEN")
         try:
             session_id = await run_in_threadpool(new_session, store, stored_hash or "")
@@ -331,7 +436,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ) from None
         response = Response(status_code=204)
         response.set_cookie(
-            "msj_session",
+            cookie_name,
             session_id,
             httponly=True,
             samesite="strict",
@@ -343,10 +448,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.delete("/api/v1/session", status_code=204)
     async def logout(request: Request) -> Response:
-        await run_in_threadpool(revoke_session, store, request.cookies.get("msj_session"))
+        await run_in_threadpool(revoke_session, store, request.cookies.get(cookie_name))
         response = Response(status_code=204)
         response.delete_cookie(
-            "msj_session",
+            cookie_name,
             path="/",
             httponly=True,
             samesite="strict",
@@ -359,11 +464,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
     ) -> Response:
-        bearer_valid = credentials is not None and await run_in_threadpool(
-            verify_token, store, credentials.credentials
-        )
+        bearer_valid = await bearer_authorized(request, credentials)
         cookie_valid = await run_in_threadpool(
-            valid_session, store, request.cookies.get("msj_session")
+            valid_session, store, request.cookies.get(cookie_name)
         )
         if not bearer_valid and not cookie_valid:
             raise APIProblem(401, "Unauthorized", "Sign in with a valid token.", "UNAUTHORIZED")
@@ -377,7 +480,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if content_type == "application/json":
             try:
                 payload = EntryCreate.model_validate(json.loads(body))
-            except ValueError:
+            except ValueError, RecursionError:
                 raise APIProblem(
                     422, "Validation Error", "Provide non-empty text and valid entry fields."
                 ) from None
@@ -427,7 +530,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             try:
                 tags_value = json.loads(str(form.get("tags", "[]")))
-            except ValueError:
+            except ValueError, RecursionError:
                 raise APIProblem(
                     422, "Validation Error", "Multipart tags must be a JSON array."
                 ) from None
@@ -446,7 +549,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if entry_date_value is not None:
                 try:
                     entry_date = date.fromisoformat(str(entry_date_value)).isoformat()
-                except ValueError:
+                except ValueError, RecursionError:
                     raise APIProblem(
                         422, "Validation Error", "entry_date must be an ISO calendar date."
                     ) from None
@@ -486,23 +589,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "Use limit 1-500, non-negative offset, view summary/full, and order asc/desc.",
                 "INVALID_ENTRY_QUERY",
             )
-        try:
-            filtered = filter_entries(
-                _all_entries(store),
-                from_date=from_date,
-                to_date=to_date,
-                tags=tag,
-                projects=project,
-                skills=skill,
-                order=order,
-            )
-        except ValueError:
-            raise APIProblem(
-                422,
-                "Validation Error",
-                "Date bounds must be ISO calendar dates.",
-                "INVALID_DATE_FILTER",
-            ) from None
+        all_items = _all_entries(store)
+        _validate_date_bounds(from_date, to_date)
+        filtered = filter_entries(
+            all_items,
+            from_date=from_date,
+            to_date=to_date,
+            tags=tag,
+            projects=project,
+            skills=skill,
+            order=order,
+        )
         page = filtered[offset : offset + limit]
         if view == "summary":
             page = [summary_item(item) for item in page]
@@ -530,6 +627,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         all_entries = _all_entries(store)
         if not any(entry["id"] == entry_id for entry in all_entries):
             raise NotFound("Entry not found")
+        _validate_date_bounds(from_date, to_date)
         filtered = filter_entries(
             all_entries,
             from_date=from_date,
@@ -556,7 +654,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def patch_entry(entry_id: str, request: Request) -> dict[str, Any]:
         try:
             changes = json.loads(await _body(request, actual_settings.upload_limit_bytes + 16_384))
-        except ValueError:
+        except ValueError, RecursionError:
             raise APIProblem(400, "Bad Request", "Body must be valid JSON.") from None
         try:
             patch = EntryPatch.model_validate(changes)
@@ -572,6 +670,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/jobs", dependencies=[Depends(authorized)])
     def list_jobs(status: str | None = None) -> list[dict[str, Any]]:
+        if status is not None and status not in {
+            "queued",
+            "running",
+            "done",
+            "failed",
+            "superseded",
+        }:
+            raise APIProblem(422, "Validation Error", "Unknown job status.", "INVALID_JOB_STATUS")
         return store.list_jobs(status=status)
 
     @app.post("/api/v1/jobs/{job_id}/retry", dependencies=[Depends(authorized)])
@@ -588,7 +694,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         skill: Annotated[list[str] | None, Query()] = None,
         tiers: str = "1,2,3,4,5",
     ) -> StreamingResponse:
-        if not q.strip() or len(q) > 500:
+        if not _valid_query(q):
             raise APIProblem(
                 422, "Validation Error", "q must contain 1-500 characters.", "INVALID_QUERY"
             )
@@ -600,21 +706,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or any(value not in range(1, 6) for value in selected)
             ):
                 raise ValueError
-            all_items = filter_entries(
-                await run_in_threadpool(_all_entries, store),
-                from_date=from_date,
-                to_date=to_date,
-                tags=tag,
-                projects=project,
-                skills=skill,
-            )
-        except ValueError:
+        except ValueError, RecursionError:
             raise APIProblem(
                 422,
                 "Validation Error",
                 "tiers must be a unique comma list from 1 to 5 and date filters must be valid.",
                 "INVALID_SEARCH_FILTER",
             ) from None
+        _validate_date_bounds(from_date, to_date)
+        all_items = filter_entries(
+            await run_in_threadpool(_all_entries, store),
+            from_date=from_date,
+            to_date=to_date,
+            tags=tag,
+            projects=project,
+            skills=skill,
+        )
         allowed_ids = {item["id"] for item in all_items}
         documents = [
             item
@@ -637,15 +744,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
                     ).encode()
             except Exception as exc:
-                _logger.error(
-                    "Search failed (%s); check storage and search index", type(exc).__name__
-                )
+                _log_request_failure({"method": "GET", "route": "/api/v1/search"}, exc)
                 yield (
                     json.dumps(
                         {
                             "done": True,
                             "error": {
                                 "status": 500,
+                                "code": "INTERNAL_ERROR",
                                 "detail": "Search failed; check storage and service logs.",
                             },
                         }
@@ -670,17 +776,21 @@ def _all_entries(store: Store) -> list[dict[str, Any]]:
 def _retrieve_sync(
     store: Store, embedding: Any, query: str, k: int, filters: RetrievalFilters
 ) -> dict[str, Any]:
-    matched = filter_entries(
-        _all_entries(store),
-        from_date=filters.from_date,
-        to_date=filters.to_date,
-        tags=filters.tag,
-        projects=filters.project,
-        skills=filters.skill,
-    )
-    allowed_ids = {item["id"] for item in matched}
-    semantic_rows, unavailable = embedding.search(query, allowed_ids=allowed_ids)
-    bm25_rows = [row for row in store.fts_search(query) if row.get("entry_id") in allowed_ids]
+    with store.connect() as db:
+        _ = db.execute("BEGIN")
+        matched = filter_entries(
+            store.all_entries(db=db),
+            from_date=filters.from_date,
+            to_date=filters.to_date,
+            tags=filters.tag,
+            projects=filters.project,
+            skills=filters.skill,
+        )
+        allowed_ids = {item["id"] for item in matched}
+        semantic_rows, unavailable = embedding.search(query, allowed_ids=allowed_ids, db=db)
+        bm25_rows = [
+            row for row in store.fts_search(query, db=db) if row.get("entry_id") in allowed_ids
+        ]
     from .search import reciprocal_rank_fusion
 
     fused = reciprocal_rank_fusion([bm25_rows, semantic_rows], k=60)[:k]
@@ -710,23 +820,31 @@ def _install_additional_routes(
             payload = json.loads(await _body(request, 65_536))
             query, k, filters = (
                 payload["query"],
-                int(payload.get("k", 20)),
+                payload.get("k", 20),
                 payload.get("filters", {}),
             )
             if (
                 not isinstance(query, str)
                 or not query.strip()
                 or len(query) > 500
+                or type(k) is not int
                 or not 1 <= k <= 100
             ):
                 raise ValueError
-        except ValueError, TypeError, KeyError, AttributeError:
+        except ValueError, TypeError, KeyError, AttributeError, RecursionError:
             raise APIProblem(
                 422,
                 "Validation Error",
                 "Provide a query, k from 1-100, and an optional filters object.",
                 "INVALID_RETRIEVAL_REQUEST",
             ) from None
+        if not _valid_query(query):
+            raise APIProblem(
+                422,
+                "Validation Error",
+                "Query must contain 1-500 characters without controls.",
+                "INVALID_QUERY",
+            )
         try:
             parsed_filters = RetrievalFilters.model_validate(filters)
         except ValidationError:
@@ -760,7 +878,7 @@ def _install_additional_routes(
                 or order not in {"asc", "desc"}
             ):
                 raise ValueError
-        except ValueError, TypeError, KeyError:
+        except ValueError, TypeError, KeyError, RecursionError:
             raise APIProblem(
                 422,
                 "Validation Error",
@@ -795,7 +913,7 @@ def _install_additional_routes(
     from .batch import BatchCoordinator
     from .compilations import CompilationService
 
-    coordinator = BatchCoordinator(store, app.state.runner)
+    coordinator = BatchCoordinator(store)
     app.state.batch_coordinator = coordinator
     compilation_service = CompilationService(store)
     app.state.compilation_service = compilation_service
@@ -806,15 +924,21 @@ def _install_additional_routes(
 
     @app.post("/api/v1/batches/run", status_code=202, dependencies=[Depends(authorized)])
     def run_batch() -> dict[str, Any]:
-        batch_id = coordinator.start(trigger="manual")
-        if batch_id is None:
+        if not coordinator.request():
             raise APIProblem(
                 409,
                 "Conflict",
                 "A batch is already running; wait for it to finish.",
                 "BATCH_ALREADY_RUNNING",
             )
-        return {"started": True, "batch_id": batch_id}
+        last_seen = coordinator.status()["worker"]["last_seen_at"]
+        stale = last_seen is None or (
+            datetime.now(UTC) - datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+        ).total_seconds() > max(10.0, settings.worker_tick_s * 3)
+        response: dict[str, Any] = {"requested": True}
+        if stale:
+            response["worker"] = {"stale": True}
+        return response
 
     @app.post("/api/v1/compilations", status_code=202, dependencies=[Depends(authorized)])
     async def create_compilation(request: Request) -> dict[str, Any]:
@@ -823,6 +947,7 @@ def _install_additional_routes(
             ids, purpose, period = payload["entry_ids"], payload["purpose"], payload["period"]
             if (
                 not isinstance(ids, list)
+                or not ids
                 or not all(isinstance(value, str) for value in ids)
                 or len(ids) > 1000
                 or not isinstance(purpose, str)
@@ -831,7 +956,7 @@ def _install_additional_routes(
                 or not period.strip()
             ):
                 raise ValueError
-        except ValueError, TypeError, KeyError:
+        except ValueError, TypeError, KeyError, RecursionError:
             raise APIProblem(
                 422,
                 "Validation Error",
@@ -863,8 +988,14 @@ def _install_additional_routes(
         async def web_asset(asset_path: str) -> Response:
             if asset_path == "api" or asset_path.startswith("api/"):
                 raise HTTPException(404, "API route not found")
+            if any(part.startswith(".") for part in Path(asset_path).parts):
+                raise HTTPException(404, "Asset not found")
             target = (root / asset_path).resolve()
             if target != root and root not in target.parents:
+                raise HTTPException(404, "Asset not found")
+            if not target.is_file() and (
+                Path(asset_path).suffix or asset_path.startswith("assets/")
+            ):
                 raise HTTPException(404, "Asset not found")
             selected = target if target.is_file() else (root / "index.html").resolve()
             if selected != root and root not in selected.parents:
@@ -872,22 +1003,10 @@ def _install_additional_routes(
             if not selected.is_file():
                 raise HTTPException(404, "Web UI is not built")
             response = FileResponse(selected)
-            hash_suffix = selected.stem.rsplit("-", maxsplit=1)[-1]
-            hash_candidates = (hash_suffix, selected.stem.rsplit(".", maxsplit=1)[-1])
-            hashed_name = any(
-                candidate.isalnum()
-                and (
-                    len(candidate) == 8
-                    or (
-                        len(candidate) > 8
-                        and all(character in "0123456789abcdefABCDEF" for character in candidate)
-                    )
-                )
-                for candidate in hash_candidates
-            )
+            immutable = asset_path.startswith("assets/")
             if selected.name == "index.html":
                 response.headers["Cache-Control"] = "no-cache"
-            elif hashed_name:
+            elif immutable:
                 response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
             response.headers.update(
                 {

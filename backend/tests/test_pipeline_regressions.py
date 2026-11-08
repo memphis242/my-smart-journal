@@ -1,6 +1,5 @@
 """Batch failure isolation exercised through the authenticated API."""
 
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -11,7 +10,9 @@ from fastapi.testclient import TestClient
 
 from msj.api import create_app
 from msj.auth import create_token
+from msj.batch import BatchCoordinator
 from msj.config import TASKS, Settings, TaskKind, TaskRoute
+from msj.pipeline import Runner
 from msj.providers import Generation, InferenceProvider
 
 
@@ -61,10 +62,12 @@ def test_unexpected_job_errors_do_not_abort_batch_or_disclose_text(
     ).json()
     with httpx.Client() as http:
         delegate = InferenceProvider(settings, http)
-        client.app.state.runner._provider = UnexpectedFailureProvider(
-            delegate, exception_type(private)
+        result = _run_batch_and_wait(
+            client,
+            headers,
+            settings,
+            UnexpectedFailureProvider(delegate, exception_type(private)),
         )
-        result = _run_batch_and_wait(client, headers)
     assert result == {"processed": 7, "failed": 1}
     jobs: list[dict[str, Any]] = client.get("/api/v1/jobs", headers=headers).json()
     failed = next(
@@ -102,7 +105,7 @@ def test_oversized_runpod_audio_fails_once_without_submission(
         raise AssertionError("An oversized RunPod request must not be submitted")
 
     with httpx.Client(transport=httpx.MockTransport(reject_submission)) as http:
-        app.state.runner._provider = InferenceProvider(settings, http)
+        worker_provider = InferenceProvider(settings, http)
         with TestClient(app) as client:
             response = client.post(
                 "/api/v1/entries",
@@ -110,7 +113,7 @@ def test_oversized_runpod_audio_fails_once_without_submission(
                 files={"file": ("voice.wav", b"audio" * 64, "audio/wav")},
             )
             assert response.status_code == 201
-            assert _run_batch_and_wait(client, headers)["failed"] == 1
+            assert _run_batch_and_wait(client, headers, settings, worker_provider)["failed"] == 1
             jobs = client.get("/api/v1/jobs", headers=headers).json()
             job = next(job for job in jobs if job["kind"] == "transcribe")
             assert job["status"] == "failed"
@@ -125,7 +128,7 @@ def test_oversized_runpod_audio_fails_once_without_submission(
                 for dependent in entry["jobs"]
                 if dependent["id"] != failed_id
             )
-            assert _run_batch_and_wait(client, headers)["failed"] == 0
+            assert _run_batch_and_wait(client, headers, settings, worker_provider)["failed"] == 0
             jobs = client.get("/api/v1/jobs", headers=headers).json()
             assert next(job for job in jobs if job["id"] == failed_id)["attempts"] == 1
     assert requests == []
@@ -154,10 +157,10 @@ def test_paused_runpod_error_retries_then_remains_visible_in_job_error(
     }
     transport = httpx.MockTransport(lambda _: httpx.Response(409, json=response_body))
     with httpx.Client(transport=transport) as http:
-        app.state.runner._provider = InferenceProvider(settings, http)
+        worker_provider = InferenceProvider(settings, http)
         with TestClient(app) as client:
             entry = client.post("/api/v1/entries", headers=headers, json={"text": "private"}).json()
-            assert _run_batch_and_wait(client, headers)["failed"] == 1
+            assert _run_batch_and_wait(client, headers, settings, worker_provider)["failed"] == 1
             job = next(
                 item for item in client.get("/api/v1/jobs", headers=headers).json()
                 if item["entry_id"] == entry["id"] and item["kind"] == "cleanup"
@@ -167,7 +170,7 @@ def test_paused_runpod_error_retries_then_remains_visible_in_job_error(
             assert paused_detail not in job["last_error"]
             with app.state.store.connect() as db:
                 _ = db.execute("UPDATE jobs SET not_before=0 WHERE id=?", (job["id"],))
-            assert _run_batch_and_wait(client, headers)["failed"] == 1
+            assert _run_batch_and_wait(client, headers, settings, worker_provider)["failed"] == 1
             final_job = next(
                 item for item in client.get("/api/v1/jobs", headers=headers).json()
                 if item["id"] == job["id"]
@@ -193,7 +196,7 @@ def test_revising_a_failed_entry_supersedes_its_terminal_failure(tmp_path: Path)
     with TestClient(app) as client:
         created = client.post("/api/v1/entries", headers=headers, json={"text": "First version"})
         entry_id = created.json()["id"]
-        assert _run_batch_and_wait(client, headers)["failed"] == 1
+        assert _run_batch_and_wait(client, headers, app.state.store.settings)["failed"] == 1
         failed = client.get("/api/v1/jobs?status=failed", headers=headers).json()
         assert len(failed) == 1
         revised = client.patch(
@@ -208,17 +211,15 @@ def test_revising_a_failed_entry_supersedes_its_terminal_failure(tmp_path: Path)
 def _run_batch_and_wait(
     client: TestClient,
     headers: dict[str, str],
+    settings: Settings,
+    provider: InferenceProvider | UnexpectedFailureProvider | None = None,
 ) -> dict[str, Any]:
-    previous = client.get("/api/v1/queue", headers=headers).json()["batch"]["last_finished_at"]
     started = client.post("/api/v1/batches/run", headers=headers)
     assert started.status_code == 202
-    assert started.json()["started"] is True
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        batch = client.get("/api/v1/queue", headers=headers).json()["batch"]
-        if not batch["running"] and batch["last_finished_at"] != previous:
-            result = batch["last_result"]
-            assert isinstance(result, dict)
-            return result
-        time.sleep(0.01)
-    raise AssertionError("Batch did not finish within 15 seconds")
+    assert started.json()["requested"] is True
+    coordinator = BatchCoordinator(
+        client.app.state.store, Runner(client.app.state.store, settings, provider)
+    )
+    result = coordinator.run_requested()
+    assert result is not None
+    return {"processed": result["done"], "failed": result["failed"]}

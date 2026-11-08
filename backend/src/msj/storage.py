@@ -7,10 +7,11 @@ import hashlib
 import json
 import logging
 import os
+import socket
 import sqlite3
 import time
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from importlib.resources import files
 from pathlib import Path
@@ -29,6 +30,17 @@ class NotFound(ValueError):
 
 class Conflict(ValueError):
     """The requested transition is not valid for the resource's state."""
+
+
+class AudioCleanupPending(RuntimeError):
+    """Audio creation failed and removal of its untracked file is still pending."""
+
+    def __init__(self, filename: str, errno: int | None) -> None:
+        self.filename = filename
+        self.errno = errno
+        super().__init__(
+            f"Audio creation failed; cleanup remains pending for {filename} (errno {errno})."
+        )
 
 
 def timestamp() -> str:
@@ -93,7 +105,7 @@ class Store:
                 entry_ids = [row[0] for row in db.execute("SELECT id FROM entries")]
                 for entry_id in entry_ids:
                     self._refresh_search(db, entry_id)
-        self._drain_deletions()
+        _ = self._drain_deletions()
 
     def _reconcile_review_sessions(self, db: sqlite3.Connection) -> None:
         rows = db.execute(
@@ -167,9 +179,71 @@ class Store:
                     {"entry_id": session["entry_id"], "revision": session["revision"]},
                     str(gate["id"]),
                 )
+        self._invalidate_outputs_behind_cleanup_review(db)
+
+    def _invalidate_outputs_behind_cleanup_review(self, db: sqlite3.Connection) -> None:
+        """Requeue published outputs when a newly pending cleanup review can change them."""
+        entries = db.execute(
+            "SELECT s.entry_id,s.revision FROM review_sessions s "
+            "WHERE s.target='cleanup' AND s.status='pending' "
+            "AND EXISTS (SELECT 1 FROM jobs j WHERE j.entry_id=s.entry_id "
+            "AND j.revision=s.revision AND j.kind='cleanup' AND j.status='done') "
+            "AND EXISTS (SELECT 1 FROM jobs j WHERE j.entry_id=s.entry_id "
+            "AND j.revision=s.revision AND j.kind IN ('summarize','extract') "
+            "AND j.status='done')"
+        ).fetchall()
+        for entry in entries:
+            entry_id, revision = str(entry["entry_id"]), int(entry["revision"])
+            cleaned = self._find_source_id(
+                db,
+                {"entry_id": entry_id, "revision": revision},
+                "summarize",
+            )
+            _ = db.execute(
+                "UPDATE jobs SET status='queued',attempts=0,last_error=NULL,finished_at=NULL,"
+                "not_before=0,lease_until=NULL,claim_token=NULL,claim_protocol=0 "
+                "WHERE entry_id=? AND revision=? AND target IN ('summarize','extract') "
+                "AND status IN ('done','failed','superseded')",
+                (entry_id, revision),
+            )
+            _ = db.execute(
+                "DELETE FROM jobs WHERE entry_id=? AND revision=? "
+                "AND kind IN ('review','revise') AND target IN ('summarize','extract')",
+                (entry_id, revision),
+            )
+            gate = db.execute(
+                "SELECT id FROM jobs WHERE entry_id=? AND revision=? AND target='cleanup' "
+                "AND kind IN ('review','revise') AND status IN ('queued','running','failed') "
+                "ORDER BY turn DESC,created_at DESC LIMIT 1",
+                (entry_id, revision),
+            ).fetchone()
+            if gate is not None:
+                self._gate_cleanup_children(
+                    db,
+                    {"entry_id": entry_id, "revision": revision},
+                    str(gate["id"]),
+                )
+            _ = db.execute(
+                "UPDATE review_sessions SET status='pending',source_artifact_id=?,"
+                "candidate_artifact_id=NULL,final_artifact_id=NULL,turns_used=0,"
+                "remaining_claims='[]',producer_route=NULL WHERE entry_id=? AND revision=? "
+                "AND target IN ('summarize','extract')",
+                (cleaned, entry_id, revision),
+            )
+            _ = db.execute(
+                "DELETE FROM embeddings WHERE entry_id=? AND revision=?", (entry_id, revision)
+            )
+            _ = db.execute(
+                "UPDATE jobs SET status='queued',attempts=0,last_error=NULL,finished_at=NULL,"
+                "not_before=0,lease_until=NULL,claim_token=NULL,claim_protocol=0 "
+                "WHERE entry_id=? AND revision=? AND kind='embed' "
+                "AND status IN ('done','failed','superseded')",
+                (entry_id, revision),
+            )
+            self._refresh_search(db, entry_id)
 
     @staticmethod
-    def _find_source_id(db: sqlite3.Connection, job: sqlite3.Row, target: str) -> str | None:
+    def _find_source_id(db: sqlite3.Connection, job: Mapping[str, Any], target: str) -> str | None:
         kinds = ("raw_transcript", "user_text") if target == "cleanup" else ("cleaned",)
         for kind in kinds:
             row = db.execute(
@@ -272,7 +346,7 @@ class Store:
             )
         from .embedding import EmbeddingService
 
-        EmbeddingService(self, self.settings).reconcile(db)
+        EmbeddingService(self, self.settings).reconcile(db, entry_ids={entry_id})
 
     @staticmethod
     def _canonical_date(value: str) -> str:
@@ -307,19 +381,28 @@ class Store:
         entry_id = identifier()
         stored_file: Path | None = None
         content = text
+        audio_relative: Path | None = None
         try:
             if audio is not None:
                 digest = hashlib.sha256(audio).hexdigest()
                 relative = Path("audio") / entry_id / f"{digest}.{extension}"
+                audio_relative = relative
                 stored_file = self.data_dir / relative
-                (self.data_dir / "audio").mkdir(exist_ok=True, mode=0o700)
-                stored_file.parent.mkdir(mode=0o700)
-                _ = stored_file.write_bytes(audio)
-                stored_file.chmod(0o600)
+                self._reserve_audio_write(relative)
                 content = str(relative)
             assert content is not None
             with self.connect() as db:
                 _ = db.execute("BEGIN IMMEDIATE")
+                if audio_relative is not None:
+                    # Keep the cleanup obligation present through the file and entry commit.
+                    _ = db.execute(
+                        "INSERT OR IGNORE INTO file_deletions VALUES (?)", (str(audio_relative),)
+                    )
+                    assert audio is not None and stored_file is not None
+                    (self.data_dir / "audio").mkdir(exist_ok=True, mode=0o700)
+                    stored_file.parent.mkdir(mode=0o700)
+                    _ = stored_file.write_bytes(audio)
+                    stored_file.chmod(0o600)
                 _ = db.execute(
                     "INSERT INTO entries (id,created_at,entry_date,title,tags,source) "
                     "VALUES (?,?,?,?,?,?)",
@@ -339,18 +422,46 @@ class Store:
                 )
                 self._queue(db, entry_id, 1, audio is not None)
                 self._refresh_search(db, entry_id)
-        except Exception:
-            if stored_file is not None:
-                with suppress(OSError):
-                    stored_file.unlink(missing_ok=True)
-                with suppress(OSError):
-                    stored_file.parent.rmdir()
+                if audio_relative is not None:
+                    _ = db.execute(
+                        "DELETE FROM file_deletions WHERE path=?", (str(audio_relative),)
+                    )
+                    _ = db.execute(
+                        "DELETE FROM file_write_reservations WHERE path=?",
+                        (str(audio_relative),),
+                    )
+        except Exception as original_error:
+            if audio_relative is not None:
+                try:
+                    self._reserve_file_deletion(audio_relative)
+                    self._release_audio_write(audio_relative)
+                    failures = self._drain_deletions()
+                except Exception as cleanup_error:
+                    _logger.error(
+                        "Audio cleanup retry failed (errno=%s)",
+                        getattr(cleanup_error, "errno", None),
+                    )
+                    raise AudioCleanupPending(
+                        audio_relative.name, getattr(cleanup_error, "errno", None)
+                    ) from original_error
+                pending = next(
+                    (item for item in failures if item[0] == str(audio_relative)), None
+                )
+                if pending is not None:
+                    raise AudioCleanupPending(audio_relative.name, pending[1]) from original_error
             raise
         return self.get_entry(entry_id)
 
     @staticmethod
     def _read_entry(db: sqlite3.Connection, entry_id: str, history: bool) -> dict[str, Any]:
         entry = Store._entry(db, entry_id)
+        entry["compilation_count"] = int(
+            db.execute(
+                "SELECT COUNT(*) FROM compilations c JOIN json_each(c.entry_ids) ids "
+                "ON ids.value=?",
+                (entry_id,),
+            ).fetchone()[0]
+        )
         rows = db.execute(
             "SELECT * FROM artifacts WHERE entry_id=? "
             + ("" if history else "AND revision=? AND superseded_by IS NULL ")
@@ -426,12 +537,14 @@ class Store:
             ]
             return [self._read_entry(db, entry_id, False) for entry_id in ids]
 
-    def all_entries(self) -> list[dict[str, Any]]:
+    def all_entries(self, *, db: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
         """Read the complete current corpus from one consistent SQLite snapshot."""
-        with self.connect() as db:
-            _ = db.execute("BEGIN")
+        if db is not None:
             ids = [row[0] for row in db.execute("SELECT id FROM entries ORDER BY created_at,id")]
             return [self._read_entry(db, entry_id, False) for entry_id in ids]
+        with self.connect() as db:
+            _ = db.execute("BEGIN")
+            return self.all_entries(db=db)
 
     def patch_entry(self, entry_id: str, changes: dict[str, Any]) -> dict[str, Any]:
         allowed = {"title", "tags", "entry_date", "text"}
@@ -492,14 +605,86 @@ class Store:
                 (entry_id,),
             )
             _ = db.execute("DELETE FROM entries WHERE id=?", (entry_id,))
-        self._drain_deletions()
+        _ = self._drain_deletions()
 
-    def _drain_deletions(self) -> None:
+    def _reserve_file_deletion(self, relative: Path) -> None:
+        with self.connect() as db:
+            _ = db.execute("BEGIN IMMEDIATE")
+            _ = db.execute("INSERT OR IGNORE INTO file_deletions VALUES (?)", (str(relative),))
+
+    def _reserve_audio_write(self, relative: Path) -> None:
+        pid = os.getpid()
+        host = socket.gethostname()
+        boot_id = self._boot_id()
+        process_start = self._process_start(pid) or timestamp()
+        with self.connect() as db:
+            _ = db.execute("BEGIN IMMEDIATE")
+            _ = db.execute("INSERT OR IGNORE INTO file_deletions VALUES (?)", (str(relative),))
+            _ = db.execute(
+                "INSERT INTO file_write_reservations VALUES (?,?,?,?,?)",
+                (str(relative), host, pid, boot_id, process_start),
+            )
+
+    def _release_audio_write(self, relative: Path) -> None:
+        with self.connect() as db:
+            _ = db.execute("BEGIN IMMEDIATE")
+            _ = db.execute("DELETE FROM file_write_reservations WHERE path=?", (str(relative),))
+
+    @staticmethod
+    def _boot_id() -> str:
+        try:
+            return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+        except OSError:
+            return "unknown"
+
+    @staticmethod
+    def _process_start(pid: int) -> str | None:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+            fields = stat[stat.rfind(")") + 2 :].split()
+            return fields[19]
+        except (OSError, IndexError):
+            return None
+
+    @classmethod
+    def _write_owner_alive(cls, row: sqlite3.Row) -> bool:
+        if row["owner_host"] != socket.gethostname():
+            return True
+        if row["owner_boot_id"] != cls._boot_id():
+            return False
+        pid = int(row["owner_pid"])
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        start = cls._process_start(pid)
+        return start is None or start == row["owner_started_at"]
+
+    def _drain_deletions(self) -> list[tuple[str, int | None]]:
         # Durable outbox: deletion failures can be retried at the next startup.
+        failures: list[tuple[str, int | None]] = []
         with self.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
             paths = [row[0] for row in db.execute("SELECT path FROM file_deletions")]
             for relative in paths:
+                reservation = db.execute(
+                    "SELECT * FROM file_write_reservations WHERE path=?", (relative,)
+                ).fetchone()
+                if reservation is not None and self._write_owner_alive(reservation):
+                    continue
+                if reservation is not None:
+                    _ = db.execute(
+                        "DELETE FROM file_write_reservations WHERE path=?", (relative,)
+                    )
+                referenced = db.execute(
+                    "SELECT 1 FROM artifacts WHERE kind='raw_audio' AND content=? LIMIT 1",
+                    (relative,),
+                ).fetchone()
+                if referenced is not None:
+                    _ = db.execute("DELETE FROM file_deletions WHERE path=?", (relative,))
+                    continue
                 path = self.data_dir / relative
                 try:
                     path.unlink(missing_ok=True)
@@ -507,12 +692,16 @@ class Store:
                         path.parent.rmdir()
                 except OSError as exc:
                     _logger.warning(
-                        "Audio cleanup failed for managed file %s (%s); will retry later",
+                        "Audio cleanup failed for managed file %s (errno=%s, cause=%s); "
+                        "will retry later",
                         path.name,
+                        exc.errno,
                         type(exc).__name__,
                     )
+                    failures.append((str(relative), exc.errno))
                 else:
                     _ = db.execute("DELETE FROM file_deletions WHERE path=?", (relative,))
+        return failures
 
     def list_jobs(self, status: str | None = None) -> list[dict[str, Any]]:
         if status is not None and status not in {
@@ -610,6 +799,13 @@ class Store:
                 "lease_until=NULL,claim_protocol=0 WHERE status='running' AND lease_until<=?",
                 (self.settings.max_attempts, self.settings.max_attempts, timestamp(), now),
             )
+            if batch_id is not None:
+                _ = db.execute(
+                    "UPDATE jobs SET status='queued',last_error=NULL,finished_at=NULL,"
+                    "not_before=?,lease_until=NULL,claim_token=NULL,claim_protocol=0 "
+                    "WHERE status='running' AND (batch_id IS NULL OR batch_id!=?)",
+                    (now, batch_id),
+                )
             _ = db.execute(
                 "UPDATE jobs SET status='failed',"
                 "last_error='Attempt limit reached; retry after checking worker health',"
@@ -670,8 +866,8 @@ class Store:
                 _ = CompilationService.job_inputs(db, job["compilation_id"])
             _ = db.execute(
                 "UPDATE jobs SET status='running',attempts=attempts+1,lease_until=?,"
-                "claim_token=?,claim_protocol=4 WHERE id=?",
-                (now + self.settings.lease_s, claim_token, job["id"]),
+                "claim_token=?,claim_protocol=4,batch_id=? WHERE id=?",
+                (now + self.settings.lease_s, claim_token, batch_id, job["id"]),
             )
             if job["kind"] == "compile":
                 _ = db.execute(
@@ -958,7 +1154,7 @@ class Store:
             self._refresh_search(db, job["entry_id"])
             from .embedding import EmbeddingService
 
-            EmbeddingService(self, self.settings).reconcile(db)
+            EmbeddingService(self, self.settings).reconcile(db, entry_ids={job["entry_id"]})
             return True
 
     @staticmethod
@@ -1083,13 +1279,15 @@ class Store:
                 )
             ]
 
-    def fts_search(self, query: str) -> list[dict[str, Any]]:
+    def fts_search(
+        self, query: str, *, db: sqlite3.Connection | None = None
+    ) -> list[dict[str, Any]]:
         # Quote each token to keep user input out of the FTS query language.
         tokens = query.split()
         expression = " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
         if not expression:
             return []
-        with self.connect() as db:
+        if db is not None:
             return [
                 dict(row)
                 for row in db.execute(
@@ -1098,6 +1296,8 @@ class Store:
                     (expression,),
                 )
             ]
+        with self.connect() as connection:
+            return self.fts_search(query, db=connection)
 
     def set_token_hash(self, token_hash: str) -> None:
         with self.connect() as db:

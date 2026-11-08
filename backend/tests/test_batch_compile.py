@@ -108,8 +108,8 @@ def test_expired_batch_lease_can_be_recovered_and_stale_heartbeat_is_reported(
     with store.connect() as db:
         _ = db.execute(
             "UPDATE batch_state SET batch_id=?,started_at=?,trigger='manual',lease_until=?,"
-            "worker_last_seen_at=? WHERE id=1",
-            ("expired", stale_seen, time.time() - 10, stale_seen),
+            "worker_last_seen_at=?,worker_next_run_at=? WHERE id=1",
+            ("expired", stale_seen, time.time() - 10, stale_seen, stale_seen),
         )
     recovered = coordinator.acquire("schedule")
     assert recovered is not None

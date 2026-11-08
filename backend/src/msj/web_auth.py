@@ -1,6 +1,7 @@
 """Opaque SQLite-backed browser sessions and bounded login rate limiting."""
 
 import hashlib
+import ipaddress
 import secrets
 import threading
 import time
@@ -9,8 +10,6 @@ from collections import OrderedDict, deque
 from .storage import Store, timestamp
 
 SESSION_TTL_S = 30 * 24 * 60 * 60
-LOGIN_WINDOW_S = 15 * 60
-LOGIN_LIMIT = 10
 
 
 class LoginLimiter:
@@ -24,16 +23,38 @@ class LoginLimiter:
     def retry_after(self, key: str, now: float | None = None) -> int | None:
         clock = time.monotonic() if now is None else now
         with self._lock:
-            attempts = self._attempts.setdefault(key, deque())
-            self._attempts.move_to_end(key)
+            attempts = self._attempts.get(key, deque())
             while attempts and clock - attempts[0] >= self._window_s:
                 attempts.popleft()
             if len(attempts) >= self._limit:
                 return max(1, int(self._window_s - (clock - attempts[0])))
+            return None
+
+    def record_failure(self, key: str, now: float | None = None) -> None:
+        clock = time.monotonic() if now is None else now
+        with self._lock:
+            attempts = self._attempts.setdefault(key, deque())
+            self._attempts.move_to_end(key)
+            while attempts and clock - attempts[0] >= self._window_s:
+                attempts.popleft()
             attempts.append(clock)
             while len(self._attempts) > self._max_clients:
                 self._attempts.popitem(last=False)
-            return None
+
+
+def client_limit_key(address: str | None) -> str:
+    """Normalize client addresses and group IPv6 clients by their /64."""
+    if address is None:
+        return "unknown"
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    if isinstance(parsed, ipaddress.IPv6Address):
+        if parsed.ipv4_mapped is not None:
+            return str(parsed.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{parsed}/64", strict=False))
+    return str(parsed)
 
 
 class TokenChanged(RuntimeError):
@@ -66,7 +87,6 @@ def valid_session(store: Store, value: str | None) -> bool:
         row = db.execute(
             "SELECT 1 FROM sessions WHERE session_hash=? AND expires_at>?", (digest, now)
         ).fetchone()
-        _ = db.execute("DELETE FROM sessions WHERE expires_at<=?", (now,))
     return row is not None
 
 

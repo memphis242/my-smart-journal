@@ -10,6 +10,7 @@ import httpx
 from jsonschema import Draft202012Validator
 
 from .config import Settings, TaskKind
+from .diagnostics import safe_exception
 from .providers import (
     InferenceProvider,
     Provider,
@@ -77,11 +78,17 @@ def validate_output(kind: str, content: str, *, retryable: bool = True) -> Valid
 
 
 class Runner:
-    def __init__(self, store: Store, settings: Settings, provider: Provider | None = None) -> None:
+    def __init__(
+        self,
+        store: Store,
+        settings: Settings,
+        provider: Provider | None = None,
+        embedding: Any | None = None,
+    ) -> None:
         self.store = store
         self.settings = settings
         self._provider = provider
-        self._embedding: Any = None
+        self._embedding: Any = embedding
 
     def run_batch(self, *, _lease_id: str | None = None) -> dict[str, Any]:
         from .batch import BatchCoordinator
@@ -124,21 +131,39 @@ class Runner:
                             self._embedding = EmbeddingService(self.store, self.settings)
                         if self.settings.embedding.provider == "none":
                             with self.store.connect() as db:
-                                self._embedding.reconcile(db)
+                                self._embedding.reconcile(db, entry_ids={job["entry_id"]})
                             stats["discarded"] += 1
                             continue
                         try:
                             published = self._embedding.process(job)
                         except Exception as exc:
-                            _logger.error(
-                                "Embedding job failed (%s); check [embedding] model "
-                                "and service logs",
-                                type(exc).__name__,
+                            diagnostic = safe_exception(exc)
+                            _logger.error("Embedding job failed: %s", diagnostic)
+                            from .embedding import EmbeddingFailure
+
+                            cause: BaseException | None = exc
+                            while cause is not None and not isinstance(cause, EmbeddingFailure):
+                                cause = cause.__cause__
+                            failure_code = (
+                                cause.code
+                                if isinstance(cause, EmbeddingFailure)
+                                else "EMBEDDING_ENCODING_FAILED"
                             )
+                            guidance = {
+                                "EMBEDDING_DEPENDENCY_MISSING": (
+                                    "install `my-smart-journal[semantic]` to process embedding jobs"
+                                ),
+                                "EMBEDDING_MODEL_LOAD_FAILED": (
+                                    "verify embedding.model, embedding.revision, cache access, "
+                                    "and model availability"
+                                ),
+                                "EMBEDDING_ENCODING_FAILED": (
+                                    "verify model compatibility and vector dimensions"
+                                ),
+                            }[failure_code]
+                            message = f"{failure_code}: {guidance}; see worker logs for details"
                             recorded = self.store.fail_job(
-                                job,
-                                "Embedding failed; check [embedding] model and service logs, "
-                                "then retry this job",
+                                job, message
                             )
                             stats["failed" if recorded else "discarded"] += 1
                             continue
@@ -194,7 +219,7 @@ class Runner:
                     )
                     stats["failed" if recorded else "discarded"] += 1
                 except Exception as exc:
-                    _logger.error("Unexpected job exception: %s", type(exc).__name__)
+                    _logger.error("Unexpected job exception: %s", safe_exception(exc))
                     recorded = self.store.fail_job(
                         job,
                         "Unexpected processing failure; retry the job and check provider "

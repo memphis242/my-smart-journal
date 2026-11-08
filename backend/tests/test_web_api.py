@@ -109,11 +109,11 @@ def test_entry_filter_facets_neighbors_and_export(tmp_path: Path) -> None:
 
 def test_spa_fallback_security_headers(tmp_path: Path) -> None:
     web = tmp_path / "web"
-    web.mkdir()
+    (web / "assets").mkdir(parents=True)
     (web / "index.html").write_text("shell", encoding="utf-8")
-    (web / "app-D6ab1cDe.js").write_text("asset", encoding="utf-8")
-    (web / "app-AbCdEfGh.js").write_text("asset", encoding="utf-8")
-    (web / "app.deadbeef.js").write_text("asset", encoding="utf-8")
+    (web / "assets" / "app-D6ab1cDe.js").write_text("asset", encoding="utf-8")
+    (web / "assets" / "app-AbCdEfGh.js").write_text("asset", encoding="utf-8")
+    (web / "assets" / "app.deadbeef.js").write_text("asset", encoding="utf-8")
     (web / "logo-background.svg").write_text("image", encoding="utf-8")
     outside = tmp_path / "outside.js"
     outside.write_text("private", encoding="utf-8")
@@ -124,13 +124,15 @@ def test_spa_fallback_security_headers(tmp_path: Path) -> None:
         assert response.status_code == 200 and response.text == "shell"
         assert "default-src 'self'" in response.headers["content-security-policy"]
         assert response.headers["x-content-type-options"] == "nosniff"
-        asset = http.get("/app-D6ab1cDe.js")
+        asset = http.get("/assets/app-D6ab1cDe.js")
         assert asset.headers["cache-control"] == "public, max-age=31536000, immutable"
         assert (
-            http.get("/app-AbCdEfGh.js").headers["cache-control"] == asset.headers["cache-control"]
+            http.get("/assets/app-AbCdEfGh.js").headers["cache-control"]
+            == asset.headers["cache-control"]
         )
         assert (
-            http.get("/app.deadbeef.js").headers["cache-control"] == asset.headers["cache-control"]
+            http.get("/assets/app.deadbeef.js").headers["cache-control"]
+            == asset.headers["cache-control"]
         )
         assert "cache-control" not in http.get("/logo-background.svg").headers
         assert http.get("/escape.js").status_code == 404
@@ -160,10 +162,10 @@ def test_secure_cookie_expiry_and_stale_token_snapshot(tmp_path: Path) -> None:
     client, token = _client(tmp_path, insecure_cookies=False)
     with client as http:
         assert http.post("/api/v1/session", json={"token": token}).status_code == 204
-        cookie = next(item for item in http.cookies.jar if item.name == "msj_session")
+        cookie = next(item for item in http.cookies.jar if item.name == "__Host-msj_session")
         assert cookie.secure is True
         assert cookie.has_nonstandard_attr("HttpOnly")
-        cookie_value = http.cookies.get("msj_session")
+        cookie_value = http.cookies.get("__Host-msj_session")
         with http.app.state.store.connect() as db:
             session_hash = db.execute("SELECT session_hash FROM sessions").fetchone()[0]
         import hashlib

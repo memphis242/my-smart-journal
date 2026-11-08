@@ -1,7 +1,6 @@
 """End-to-end API behavior with SQLite and deterministic fake inference."""
 
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +9,9 @@ from fastapi.testclient import TestClient
 
 from msj.api import EntryCreate, EntryPatch, create_app
 from msj.auth import create_token
+from msj.batch import BatchCoordinator
 from msj.config import TASKS, EmbeddingSettings, Settings, TaskRoute
+from msj.pipeline import Runner
 
 
 @pytest.fixture
@@ -47,12 +48,11 @@ def test_text_entry_batch_artifacts_and_search(client: tuple[TestClient, str]) -
     entry_id = response.json()["id"]
     batch = http.post("/api/v1/batches/run", headers=_headers(token))
     assert batch.status_code == 202
-    assert batch.json()["started"] is True
-    for _ in range(200):
-        state = http.get("/api/v1/queue", headers=_headers(token)).json()
-        if not state["batch"]["running"]:
-            break
-        time.sleep(0.01)
+    assert batch.json()["requested"] is True
+    store = http.app.state.store
+    result = BatchCoordinator(store, Runner(store, store.settings)).run_requested()
+    assert result is not None
+    state = http.get("/api/v1/queue", headers=_headers(token)).json()
     assert state["batch"]["last_result"]["failed"] == 0
 
     entry = http.get(f"/api/v1/entries/{entry_id}", headers=_headers(token)).json()
@@ -123,12 +123,12 @@ def test_patch_validation_history_delete_and_health(client: tuple[TestClient, st
     assert http.get(f"/api/v1/entries/{entry_id}", headers=headers).status_code == 404
 
 
-def test_token_storage_keeps_only_a_salted_hash(client: tuple[TestClient, str]) -> None:
+def test_token_storage_keeps_only_a_keyed_hash(client: tuple[TestClient, str]) -> None:
     http, token = client
     stored_hash = http.app.state.store.token_hash()
     assert stored_hash is not None
     assert token not in stored_hash
-    assert stored_hash.startswith("scrypt$")
+    assert stored_hash.startswith("hmac-sha256$")
     assert http.get("/api/v1/jobs", headers=_headers("invalid-token")).status_code == 401
 
 
@@ -143,11 +143,10 @@ def test_failed_jobs_filter_and_manual_retry(tmp_path: Path) -> None:
         assert created.status_code == 201
         batch = http.post("/api/v1/batches/run", headers=headers)
         assert batch.status_code == 202
-        for _ in range(200):
-            state = http.get("/api/v1/queue", headers=headers).json()
-            if not state["batch"]["running"]:
-                break
-            time.sleep(0.01)
+        store = app.state.store
+        result = BatchCoordinator(store, Runner(store, store.settings)).run_requested()
+        assert result is not None
+        state = http.get("/api/v1/queue", headers=headers).json()
         assert state["batch"]["last_result"]["failed"] == 1
         failed = http.get("/api/v1/jobs", params={"status": "failed"}, headers=headers)
         assert failed.status_code == 200

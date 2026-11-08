@@ -111,3 +111,31 @@ def test_expired_owner_cannot_publish_or_record_failure(tmp_path: Path, kind: st
         coordinator.renew(batch_id)
     current = next(item for item in store.list_jobs() if item["id"] == job["id"])
     assert current["status"] == "running"
+
+
+def test_replacement_batch_reclaims_job_before_its_individual_lease_expires(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        data_dir=tmp_path,
+        tasks={kind: TaskRoute(provider="fake") for kind in TASKS},
+    )
+    store = Store(settings)
+    store.migrate()
+    _ = store.create_entry(text="Recover a claim from a dead batch owner.")
+    coordinator = BatchCoordinator(store, Runner(store, settings))
+    old_batch = coordinator.acquire("manual")
+    assert old_batch is not None
+    jobs = {job["id"] for job in store.list_jobs() if job["status"] == "queued"}
+    old_claim = store.claim(jobs, batch_id=old_batch)
+    assert old_claim is not None
+    replacement = coordinator.acquire("manual")
+    assert replacement is None
+    with store.connect() as db:
+        _ = db.execute("UPDATE batch_state SET lease_until=0 WHERE id=1")
+    replacement = coordinator.acquire("manual")
+    assert replacement is not None
+    new_claim = store.claim(jobs, batch_id=replacement)
+    assert new_claim is not None
+    assert new_claim["id"] == old_claim["id"]
+    assert new_claim["claim_token"] != old_claim["claim_token"]

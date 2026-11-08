@@ -10,6 +10,7 @@ Group=msj
 EnvironmentFile=/etc/msj/service.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=HF_HOME=/var/lib/msj/models
+Environment=HF_HUB_OFFLINE=1
 ExecStart=/opt/msj/venv/bin/msj worker
 Restart=on-failure
 RestartSec=5
@@ -19,6 +20,20 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/msj
+MemoryMax=2G
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+PrivateDevices=true
+ProtectProc=invisible
+RestrictNamespaces=true
+LockPersonality=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

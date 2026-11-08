@@ -1,12 +1,19 @@
 """Regressions for job visibility, migration, and storage edge cases."""
 
+import socket
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
+from msj import storage
 from msj.config import Settings
-from msj.storage import NotFound, Store
+
+AudioCleanupPending = getattr(storage, "AudioCleanupPending", RuntimeError)
+NotFound = storage.NotFound
+Store = storage.Store
 
 
 def store_at(path: Path) -> Store:
@@ -170,9 +177,112 @@ def test_audio_creation_suppresses_cleanup_errors_and_surfaces_original(
     monkeypatch.setattr(Path, "write_bytes", fail_write)
     monkeypatch.setattr(Path, "unlink", fail_cleanup)
     monkeypatch.setattr(Path, "rmdir", fail_cleanup)
-    with pytest.raises(OSError, match="original audio write error") as caught:
+    with pytest.raises(AudioCleanupPending, match="cleanup remains pending") as caught:
         store.create_entry(audio=b"recording", extension="wav")
-    assert caught.value is write_error
+    assert caught.value.__cause__ is write_error
+
+
+def test_audio_creation_failure_is_recovered_from_durable_cleanup_outbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = store_at(tmp_path)
+    original_unlink = Path.unlink
+
+    def fail_audio_unlink(path: Path, *, missing_ok: bool = False) -> None:
+        if path.suffix == ".wav":
+            raise PermissionError("secondary cleanup failure")
+        original_unlink(path, missing_ok=missing_ok)
+
+    def fail_queue(*_args: object) -> None:
+        raise RuntimeError("queue failure")
+
+    monkeypatch.setattr(Path, "unlink", fail_audio_unlink)
+    monkeypatch.setattr(store, "_queue", fail_queue)
+    with pytest.raises(AudioCleanupPending, match="cleanup remains pending") as caught:
+        store.create_entry(audio=b"private audio bytes", extension="wav")
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert str(caught.value.__cause__) == "queue failure"
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) FROM entries").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM file_deletions").fetchone()[0] == 1
+    audio_files = list((tmp_path / "audio").rglob("*.wav"))
+    assert len(audio_files) == 1
+
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    Store(store.settings).migrate()
+    assert not audio_files[0].exists()
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) FROM file_deletions").fetchone()[0] == 0
+
+
+def test_audio_write_and_entry_commit_are_exclusive_with_outbox_draining(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = store_at(tmp_path)
+    original_write = Path.write_bytes
+    original_drain = store._drain_deletions
+    write_started = threading.Event()
+    drain_started = threading.Event()
+    allow_write = threading.Event()
+
+    def blocked_write(path: Path, data: bytes) -> int:
+        write_started.set()
+        assert allow_write.wait(5)
+        return original_write(path, data)
+
+    def tracked_drain() -> list[tuple[str, int | None]]:
+        drain_started.set()
+        return original_drain()
+
+    monkeypatch.setattr(Path, "write_bytes", blocked_write)
+    monkeypatch.setattr(store, "_drain_deletions", tracked_drain)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        creation = executor.submit(store.create_entry, audio=b"recording", extension="wav")
+        assert write_started.wait(5)
+        drain = executor.submit(store._drain_deletions)
+        assert drain_started.wait(5)
+        assert not drain.done()
+        allow_write.set()
+        entry = creation.result(timeout=5)
+        _ = drain.result(timeout=5)
+    audio_path = next(
+        tmp_path / artifact["content"]
+        for artifact in entry["artifacts"]
+        if artifact["kind"] == "raw_audio"
+    )
+    assert audio_path.is_file()
+
+
+def test_startup_reclaims_audio_reservation_from_a_dead_writer(tmp_path: Path) -> None:
+    store = store_at(tmp_path)
+    relative = Path("audio") / "orphan" / "recording.wav"
+    audio_path = tmp_path / relative
+    audio_path.parent.mkdir(parents=True)
+    audio_path.write_bytes(b"partial recording")
+    with store.connect() as db:
+        _ = db.execute("BEGIN IMMEDIATE")
+        _ = db.execute("INSERT INTO file_deletions VALUES (?)", (str(relative),))
+        _ = db.execute(
+            "INSERT INTO file_write_reservations VALUES (?,?,?,?,?)",
+            (str(relative), socket.gethostname(), 2_000_000_000, store._boot_id(), "dead-start"),
+        )
+
+    Store(store.settings).migrate()
+    assert not audio_path.exists()
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) FROM file_deletions").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM file_write_reservations").fetchone()[0] == 0
+
+
+def test_entry_detail_reports_compilations_that_deletion_will_remove(tmp_path: Path) -> None:
+    from msj.compilations import CompilationService
+
+    store = store_at(tmp_path)
+    entry = store.create_entry(text="Source for a compilation")
+    _ = CompilationService(store).create([entry["id"]], "Purpose", "Period")
+    assert store.get_entry(entry["id"])["compilation_count"] == 1
 
 
 def test_fail_job_can_be_marked_non_retryable(tmp_path: Path) -> None:

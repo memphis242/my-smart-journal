@@ -34,7 +34,7 @@ Provider HTTP failures appear in the job's `last_error` with the HTTP status, co
 
 ## Run
 
-Create a single-user API token once. The displayed bearer token cannot be recovered later; only its scrypt hash is stored.
+Create a single-user API token once. The displayed bearer token cannot be recovered later; only its HMAC-SHA256 digest is stored. A 256-bit key lives in `token.secret` (0600) in the data directory. Migration 009 invalidates legacy scrypt digests: `TOKEN_REISSUE_REQUIRED` means token must be re-issued: run `msj create-token`. Back up the secret with the journal database.
 
 ```sh
 export MSJ_CONFIG_FILE=/path/to/config.toml
@@ -121,7 +121,8 @@ then embeds overlapping cleaned-text chunks and one summary chunk. Normalized
 float32 vectors live in SQLite and numpy scans them without a vector server.
 Queries use the model's query instruction. Startup reconciliation queues missing
 current-revision embeddings, including entries in an upgraded database. Tier 5
-returns `EMBEDDINGS_DISABLED`, `EMBEDDING_MODEL_UNAVAILABLE`, or
+returns `EMBEDDINGS_DISABLED`, `EMBEDDING_DEPENDENCY_MISSING`,
+`EMBEDDING_MODEL_LOAD_FAILED`, `EMBEDDING_ENCODING_FAILED`, or
 `EMBEDDINGS_PENDING` details when applicable; pending entries do not suppress
 available results. Model-load failures direct the operator to `[embedding] model`
 and the service log without recording private exception values. Model loading
@@ -133,13 +134,18 @@ remain available for explicit retry.
 scores, and passages. It combines semantic and BM25 ranks with reciprocal rank
 fusion; BM25 remains available when the embedder is unavailable.
 
-`POST /api/v1/batches/run` returns 202 with `{started:true,batch_id}` and runs in
-a background thread. A SQLite lease, renewed while running, provides single-flight
-execution across the HTTP server, `msj run-batch`, and `msj worker`. A concurrent
-HTTP trigger returns 409 `BATCH_ALREADY_RUNNING`. `GET /api/v1/queue` reports the
-lease state, latest result, scheduled-worker heartbeat, next run, counts, and up
-to 200 current nonterminal/failed jobs. A heartbeat older than twice the configured
-interval indicates a stale worker.
+`POST /api/v1/batches/run` durably requests work: 202 `{"requested":true}`,
+with `"worker":{"stale":true}` when no recent worker heartbeat exists. Repeating
+a pending request is idempotent; an active lease yields 409 `BATCH_ALREADY_RUNNING`.
+Run `msj worker` separately: it checks requests and the batch schedule every
+`worker_tick_s` (2 seconds by default) with interruptible waits. `msj run-batch`
+runs inline using the same lease. Local dead owners (host/PID/boot/process start)
+are reclaimed. Replaced batch claims are recovered even if individual job leases
+have time remaining. Worker conflicts log at INFO and retry after the remaining
+lease time. Queue `next_run_at` is the next wake, and `batch.last_error` contains
+`{code,detail}` (`BATCH_FAILED` or `BATCH_LEASE_LOST`). Worker heartbeat age above
+max(10 seconds, 3 ticks) is stale. The server loads one query embedding model
+lazily off the event loop; the worker loads its own shared service.
 
 Compilation jobs have null entry ID, title, and date in queue items because their
 source is a selected set of entries rather than one entry.
@@ -164,7 +170,7 @@ Only schema-valid results are published.
 ## Web UI and deployment
 
 Set `MSJ_WEB_DIR` to a built UI directory containing `index.html`. Hashed assets
-receive long-lived caching; unknown non-API routes return the SPA index. UI
+under `assets/` receive immutable caching; extensionless UI routes return the SPA index. Missing chunks, paths with extensions, and dot segments return 404. UI
 responses include the contract's strict self-only CSP, nosniff, no-referrer, and
 microphone permission policy. Leave it unset to serve only the API. See
 [VPS deployment](../docs/deploy-vps.md) and [deployment examples](../deploy/)
@@ -190,3 +196,30 @@ export PYTHONDONTWRITEBYTECODE=1
 Tests use temporary databases, explicit fake routes and fake embedders for semantic coverage, and httpx MockTransport; real HTTP transports are blocked in the suite. Serve, worker, and batch processes may share one database. Atomic claims, lease tokens, and revision checks prevent duplicate publication or stale results after an edit. SQLite serializes writes; inference runs outside database transactions. This MVP scans the journal for the first three search tiers and is intended for one user's corpus.
 
 Back up the SQLite database using its backup API or a consistent WAL-aware snapshot together with the audio directory. Data-directory permissions are restricted to the owner. Encryption at rest is deferred behind the `Store` boundary; no encryption is performed. Keep data outside the source checkout so no new gitignore rule is required.
+
+## Upgrade and privacy boundaries
+
+Stop serve/worker before migration 009 and run `msj create-token` after it. Newly
+pending cleanup review invalidates downstream published outputs, review sessions,
+search projections and vectors; historical artifacts retain their lineage.
+Audio creation records a durable cleanup obligation before filesystem writes.
+Entry detail includes `compilation_count` for a deletion confirmation.
+
+All problem responses and NDJSON failure events contain a stable code. Internal
+ValueErrors yield logged 500 `INTERNAL_ERROR`; logs retain errno/filename, SQLite
+codes, validation field/type and traceback file:line evidence without exception
+messages, tokens or journal text. API JSON, search and exports use `no-store`.
+Queries reject control characters (`INVALID_QUERY`), and retrieval `k` is a strict
+integer (no bool, float or string). Retrieval reads one SQLite snapshot.
+
+Login and bearer limiting count failures only, grouping IPv6 clients by /64.
+`MSJ_FORWARDED_ALLOW_IPS` defaults to `127.0.0.1,::1`; set the exact trusted proxy
+address for a container or remote Caddy. Uvicorn receives this value explicitly.
+
+The embedding revision defaults to
+`5c38ec7c405ec4b44b94cc5a9bb96e735b38267a` and participates in its fingerprint.
+After installing the semantic extra, download it with `msj embedding-download`
+using the service configuration and `HF_HOME`, before enabling offline units.
+Set `HF_HUB_OFFLINE=1` in production (already set in both deployment units).
+The units apply `MemoryMax=2G` and systemd privilege restrictions; tune the memory
+limit for a deliberately different model. Caddy sets HSTS.
