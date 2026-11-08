@@ -1,0 +1,15 @@
+{
+  "id": "synth-07",
+  "fictional": true,
+  "domain": "personal",
+  "raw_transcript": "Okay, um, in this fictional running diary I met Arun Lake at the park. We walked for 10 minutes and then jogged 3 km at an easy pace. My watch showed 24 minutes for the jogging portion, though I forgot to stop it at the last crossing. So that time is approximate. I felt a little tired on the hill and switched to walking; there was no sharp pain. Arun suggested a 5 km route next month, but I have not agreed to it. Afterward we spent 7 dollars each on soup. I want to remember that today was about keeping a routine, not setting a personal record. I will rest tomorrow if my legs still feel heavy.",
+  "reference_cleaned": "In this fictional running diary, I met Arun Lake at the park. We walked for 10 minutes and then jogged 3 km at an easy pace. My watch showed approximately 24 minutes for the jogging portion because I forgot to stop it at the last crossing. I felt a little tired on the hill and switched to walking; there was no sharp pain. Arun suggested a 5 km route next month, but I have not agreed to it. Afterward we spent 7 dollars each on soup. I want to remember that today was about keeping a routine, not setting a personal record. I will rest tomorrow if my legs still feel heavy.",
+  "key_facts": [
+    "Arun Lake",
+    "10 minutes",
+    "3 km",
+    "24 minutes",
+    "5 km",
+    "7 dollars"
+  ]
+}

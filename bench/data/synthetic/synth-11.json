@@ -1,0 +1,21 @@
+{
+  "id": "synth-11",
+  "fictional": true,
+  "domain": "work",
+  "raw_transcript": "Well, um, on the fictional Aster dashboard I helped Ellis Snow, our accessibility tester, inspect keyboard navigation. We checked 14 controls in Firefox at 200% zoom. Three controls had no visible focus indicator. I added CSS outlines to those 3 and verified that Tab reached them in the expected sequence. I have not checked screen reader announcements, and this was not a full WCAG audit. The chart still relies on color alone to distinguish 2 series. I opened issue AST-18 for that instead of trying a rushed palette change. Ellis will review the patch on Monday. I want the journal to say what was actually tested, not that the whole dashboard is accessible now.",
+  "reference_cleaned": "On the fictional Aster dashboard, I helped Ellis Snow, our accessibility tester, inspect keyboard navigation. We checked 14 controls in Firefox at 200% zoom. Three controls had no visible focus indicator. I added CSS outlines to those 3 and verified that Tab reached them in the expected sequence. I have not checked screen reader announcements, and this was not a full WCAG audit. The chart still relies on color alone to distinguish 2 series. I opened issue AST-18 for that instead of trying a rushed palette change. Ellis will review the patch on Monday. I want the journal to say what was actually tested, not that the whole dashboard is accessible now.",
+  "key_facts": [
+    "Aster",
+    "Ellis Snow",
+    "14 controls",
+    "Firefox",
+    "200%",
+    "3",
+    "CSS",
+    "Tab",
+    "WCAG",
+    "2 series",
+    "AST-18",
+    "Monday"
+  ]
+}

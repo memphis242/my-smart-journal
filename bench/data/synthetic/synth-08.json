@@ -1,0 +1,20 @@
+{
+  "id": "synth-08",
+  "fictional": true,
+  "domain": "work",
+  "raw_transcript": "Um, the imaginary Pebble gateway finally stayed connected through our lab test. I instrumented the MQTT reconnect path in Rust while Dana Wren, the systems engineer, controlled the access point. We disconnected Wi-Fi 20 times. Nineteen reconnects finished within 2 seconds; one took 11 seconds. I nearly called it a hundred percent fast recovery, no, that is wrong. All 20 recovered eventually, but one was slow. The logs suggest a DNS timeout, although we need packet captures to confirm that. I reduced a retry sleep from 5 seconds to 1 second only in the test build. We have not checked power consumption. The next step is a battery test with the original antenna.",
+  "reference_cleaned": "The imaginary Pebble gateway stayed connected through our lab test. I instrumented the MQTT reconnect path in Rust while Dana Wren, the systems engineer, controlled the access point. We disconnected Wi-Fi 20 times. Nineteen reconnects finished within 2 seconds; one took 11 seconds. Calling it a hundred percent fast recovery would be wrong. All 20 recovered eventually, but one was slow. The logs suggest a DNS timeout, although we need packet captures to confirm that. I reduced a retry sleep from 5 seconds to 1 second only in the test build. We have not checked power consumption. The next step is a battery test with the original antenna.",
+  "key_facts": [
+    "Pebble",
+    "MQTT",
+    "Rust",
+    "Dana Wren",
+    "Wi-Fi",
+    "20",
+    "2 seconds",
+    "11 seconds",
+    "DNS",
+    "5 seconds",
+    "1 second"
+  ]
+}

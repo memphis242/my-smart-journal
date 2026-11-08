@@ -26,3 +26,11 @@ recordings/private/
 
 # Benchmark outputs
 bench/results/
+
+# Keep fictional benchmark fixtures tracked; private recordings stay local.
+!bench/data/
+!bench/data/synthetic/
+!bench/data/synthetic/**
+!bench/data/user/
+bench/data/user/*
+!bench/data/user/README.md

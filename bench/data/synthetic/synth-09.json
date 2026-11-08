@@ -1,0 +1,19 @@
+{
+  "id": "synth-09",
+  "fictional": true,
+  "domain": "school",
+  "raw_transcript": "So the pretend digital design lab was messy today. I wrote a Verilog UART receiver for an FPGA and ran the simulator with Mateo Pine. At 115200 baud we saw 2 framing errors in 10000 bytes when the clock offset was plus 2%. At zero offset we saw none in that sample. Um, I changed the sampling point but have not rerun the offset sweep, so there is no measured improvement yet. Mateo found that my testbench reset lasted only 1 clock cycle. We extended it to 4 cycles and saved the waveform. I want to present both the failure and the uncertainty in the lab notes. The hardware board has not been programmed with this build.",
+  "reference_cleaned": "The pretend digital design lab was messy today. I wrote a Verilog UART receiver for an FPGA and ran the simulator with Mateo Pine. At 115200 baud, we saw 2 framing errors in 10000 bytes when the clock offset was plus 2%. At zero offset, we saw none in that sample. I changed the sampling point but have not rerun the offset sweep, so there is no measured improvement yet. Mateo found that my testbench reset lasted only 1 clock cycle. We extended it to 4 cycles and saved the waveform. I want to present both the failure and the uncertainty in the lab notes. The hardware board has not been programmed with this build.",
+  "key_facts": [
+    "Verilog",
+    "UART",
+    "FPGA",
+    "Mateo Pine",
+    "115200 baud",
+    "2",
+    "10000 bytes",
+    "2%",
+    "1 clock cycle",
+    "4 cycles"
+  ]
+}

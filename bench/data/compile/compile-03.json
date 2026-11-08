@@ -1,0 +1,66 @@
+{
+  "id": "compile-03",
+  "fictional": true,
+  "period": "2026-09-21/2026-11-02",
+  "purpose": "job-search",
+  "entries": [
+    {
+      "date": "2026-09-21",
+      "text": "Starting the job search properly. Goal: a senior backend or platform reliability role. Spent the evening listing past projects worth telling as stories. Strongest one is the RabbitMQ to Kafka queue migration at Pellucid Freight in 2024: I pushed back on migrating without a load test, we ran one and found 45 seconds of consumer lag at peak, fixed the consumer batching, and then migrated with no customer-facing incidents. Need to find the actual post-fix lag number in my old notes."
+    },
+    {
+      "date": "2026-09-24",
+      "text": "Found the old notes. After the batching fix, peak consumer lag went from 45 seconds to under 2 seconds. Also remembered the second story, the billing export rewrite: moved a nightly batch job from 6 hours to 40 minutes by replacing row-by-row inserts with COPY into PostgreSQL. I had been telling people it was 4 hours before; the old runbook says 6 hours, so 6 is the real number. Both stories need the same structure: situation, my specific action, measured result."
+    },
+    {
+      "date": "2026-09-30",
+      "text": "Mock interview with Joanna Kettle, a friend who is an engineering manager at another company. Behavioral round. The disagreement story went well. The failure story, the missed migration deadline, was rambling; she timed my situation part at 2 and a half minutes. Her advice: situation in two sentences, spend most of the time on what I changed afterwards. I have not rewritten it yet. Joanna also said the disagreement story should mention who I had to convince, the tech lead, not just the technical argument. Plan: rewrite both stories this weekend and record myself."
+    },
+    {
+      "date": "2026-10-07",
+      "text": "Coding practice. Did 12 problems this week, mostly sliding window and heap problems, in Python. Solved 9 without hints. Kept losing time on edge cases with empty input. Planned to do a system design mock this week too, but did not get to it. Pattern I noticed: I start coding before writing down the edge cases. New rule for myself is to list inputs like empty, single element and duplicates before writing any code. Also reread the Pellucid Freight notes to make sure every number I quote in interviews is the real one, not the one I remember."
+    },
+    {
+      "date": "2026-10-14",
+      "text": "Applied to six companies. Phone screens scheduled with Halvard Systems and Corvane Labs. The Halvard recruiter is Sienna Morrow; the role is on the platform reliability team, possibly senior. Still have not done a system design mock. The other four applications have not replied. Planned a system design mock with Joanna for Saturday; she cancelled because her kid was sick, and I did not reschedule. Updated my resume to lead with the Kafka migration and the billing export numbers, and asked Joanna to read it; no feedback yet."
+    },
+    {
+      "date": "2026-10-21",
+      "text": "Passed the Halvard phone screen, a 45 minute coding round: an LRU cache in Python, finished with time left for follow-ups. Corvane phone screen moved to next week. Second mock with Joanna on the failure story: better, situation down to about 40 seconds, but she said the result part still lacks a number. Ran out of time to prep for system design specifically, which I know is a gap. Halvard scheduled the onsite for October 30th, and Sienna said it would be three rounds. Bought a cheap headset because my laptop microphone picks up the fan."
+    },
+    {
+      "date": "2026-10-30",
+      "text": "Halvard virtual onsite, four rounds. Behavioral with Gideon Achterberg went well except the failure story, which still ran long. Coding with Priyanka Venn: sliding window rate limiter in Python, passed her tests, did not implement the TTL eviction she asked about. System design with Leon Faber: a metrics pipeline at 2 million events per second. Handled late events with watermarks, but fumbled the storage estimate; the right answer was about 17 terabytes per day and I talked myself out of it. Self-rating 6 out of 10."
+    },
+    {
+      "date": "2026-11-02",
+      "text": "Sent thank-you notes to Gideon, Priyanka and Leon on Saturday. Did five back-of-envelope estimation problems over the weekend. Corvane Labs second round is tomorrow. No decision from Halvard yet; Sienna said by November 4th. The level is not confirmed: Gideon said leveling happens after the debrief, so I should not tell anyone I have a senior offer. Practiced the failure story out loud once more with the situation in two sentences and the result as a number: the follow-up migration finished one week early. Felt much tighter."
+    }
+  ],
+  "key_facts": [
+    "Pellucid Freight",
+    "RabbitMQ",
+    "Kafka",
+    "45 seconds",
+    "under 2 seconds",
+    "6 hours to 40 minutes",
+    "COPY",
+    "PostgreSQL",
+    "Joanna Kettle",
+    "Halvard Systems",
+    "Corvane Labs",
+    "LRU cache",
+    "sliding window rate limiter",
+    "2 million events per second",
+    "watermarks",
+    "17 terabytes per day",
+    "Gideon Achterberg",
+    "November 4th"
+  ],
+  "not_accomplished": [
+    "received a senior offer from Halvard",
+    "implemented the TTL eviction",
+    "completed a system design mock interview",
+    "cut the billing export from 4 hours to 40 minutes"
+  ]
+}

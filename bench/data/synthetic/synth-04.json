@@ -1,0 +1,16 @@
+{
+  "id": "synth-04",
+  "fictional": true,
+  "domain": "personal",
+  "raw_transcript": "Uh, this is my made-up balcony garden update. Tessa Moss, my fictional neighbor, helped me move 4 basil pots away from the hot window. I watered each with 250 mL, well, roughly 250 mL because the jug marks are hard to read. The thermometer said 31 degrees Celsius at noon. Two leaves on one plant are yellow, but I do not know whether the cause is heat or too much water. I spent 18.50 dollars on potting mix and reused the old trays. Next weekend I plan to plant mint in a separate container. Tessa suggested that because it spreads. I have not bought the mint yet, and the basil has not visibly recovered.",
+  "reference_cleaned": "This is my made-up balcony garden update. Tessa Moss, my fictional neighbor, helped me move 4 basil pots away from the hot window. I watered each with roughly 250 mL because the jug marks are hard to read. The thermometer said 31 degrees Celsius at noon. Two leaves on one plant are yellow, but I do not know whether the cause is heat or too much water. I spent 18.50 dollars on potting mix and reused the old trays. Next weekend I plan to plant mint in a separate container. Tessa suggested that because it spreads. I have not bought the mint yet, and the basil has not visibly recovered.",
+  "key_facts": [
+    "Tessa Moss",
+    "4",
+    "250 mL",
+    "31 degrees Celsius",
+    "18.50 dollars",
+    "basil",
+    "mint"
+  ]
+}

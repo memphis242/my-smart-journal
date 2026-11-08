@@ -1,0 +1,71 @@
+[runpod]
+api_base = "https://api.runpod.ai/v2"
+gpu_hourly_usd = 0.58
+# Cold LLM starts download weights; allow time for both queueing and execution.
+timeout_s = 900.0
+request_timeout_s = 30.0
+poll_initial_s = 1.0
+poll_max_s = 10.0
+backoff = 1.5
+
+[stt]
+endpoint_name = "msj-bench-whisper"
+endpoint_id = "b92qs7e2v6wi3n"
+model = "turbo"
+
+[llm]
+endpoint_name = "msj-bench-llm"
+endpoint_id = "rcybvy10rvnu2q"
+model = "any"
+max_tokens = 3072
+compile_max_tokens = 3072
+
+[openai]
+base_url = "http://127.0.0.1:8080/v1"
+model = "local"
+timeout_s = 300.0
+
+[output]
+out_dir = "/workspace/build/my-smart-journal-phase0/results"
+
+# Informational inventory only. The harness never deploys or swaps models.
+# Repository file listings: https://huggingface.co/<hf_repo>/tree/main
+[[llm_candidates]]
+label = "LFM2.5-350M BF16"
+hf_repo = "LiquidAI/LFM2.5-350M-GGUF"
+gguf_file = "LFM2.5-350M-BF16.gguf"
+
+[[llm_candidates]]
+label = "LFM2.5-1.2B-Instruct Q8_0"
+hf_repo = "LiquidAI/LFM2.5-1.2B-Instruct-GGUF"
+gguf_file = "LFM2.5-1.2B-Instruct-Q8_0.gguf"
+
+[[llm_candidates]]
+label = "LFM2.5-1.2B-Instruct BF16"
+hf_repo = "LiquidAI/LFM2.5-1.2B-Instruct-GGUF"
+gguf_file = "LFM2.5-1.2B-Instruct-BF16.gguf"
+
+[[llm_candidates]]
+label = "gemma-4-E2B-it Q8_0"
+hf_repo = "unsloth/gemma-4-E2B-it-GGUF"
+gguf_file = "gemma-4-E2B-it-Q8_0.gguf"
+
+[[llm_candidates]]
+label = "Phi-4-mini-instruct Q8_0"
+hf_repo = "unsloth/Phi-4-mini-instruct-GGUF"
+gguf_file = "Phi-4-mini-instruct-Q8_0.gguf"
+
+[[llm_candidates]]
+label = "Qwen3.5-4B Q4_K_M"
+hf_repo = "unsloth/Qwen3.5-4B-GGUF"
+gguf_file = "Qwen3.5-4B-Q4_K_M.gguf"
+
+[[llm_candidates]]
+label = "Qwen3.5-4B Q8_0"
+hf_repo = "unsloth/Qwen3.5-4B-GGUF"
+gguf_file = "Qwen3.5-4B-Q8_0.gguf"
+
+[[llm_candidates]]
+label = "gemma-4-E4B-it Q8_0"
+hf_repo = "unsloth/gemma-4-E4B-it-GGUF"
+gguf_file = "gemma-4-E4B-it-Q8_0.gguf"

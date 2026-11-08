@@ -1,0 +1,19 @@
+{
+  "id": "synth-06",
+  "fictional": true,
+  "domain": "school",
+  "raw_transcript": "Well, for our fictional statistics study group, Leena Brook and I checked the bootstrap notebook in R. We used 120 synthetic observations, not real student records. The estimated mean was 6.4 and the 95% interval ran from 5.9 to 6.8. Um, I initially copied 6.9 as the upper bound, then reran the cell and corrected it to 6.8. We fixed the random seed at 42 so the example can be reproduced. I explained resampling to 3 classmates, but I still mixed up confidence and prediction intervals in one answer. Leena caught that. I need to rewrite the explanation before the seminar. We did not test whether the original observations were independent.",
+  "reference_cleaned": "For our fictional statistics study group, Leena Brook and I checked the bootstrap notebook in R. We used 120 synthetic observations, not real student records. The estimated mean was 6.4, and the 95% interval ran from 5.9 to 6.8. I initially copied 6.9 as the upper bound, then reran the cell and corrected it to 6.8. We fixed the random seed at 42 so the example can be reproduced. I explained resampling to 3 classmates, but I still mixed up confidence and prediction intervals in one answer. Leena caught that. I need to rewrite the explanation before the seminar. We did not test whether the original observations were independent.",
+  "key_facts": [
+    "Leena Brook",
+    "R",
+    "120",
+    "6.4",
+    "95%",
+    "5.9",
+    "6.8",
+    "6.9",
+    "42",
+    "3 classmates"
+  ]
+}
