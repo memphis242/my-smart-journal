@@ -35,9 +35,19 @@ The response is `{"items": [...], "total": <count matching the filters>}`. This 
   "text": "…",                    // final cleaned text if available, else the raw text
   "projects": ["…"], "skills": ["…"],   // from the final extraction, else []
   "status": "queued" | "processing" | "done" | "needs_attention" | "failed",
-  "revision": 1
+  "revision": 1, "version": 1
 }
 ```
+
+`version` is an integer that starts at 1 and increments after every successful
+entry PATCH, including metadata-only changes. `revision` increments only when
+`text` changes. Full list items and `GET /entries/{id}` also include `version`.
+`PATCH /entries/{id}` accepts optional `expected_version`, which must be a JSON
+integer (booleans are invalid). When it differs from the current version, the
+server returns 409 `ENTRY_CHANGED` with `current_version` in the problem body;
+reload the entry and reapply the changes. The comparison and update are atomic.
+Omitting `expected_version` preserves unconditional PATCH behavior. A successful
+PATCH response includes the updated `version`.
 
 `status` is derived from the current revision's jobs and review sessions:
 

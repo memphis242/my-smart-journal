@@ -56,6 +56,7 @@ def test_previous_schema_keeps_data_dependencies_and_queues_embedding(tmp_path: 
     entry = store.get_entry("entry")
     assert entry["title"] == "Atlas"
     assert entry["tags"] == ["Work"]
+    assert entry["version"] == 1
     assert {item["id"] for item in entry["artifacts"]} == {"raw", "clean", "sum"}
     embeds = [job for job in entry["jobs"] if job["kind"] == "embed"]
     assert len(embeds) == 1

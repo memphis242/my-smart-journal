@@ -189,7 +189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 store = _store(settings)
                 print(create_token(store))
             case "embedding-download":
-                from sentence_transformers import SentenceTransformer
+                from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found,unused-ignore]
 
                 _ = SentenceTransformer(
                     settings.embedding.model,

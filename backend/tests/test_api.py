@@ -1,6 +1,7 @@
 """End-to-end API behavior with SQLite and deterministic fake inference."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -121,6 +122,73 @@ def test_patch_validation_history_delete_and_health(client: tuple[TestClient, st
     deleted = http.delete(f"/api/v1/entries/{entry_id}", headers=headers)
     assert deleted.status_code == 204
     assert http.get(f"/api/v1/entries/{entry_id}", headers=headers).status_code == 404
+
+
+def test_patch_expected_version_and_metadata_versioning(client: tuple[TestClient, str]) -> None:
+    http, token = client
+    headers = _headers(token)
+    created = http.post(
+        "/api/v1/entries", headers=headers, json={"text": "Original", "title": "First"}
+    ).json()
+    entry_id = created["id"]
+    assert created["version"] == 1
+    assert created["revision"] == 1
+
+    updated = http.patch(
+        f"/api/v1/entries/{entry_id}",
+        headers=headers,
+        json={"title": "Second", "expected_version": 1},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["version"] == 2
+    assert updated.json()["revision"] == 1
+
+    stale = http.patch(
+        f"/api/v1/entries/{entry_id}",
+        headers=headers,
+        json={"tags": ["work"], "expected_version": 1},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "ENTRY_CHANGED"
+    assert stale.json()["current_version"] == 2
+    assert "now version 2" in stale.json()["detail"]
+
+    summaries = http.get("/api/v1/entries", headers=headers).json()["items"]
+    assert summaries[0]["version"] == 2
+    assert http.get(f"/api/v1/entries/{entry_id}", headers=headers).json()["version"] == 2
+
+
+def test_patch_expected_version_rejects_boolean(client: tuple[TestClient, str]) -> None:
+    http, token = client
+    created = http.post("/api/v1/entries", headers=_headers(token), json={"text": "Original"})
+    response = http.patch(
+        f"/api/v1/entries/{created.json()['id']}",
+        headers=_headers(token),
+        json={"title": "Changed", "expected_version": True},
+    )
+    assert response.status_code == 422
+
+
+def test_concurrent_stale_patch_returns_current_version(client: tuple[TestClient, str]) -> None:
+    http, token = client
+    headers = _headers(token)
+    created = http.post("/api/v1/entries", headers=headers, json={"text": "Original"})
+    entry_id = created.json()["id"]
+
+    def update(title: str) -> Any:
+        return http.patch(
+            f"/api/v1/entries/{entry_id}",
+            headers=headers,
+            json={"title": title, "expected_version": 1},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(update, ("First", "Second")))
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    stale = next(response for response in responses if response.status_code == 409)
+    assert stale.json()["code"] == "ENTRY_CHANGED"
+    assert stale.json()["current_version"] == 2
 
 
 def test_token_storage_keeps_only_a_keyed_hash(client: tuple[TestClient, str]) -> None:

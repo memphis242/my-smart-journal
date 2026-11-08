@@ -55,6 +55,7 @@ def summary_fields(entry: dict[str, Any]) -> dict[str, Any]:
         "skills": _string_list(extraction_data.get("skills_technologies")),
         "status": status,
         "revision": revision,
+        "version": entry.get("version", 1),
     }
 
 
@@ -166,7 +167,8 @@ def facet_values(entries: Iterable[Mapping[str, Any]]) -> dict[str, list[dict[st
 def summary_item(entry: dict[str, Any]) -> dict[str, Any]:
     fields = summary_fields(entry)
     return {
-        key: entry.get(key) for key in ("id", "entry_date", "created_at", "title", "tags", "source")
+        key: entry.get(key)
+        for key in ("id", "entry_date", "created_at", "title", "tags", "source", "version")
     } | fields
 
 
