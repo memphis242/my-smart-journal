@@ -11,12 +11,21 @@ export function token(): string {
  * log of the sign-in probe: GET /api/v1/session answers 401 by contract when
  * the browser has no session.
  */
-export function watchConsole(page: Page): string[] {
+export interface ExpectedFailure {
+  readonly status: number;
+  /** Matches the request path, for example /\/api\/v1\/entries\/[^/]+$/. */
+  readonly path: RegExp;
+}
+
+export function watchConsole(page: Page, expected: readonly ExpectedFailure[] = []): string[] {
   const errors: string[] = [];
   page.on('console', (message: ConsoleMessage) => {
     if (message.type() !== 'error') return;
     const url = message.location().url;
-    if (message.text().startsWith('Failed to load resource') && message.text().includes('401') && url.endsWith('/api/v1/session')) return;
+    const failedLoad = message.text().startsWith('Failed to load resource');
+    if (failedLoad && message.text().includes('401') && url.endsWith('/api/v1/session')) return;
+    // Failures a test provokes on purpose (a revoked session, a version conflict), declared by that test.
+    if (failedLoad && expected.some((item) => message.text().includes(`status of ${item.status}`) && item.path.test(new URL(url).pathname))) return;
     errors.push(`${message.text()} (${url})`);
   });
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
@@ -46,16 +55,25 @@ export async function noHorizontalScroll(page: Page): Promise<void> {
   expect(sizes.inner, 'the browser must not zoom out to fit over-wide content').toBe(device);
 }
 
-/** Every test fails on console errors (see watchConsole). */
-export const test = base.extend<{ consoleErrors: string[] }>({
+/**
+ * Every test fails on console errors (see watchConsole). A test that provokes
+ * a failing request on purpose declares it with `expectFailure`.
+ */
+export const test = base.extend<{ expected: ExpectedFailure[]; consoleErrors: string[]; expectFailure: (failure: ExpectedFailure) => void }>({
+  expected: [async ({}, use) => { await use([]); }, { scope: 'test' }],
   consoleErrors: [
-    async ({ page }, use) => {
-      const errors = watchConsole(page);
+    async ({ page, expected }, use) => {
+      const errors = watchConsole(page, expected);
       await use(errors);
       expectNoConsoleErrors(errors);
     },
     { auto: true },
   ],
+  expectFailure: async ({ expected }, use) => {
+    await use((failure) => {
+      expected.push(failure);
+    });
+  },
 });
 
 export { expect };

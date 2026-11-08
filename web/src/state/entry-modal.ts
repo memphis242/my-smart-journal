@@ -27,6 +27,13 @@ export interface OpenEntry {
 
 export const openEntry = signal<OpenEntry | null>(null);
 
+/** Entries deleted in this session; result lists drop them at once, before any refresh. */
+export const deletedEntries = signal<ReadonlySet<string>>(new Set());
+
+export function markDeleted(id: string): void {
+  deletedEntries.value = new Set([...deletedEntries.value, id]);
+}
+
 export function showEntry(id: string, context: NavContext): void {
   assert(context.newestFirst.includes(id) || !context.complete || context.newestFirst.length === 0, 'an entry opened from a complete list is in it');
   openEntry.value = { id, context, direction: 0 };

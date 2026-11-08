@@ -86,7 +86,7 @@ export function EntryList({ onAction, onNewEntry }: EntryListProps): JSX.Element
         }
       } catch (error) {
         if (isAbort(error)) return;
-        setState((s) => ({ ...s, key, loading: false, error: toAppError(error, 'Load entries') }));
+        setState((s) => ({ ...s, key, loading: false, loadingMore: false, error: toAppError(error, 'Load entries') }));
       }
     };
     void load();

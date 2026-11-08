@@ -52,8 +52,26 @@ async function drainQueue(api: APIRequestContext): Promise<void> {
   }
 }
 
+/** The suite writes, edits and deletes data: only a loopback server unless explicitly allowed. */
+function checkTarget(baseURL: string): void {
+  let host: string;
+  try {
+    host = new URL(baseURL).hostname;
+  } catch (error) {
+    throw new Error(`MSJ_E2E_BASE_URL is not a URL: ${baseURL}`, { cause: error });
+  }
+  const loopback = host === 'localhost' || host === '[::1]' || host === '::1' || /^127\.\d+\.\d+\.\d+$/.test(host);
+  if (!loopback && process.env.MSJ_E2E_ALLOW_REMOTE !== '1') {
+    throw new Error(
+      `Refusing to run the real-backend suite against ${baseURL}: it creates, edits and deletes entries. ` +
+        'Point MSJ_E2E_BASE_URL at a local stack, or set MSJ_E2E_ALLOW_REMOTE=1 for a disposable remote one.',
+    );
+  }
+}
+
 export default async function globalSetup(): Promise<void> {
   const baseURL = process.env.MSJ_E2E_BASE_URL ?? 'http://127.0.0.1:18765';
+  checkTarget(baseURL);
   const token = readToken();
   process.env.MSJ_E2E_TOKEN = token;
   const api = await request.newContext({ baseURL, extraHTTPHeaders: { Authorization: `Bearer ${token}` } });

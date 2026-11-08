@@ -15,6 +15,7 @@ const ENTRY: EntrySummary = {
   skills: [],
   status: 'done',
   revision: 1,
+  version: 1,
 };
 
 describe('format', () => {

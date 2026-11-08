@@ -111,6 +111,7 @@ interface Problem {
   readonly code: string | null;
   readonly type: string | null;
   readonly fieldErrors: readonly string[];
+  readonly body: Readonly<Record<string, unknown>>;
 }
 
 function readProblem(body: string): Problem | null {
@@ -137,7 +138,7 @@ function readProblem(body: string): Problem | null {
     const reason = type !== null && message !== null ? `${type} (${message})` : (type ?? message ?? 'invalid');
     return [`${field}: ${reason}`];
   });
-  return { title: text('title'), detail: text('detail'), code: text('code'), type: text('type'), fieldErrors };
+  return { title: text('title'), detail: text('detail'), code: text('code'), type: text('type'), fieldErrors, body: record };
 }
 
 function retryAfterSeconds(response: Response): number | null {
@@ -246,6 +247,7 @@ export class ApiClient {
       message: `${spec.operation} failed: ${reason}`,
       hint: hintForCode(code, retryAfterS),
       details,
+      problem: problem?.body ?? null,
     });
   }
 

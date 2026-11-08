@@ -32,7 +32,10 @@ test.describe('processing queue', () => {
     const sheet = page.getByTestId('queue-sheet');
     await expect(sheet.getByTestId('worker-stale')).toBeVisible();
     await sheet.getByTestId('sheet-run-batch').click();
-    await expect(sheet.getByTestId('error-code').filter({ hasText: 'WORKER_NOT_RUNNING' })).toBeVisible();
+    // An accepted request with a stopped worker is one attention-level note, not an error.
+    await expect(sheet.getByTestId('worker-stale').getByTestId('request-pending')).toBeVisible();
+    await expect(sheet.getByTestId('error-code')).toHaveCount(0);
+    await expect(sheet.getByTestId('sheet-run-batch')).toBeDisabled();
   });
 
   test('shows the last batch failure with its code', async ({ page }) => {

@@ -41,6 +41,8 @@ export interface ApiErrorInit extends AppErrorInit {
   readonly method: string;
   readonly path: string;
   readonly retryAfterS: number | null;
+  /** The parsed problem body, for code-specific fields such as `current_version`. */
+  readonly problem?: Readonly<Record<string, unknown>> | null;
 }
 
 export class ApiError extends AppError {
@@ -50,6 +52,7 @@ export class ApiError extends AppError {
   readonly method: string;
   readonly path: string;
   readonly retryAfterS: number | null;
+  readonly problem: Readonly<Record<string, unknown>> | null;
 
   constructor(init: ApiErrorInit) {
     super(init);
@@ -58,7 +61,15 @@ export class ApiError extends AppError {
     this.method = init.method;
     this.path = init.path;
     this.retryAfterS = init.retryAfterS;
+    this.problem = init.problem ?? null;
   }
+}
+
+/** For 409 ENTRY_CHANGED: the entry's version on the server, when it says. */
+export function currentVersionOf(error: unknown): number | null {
+  if (!(error instanceof ApiError) || error.code !== 'ENTRY_CHANGED') return null;
+  const value = error.problem?.['current_version'];
+  return typeof value === 'number' && Number.isInteger(value) ? value : null;
 }
 
 export function isAbort(error: unknown): boolean {
@@ -105,7 +116,8 @@ const HINTS: Readonly<Record<string, string>> = {
   BATCH_LEASE_LOST: 'Another worker took over the batch lease; check that only one worker runs, then run the batch again.',
   WORKER_NOT_RUNNING: 'Start the worker on the server with `msj worker`; it then picks up the request.',
   CSRF_HEADER_MISSING: 'Reload the page. If it persists, the page and server versions differ.',
-  BATCH_ALREADY_RUNNING: 'Wait for the running batch to finish; the queue updates on its own.',
+  BATCH_ALREADY_RUNNING: 'The running batch only processes the work it started with. Run the batch again when the current one finishes.',
+  ENTRY_CHANGED: 'Reload the entry and reapply your changes, then save again.',
   ENTRY_NOT_FOUND: 'The entry was deleted or never existed. Reload the list.',
   NOT_FOUND: 'It may have been deleted. Reload the list.',
   CONFLICT: 'Reload to see the current state, then try again.',

@@ -20,6 +20,8 @@ export class HttpProblem extends Error {
   readonly title: string;
   readonly code: string;
   readonly headers: HeadersInit;
+  /** Code-specific fields added to the problem body, such as `current_version`. */
+  readonly extra: Readonly<Record<string, unknown>>;
 
   constructor(
     status: number,
@@ -27,6 +29,7 @@ export class HttpProblem extends Error {
     detail: string,
     code?: string,
     headers: HeadersInit = {},
+    extra: Readonly<Record<string, unknown>> = {},
   ) {
     super(detail);
     this.status = status;
@@ -36,6 +39,7 @@ export class HttpProblem extends Error {
     assert(/^[A-Z][A-Z0-9_]*$/.test(problemCode), 'problem code is uppercase snake case');
     this.code = problemCode;
     this.headers = headers;
+    this.extra = extra;
   }
 
   response(): Response {
@@ -46,6 +50,7 @@ export class HttpProblem extends Error {
         status: this.status,
         detail: this.message,
         code: this.code,
+        ...this.extra,
       },
       this.status,
       {

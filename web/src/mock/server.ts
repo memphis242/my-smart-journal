@@ -25,6 +25,8 @@ export interface MockOptions {
   readonly signedIn?: boolean;
   /** Requires a successful sign-in before authenticated requests are accepted. */
   readonly tokenRotated?: boolean;
+  /** DELETE /session fails with 500, to exercise sign-out error handling. */
+  readonly signOutFails?: boolean;
   readonly session?: {
     get(): boolean;
     set(value: boolean): void;
@@ -289,7 +291,12 @@ export function createMockApi(options: MockOptions): MockApi {
           tokenRotated = false;
           return new Response(null, { status: 204 });
         }
-        case 'DELETE': setSession(false); return new Response(null, { status: 204 });
+        case 'DELETE':
+          if (options.signOutFails === true) {
+            throw new HttpProblem(500, 'Internal Server Error', 'Session removal failed; check the service log.', 'INTERNAL_ERROR');
+          }
+          setSession(false);
+          return new Response(null, { status: 204 });
         default: return new Response(null, { status: 204 });
       }
     }
@@ -308,14 +315,27 @@ export function createMockApi(options: MockOptions): MockApi {
           return new Response(null, { status: 204 });
         case 'PATCH': {
           const payload = await body(request);
-          unknownFields(payload, ['title', 'tags', 'entry_date', 'text']);
-          if (Object.keys(payload).length === 0) invalid('Provide at least one entry field');
+          unknownFields(payload, ['title', 'tags', 'entry_date', 'text', 'expected_version']);
+          const expected = payload['expected_version'];
+          if (expected !== undefined && (typeof expected !== 'number' || !Number.isInteger(expected))) invalid('expected_version must be an integer');
+          if (Object.keys(payload).filter((key) => key !== 'expected_version').length === 0) invalid('Provide at least one entry field');
+          if (typeof expected === 'number' && expected !== entry.version) {
+            throw new HttpProblem(
+              409,
+              'Conflict',
+              `The entry changed since version ${expected}; it is now version ${entry.version}. Reload it and reapply your changes.`,
+              'ENTRY_CHANGED',
+              {},
+              { current_version: entry.version },
+            );
+          }
           const newTitle = payload['title'] === undefined ? entry.title : title(payload['title']);
           const newTags = payload['tags'] === undefined ? entry.tags : strings(payload['tags'], 'Tags must be an array of strings');
           const date = payload['entry_date'] === undefined ? entry.entry_date : calendarDate(payload['entry_date']);
           const text = payload['text'];
           if ('text' in payload && (typeof text !== 'string' || !text.trim())) invalid('Text must contain non-whitespace characters');
           entry.title = newTitle; entry.tags = [...newTags]; entry.entry_date = date;
+          entry.version += 1;
           if (typeof text === 'string') store.revise(entry, text);
           return json(store.detail(entry));
         }

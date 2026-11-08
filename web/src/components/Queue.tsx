@@ -40,10 +40,10 @@ interface Summary {
   readonly batchFailed: boolean;
 }
 
-function summarize(snapshot: QueueSnapshot, now: number, skewMs: number): Summary {
+function summarize(snapshot: QueueSnapshot, now: number, skewMs: number, fetchedAt: number): Summary {
   const { counts, batch } = snapshot;
   const waiting = counts.queued + counts.running + counts.blocked;
-  const stale = workerStale(snapshot, now, skewMs);
+  const stale = workerStale(snapshot, now, skewMs, fetchedAt);
   const failed = counts.failed;
   let text: string;
   if (batch.running) {
@@ -60,7 +60,7 @@ function summarize(snapshot: QueueSnapshot, now: number, skewMs: number): Summar
   const kind: MarkerKind =
     batch.request_pending && stale
       ? 'attention'
-      : isBusy(snapshot)
+      : isBusy(snapshot, stale)
         ? 'progress'
         : failed > 0 || batchFailed
           ? 'failed'
@@ -77,7 +77,7 @@ function summarize(snapshot: QueueSnapshot, now: number, skewMs: number): Summar
 export function QueueIndicator(): JSX.Element {
   const wide = useMediaQuery(WIDE);
   const now = useNow();
-  const { snapshot, error, skewMs } = queueState.value;
+  const { snapshot, error, skewMs, fetchedAt } = queueState.value;
   const request = batchRequest.value;
 
   if (snapshot === null) {
@@ -90,8 +90,11 @@ export function QueueIndicator(): JSX.Element {
     );
   }
 
-  const summary = summarize(snapshot, now, skewMs);
+  const summary = summarize(snapshot, now, skewMs, fetchedAt ?? now);
+  // The last poll failed: what is shown is the last known state.
+  const outdated = error !== null;
   const title = [
+    outdated && fetchedAt !== null ? `Not updating: last known state from ${formatTime(new Date(fetchedAt).toISOString(), true)} (${error.code})` : null,
     summary.text,
     summary.failed > 0 ? `${summary.failed} failed` : null,
     summary.stale ? 'worker not running' : null,
@@ -104,13 +107,22 @@ export function QueueIndicator(): JSX.Element {
 
   return (
     <div class="queue-bar" data-testid="queue-bar">
-      <button type="button" class="queue-indicator" title={title} aria-label={title} data-testid="queue-indicator" onClick={openQueueSheet}>
+      <button
+        type="button"
+        class={outdated ? 'queue-indicator is-outdated' : 'queue-indicator'}
+        title={title}
+        aria-label={title}
+        data-testid="queue-indicator"
+        data-outdated={outdated}
+        onClick={openQueueSheet}
+      >
         <StatusMarker kind={summary.kind} label={summary.text} decorative />
         <span class={!wide && (summary.failed > 0 || summary.batchFailed) ? 'queue-text queue-failed' : 'queue-text'}>
           {wide ? summary.text : summary.short}
           {wide && summary.failed > 0 && <span class="queue-failed">{summary.failed} failed</span>}
           {wide && summary.stale && !snapshot.batch.request_pending && <span class="queue-stale">Worker not running</span>}
           {wide && summary.batchFailed && <span class="queue-failed">Last batch failed</span>}
+          {outdated && <span class="queue-stale">{wide ? 'Not updating' : '?'}</span>}
         </span>
       </button>
       {wide && (
@@ -221,25 +233,31 @@ function openFromQueue(entryId: string): void {
   showEntry(entryId, { newestFirst: [entryId], previews: new Map(), filters: {}, complete: false });
 }
 
-function StatusBlock({ snapshot, now, skewMs }: { readonly snapshot: QueueSnapshot; readonly now: number; readonly skewMs: number }): JSX.Element {
+function StatusBlock({
+  snapshot,
+  now,
+  skewMs,
+  fetchedAt,
+}: {
+  readonly snapshot: QueueSnapshot;
+  readonly now: number;
+  readonly skewMs: number;
+  readonly fetchedAt: number;
+}): JSX.Element {
   const { batch, worker } = snapshot;
-  const stale = workerStale(snapshot, now, skewMs);
+  const stale = workerStale(snapshot, now, skewMs, fetchedAt);
   const serverNow = new Date(now + skewMs);
   return (
     <div class="queue-status">
       <p class="queue-status-line" data-testid="batch-state" data-state={batch.running ? 'running' : batch.request_pending ? 'requested' : 'idle'}>
-        <StatusMarker kind={batch.running || (batch.request_pending && !stale) ? 'progress' : batch.request_pending ? 'attention' : 'muted'} label="Batch" decorative />
+        <StatusMarker kind={batch.running || (batch.request_pending && !stale) ? 'progress' : 'muted'} label="Batch" decorative />
         {batch.running ? (
           <span>
             Batch running since <span class="mono">{batch.started_at === null ? 'now' : formatTime(batch.started_at, true)}</span>
             {batch.trigger !== null && <span class="muted"> ({batch.trigger === 'manual' ? 'requested' : 'scheduled'})</span>}
           </span>
-        ) : batch.request_pending ? (
-          <span data-testid="request-pending">
-            {stale
-              ? 'Batch requested; it starts when the worker runs again.'
-              : 'Batch requested, waiting for the worker to pick it up.'}
-          </span>
+        ) : batch.request_pending && !stale ? (
+          <span data-testid="request-pending">Batch requested, waiting for the worker to pick it up.</span>
         ) : batch.last_finished_at !== null ? (
           <span>
             Idle. Last batch finished <span class="mono">{formatWhen(batch.last_finished_at)}</span>
@@ -257,6 +275,11 @@ function StatusBlock({ snapshot, now, skewMs }: { readonly snapshot: QueueSnapsh
         <div class="notice notice-attention" data-testid="worker-stale">
           <StatusMarker kind="attention" label="Worker not running" decorative />
           <div class="notice-main">
+            {batch.request_pending && (
+              <p class="notice-message" data-testid="request-pending">
+                <strong>Batch requested; it starts when the worker runs again.</strong>
+              </p>
+            )}
             <p class="notice-message">
               <strong>Worker not running.</strong>{' '}
               {worker.last_seen_at === null ? (
@@ -295,7 +318,7 @@ function StatusBlock({ snapshot, now, skewMs }: { readonly snapshot: QueueSnapsh
 export function QueueSheet(): JSX.Element | null {
   const now = useNow(5000);
   if (!queueSheetOpen.value) return null;
-  const { snapshot, error, skewMs } = queueState.value;
+  const { snapshot, error, skewMs, fetchedAt } = queueState.value;
   const request = batchRequest.value;
   const close = (): void => {
     queueSheetOpen.value = false;
@@ -325,7 +348,7 @@ export function QueueSheet(): JSX.Element | null {
           {request.error !== null && <ErrorNotice error={request.error} onDismiss={clearBatchError} />}
           {snapshot !== null && (
             <>
-              <StatusBlock snapshot={snapshot} now={now} skewMs={skewMs} />
+              <StatusBlock snapshot={snapshot} now={now} skewMs={skewMs} fetchedAt={fetchedAt ?? now} />
               {(() => {
                 const failure = snapshot.batch.running ? null : lastBatchError(snapshot);
                 return failure === null ? null : <ErrorNotice error={failure} />;

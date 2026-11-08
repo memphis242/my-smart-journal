@@ -35,6 +35,7 @@ function setup(options: {
   readonly workerStale?: boolean;
   readonly tokenRotated?: boolean;
   readonly signedIn?: boolean;
+  readonly signOutFails?: boolean;
 } = {}) {
   const mock = createMockApi({
     seeds: options.seeds ?? [],
@@ -47,6 +48,7 @@ function setup(options: {
     ...(options.workerStale === undefined ? {} : { workerStale: options.workerStale }),
     ...(options.tokenRotated === undefined ? {} : { tokenRotated: options.tokenRotated }),
     ...(options.signedIn === undefined ? {} : { signedIn: options.signedIn }),
+    ...(options.signOutFails === undefined ? {} : { signOutFails: options.signOutFails }),
   });
   const client = new ApiClient({ fetch: mock.fetch, onUnauthorized: () => undefined });
   return { mock, client };
@@ -311,5 +313,29 @@ describe('updated session and batch contract', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('entry versions and sign-out failures', () => {
+  it('increments the version on every PATCH and refuses a stale expected_version', async () => {
+    const { client } = setup({ signedIn: true });
+    const created = await client.createTextEntry({ text: 'Versioned note.', title: 'v', tags: [], entry_date: '2026-11-08' });
+    expect(created.version).toBe(1);
+    const retitled = await client.patchEntry(created.id, { title: 'v2', expected_version: 1 });
+    expect(retitled.version).toBe(2);
+    const unconditional = await client.patchEntry(created.id, { tags: ['work'] });
+    expect(unconditional.version).toBe(3);
+    const refused = await client.patchEntry(created.id, { title: 'late', expected_version: 2 }).catch((caught: unknown) => caught);
+    expect(refused).toBeInstanceOf(ApiError);
+    expect((refused as ApiError).code).toBe('ENTRY_CHANGED');
+    expect((refused as ApiError).status).toBe(409);
+    expect((refused as ApiError).problem?.['current_version']).toBe(3);
+    await expect(client.getEntry(created.id)).resolves.toMatchObject({ title: 'v2', version: 3 });
+  });
+
+  it('can fail sign-out with a coded server error', async () => {
+    const { client } = setup({ signedIn: true, signOutFails: true });
+    await expect(client.signOut()).rejects.toMatchObject({ code: 'INTERNAL_ERROR', status: 500 });
+    await expect(client.sessionProblem()).resolves.toBeNull();
   });
 });

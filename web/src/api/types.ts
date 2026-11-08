@@ -27,6 +27,11 @@ export interface EntrySummary {
   readonly skills: readonly string[];
   readonly status: EntryStatus;
   readonly revision: number;
+  /**
+   * Optimistic-concurrency version; increments on every PATCH. Null when the
+   * server does not report it (then edits are sent without expected_version).
+   */
+  readonly version: number | null;
 }
 
 export interface EntryPage {
@@ -347,4 +352,6 @@ export interface EntryPatch {
   readonly tags?: readonly string[];
   readonly entry_date?: string;
   readonly text?: string;
+  /** The version the edit started from; a mismatch is answered with 409 ENTRY_CHANGED. */
+  readonly expected_version?: number;
 }

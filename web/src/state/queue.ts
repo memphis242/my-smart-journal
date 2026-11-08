@@ -43,21 +43,23 @@ let fastUntil = 0;
 const FALLBACK_STALE_MS = 15_000;
 
 /**
- * True when the worker is not running. The server's own judgement wins; without
- * it, the heartbeat age is measured on the server's clock (browser time plus the
- * skew seen in the Date header), so a wrong browser clock cannot flip it.
+ * True when the worker is not running. The server's own judgement wins while
+ * the snapshot is fresh; once it is older than the staleness window (polls
+ * failing), the heartbeat age decides, measured on the server's clock (browser
+ * time plus the skew seen in the Date header) so a wrong browser clock cannot
+ * flip it.
  */
-export function workerStale(snapshot: QueueSnapshot, browserNow: number = Date.now(), skewMs = 0): boolean {
-  if (snapshot.worker.stale !== null) return snapshot.worker.stale;
+export function workerStale(snapshot: QueueSnapshot, browserNow: number = Date.now(), skewMs = 0, fetchedAt: number = browserNow): boolean {
+  if (snapshot.worker.stale !== null && browserNow - fetchedAt <= FALLBACK_STALE_MS) return snapshot.worker.stale;
   const seen = snapshot.worker.last_seen_at;
   if (seen === null) return true;
   const at = Date.parse(seen);
   return Number.isNaN(at) || browserNow + skewMs - at > FALLBACK_STALE_MS;
 }
 
-/** Work is moving or about to: poll quickly. */
-export function isBusy(snapshot: QueueSnapshot): boolean {
-  return snapshot.batch.running || snapshot.batch.request_pending || snapshot.counts.running > 0;
+/** Work is moving or about to: poll quickly. A request waiting on a stopped worker is not about to move. */
+export function isBusy(snapshot: QueueSnapshot, stale = false): boolean {
+  return snapshot.batch.running || snapshot.counts.running > 0 || (snapshot.batch.request_pending && !stale);
 }
 
 function signature(snapshot: QueueSnapshot): string {
@@ -91,8 +93,10 @@ export async function refreshQueue(): Promise<void> {
 
 function schedule(): void {
   if (timer !== null) window.clearTimeout(timer);
-  const snapshot = queueState.value.snapshot;
-  const delay = (snapshot !== null && isBusy(snapshot)) || Date.now() < fastUntil ? FAST_MS : SLOW_MS;
+  const { snapshot, skewMs, fetchedAt } = queueState.value;
+  const now = Date.now();
+  const busy = snapshot !== null && isBusy(snapshot, workerStale(snapshot, now, skewMs, fetchedAt ?? now));
+  const delay = busy || now < fastUntil ? FAST_MS : SLOW_MS;
   timer = window.setTimeout(() => {
     void tick();
   }, delay);
@@ -145,24 +149,19 @@ export async function runBatchNow(options: { readonly quiet?: boolean } = {}): P
   if (batchRequest.value.pending) return false;
   batchRequest.value = { pending: true, error: null };
   let error: AppError | null = null;
+  let workerStopped = false;
   try {
     const result = await requestBatch();
-    if (result.worker?.stale === true) {
-      error = new AppError({
-        code: 'WORKER_NOT_RUNNING',
-        message: 'Batch requested, but the worker is not running, so the batch will not start.',
-        hint: hintForCode('WORKER_NOT_RUNNING', null),
-      });
-    } else if (options.quiet !== true) {
-      toast('Batch requested; the worker starts it within a few seconds');
-    }
+    // Accepted either way; with a stopped worker the request waits, which the sheet explains.
+    workerStopped = result.worker?.stale === true;
+    if (!workerStopped && options.quiet !== true) toast('Batch requested; the worker starts it within a few seconds');
   } catch (caught) {
-    // BATCH_ALREADY_RUNNING included: the sheet shows the code next to the running batch.
+    // BATCH_ALREADY_RUNNING included: the hint says to run it again after the current one.
     error = toAppError(caught, 'Run batch');
   }
   batchRequest.value = { pending: false, error };
-  if (error !== null) openQueueSheet();
-  return error === null;
+  if (error !== null || workerStopped) openQueueSheet();
+  return error === null && !workerStopped;
 }
 
 /** The last batch's failure as a displayable error, or null. */

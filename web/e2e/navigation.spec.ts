@@ -7,6 +7,7 @@ test.describe('navigation and session', () => {
     await page.locator('.evidence-date').first().click();
     await expect(page.getByTestId('entries-page')).toBeVisible();
     await expect(page).toHaveURL(/range=custom/);
+    await expect(rows(page).first()).toBeVisible();
     const shown = await rows(page).count();
     expect(shown).toBeGreaterThan(0);
     await page.reload();

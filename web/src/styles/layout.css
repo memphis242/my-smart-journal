@@ -119,6 +119,10 @@
   color: var(--st-failed);
 }
 
+.queue-indicator.is-outdated {
+  border-style: dashed;
+}
+
 .queue-stale {
   color: var(--st-attention);
 }

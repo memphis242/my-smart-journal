@@ -51,8 +51,9 @@ Switches, added to the page URL:
 | `mock-embeddings=disabled`, `model_load_failed`, `dependency_missing` or `encoding_failed` | Semantic search unavailable, with the backend's matching code |
 | `mock-token=rotated` | The server token was replaced (`TOKEN_REISSUE_REQUIRED`) |
 | `mock-empty=1` | No entries or compilations, to see the empty states |
+| `mock-signout=fail` | Sign-out fails with 500 `INTERNAL_ERROR` (local state is still cleared) |
 
-The mock is loaded only in mock mode; production builds do not contain it.
+The mock is loaded only in mock mode; production builds do not contain it. In mock builds, `window.__msjMockFetch` exposes the in-page server so end-to-end tests can act as another device (for example, a concurrent edit).
 
 ## Run against a local backend
 

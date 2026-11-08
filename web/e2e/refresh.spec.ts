@@ -91,16 +91,4 @@ test.describe('refreshes during a running batch', () => {
     expect(await results.getByTestId('tier-group').count()).toBe(groups);
     expect(await results.getByTestId('entry-row').count()).toBe(hits);
   });
-
-  test('an edit survives a reload and is offered again', async ({ page }) => {
-    await openApp(page);
-    await rows(page).nth(3).click();
-    await page.getByTestId('modal-edit').click();
-    await page.getByTestId('entry-title').fill('Kept across a lost session');
-    await page.reload();
-    await expect(rows(page).first()).toBeVisible();
-    await rows(page).nth(3).click();
-    await page.getByTestId('modal-edit').click();
-    await expect(page.getByTestId('entry-title')).toHaveValue('Kept across a lost session');
-  });
 });

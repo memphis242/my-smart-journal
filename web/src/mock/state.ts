@@ -40,6 +40,8 @@ export interface StoredEntry {
   tags: readonly string[];
   readonly source: 'text' | 'audio';
   revision: number;
+  /** Optimistic-concurrency version; every PATCH increments it. */
+  version: number;
   raw: string;
   readonly artifacts: StoredArtifact[];
   readonly jobs: StoredJob[];
@@ -151,7 +153,7 @@ export class Store {
   timestamp(): string { return new Date(this.#now()).toISOString(); }
 
   create(source: 'text' | 'audio', raw: string, title: string | null, tags: readonly string[], date: string, createdAt = this.timestamp(), audioExtension = 'webm'): StoredEntry {
-    const entry: StoredEntry = { id: this.id(), created_at: createdAt, entry_date: date, title, tags: [...tags], source, revision: 1, raw,
+    const entry: StoredEntry = { id: this.id(), created_at: createdAt, entry_date: date, title, tags: [...tags], source, revision: 1, version: 1, raw,
       artifacts: [], jobs: [], sessions: sessions() };
     this.artifact(entry, source === 'audio' ? 'raw_audio' : 'user_text', source === 'audio' ? `audio/${entry.id}/recording.${audioExtension}` : raw, createdAt);
     this.pipeline(entry, source === 'audio', createdAt);
@@ -251,7 +253,7 @@ export class Store {
     return { id: entry.id, entry_date: entry.entry_date, created_at: entry.created_at, title: entry.title, tags: [...entry.tags], source: entry.source,
       summary: artifacts.findLast((item) => item.kind === 'summary')?.content ?? null,
       text: artifacts.findLast((item) => item.kind === 'cleaned')?.content ?? artifacts.findLast((item) => item.kind === 'user_text' || item.kind === 'raw_transcript')?.content ?? '',
-      projects: [...extraction.projects], skills: [...extraction.skills_technologies], status, revision: entry.revision };
+      projects: [...extraction.projects], skills: [...extraction.skills_technologies], status, revision: entry.revision, version: entry.version };
   }
   detail(entry: StoredEntry, history = false): EntryDetail {
     return {

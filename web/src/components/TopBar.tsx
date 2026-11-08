@@ -4,7 +4,8 @@ import type { JSX } from 'preact';
 import { useRef, useState } from 'preact/hooks';
 import { toAppError, type AppError } from '../api/errors';
 import { WIDE, useMediaQuery } from '../hooks/useMediaQuery';
-import { api, auth, isMock } from '../state/app';
+import { api, auth, bumpData, isMock } from '../state/app';
+import { pokeQueue } from '../state/queue';
 import { forgetLocalSession } from '../state/session';
 import { navigate, page, type Page } from '../state/route';
 import { ErrorNotice } from './ErrorNotice';
@@ -45,15 +46,24 @@ function AppMenu(): JSX.Element {
   const signOut = async (): Promise<void> => {
     setPending(true);
     setError(null);
+    let ended = false;
     try {
       await api().signOut();
-      hidePopover('app-menu');
-      forgetLocalSession();
-      auth.value = 'signed-out';
+      ended = true;
     } catch (caught) {
+      // Reported here; the server session may still be valid, so the app stays signed in.
       setError(toAppError(caught, 'Sign out'));
     } finally {
+      // Drafts, selection and caches leave this browser whether or not the server answered.
+      forgetLocalSession();
       setPending(false);
+    }
+    if (ended) {
+      hidePopover('app-menu');
+      auth.value = 'signed-out';
+    } else {
+      bumpData();
+      pokeQueue();
     }
   };
   return (

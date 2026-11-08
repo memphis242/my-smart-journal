@@ -43,6 +43,11 @@ export default tseslint.config(
     },
   },
   {
+    // Playwright fixtures: `async ({}, use) => ...` is the required signature, and `use` is not a React hook.
+    files: ['e2e/**/*.ts', 'e2e-real/**/*.ts'],
+    rules: { 'no-empty-pattern': 'off', 'react-hooks/rules-of-hooks': 'off' },
+  },
+  {
     // Command-line scripts report to the terminal.
     files: ['scripts/**'],
     rules: { 'no-console': 'off' },

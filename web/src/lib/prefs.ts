@@ -37,3 +37,17 @@ export function readJsonPref<T>(key: string, accept: (value: unknown) => value i
     return null;
   }
 }
+
+/** Stored keys under `prefix` (without the msj. prefix), or none when storage is unavailable. */
+export function prefKeys(prefix: string): readonly string[] {
+  try {
+    const keys: string[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (key?.startsWith(PREFIX + prefix) === true) keys.push(key.slice(PREFIX.length));
+    }
+    return keys;
+  } catch {
+    return [];
+  }
+}

@@ -6,7 +6,7 @@
 
 import type { JSX } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { AppError, isAbort, toAppError } from '../../api/errors';
+import { ApiError, AppError, isAbort, toAppError } from '../../api/errors';
 import type { EntryFilters, EntrySummary, RetrieveResult, SearchHit, SearchTier, SearchTierEvent, Unavailable } from '../../api/types';
 import { SEARCH_TIERS } from '../../api/types';
 import { ErrorNotice } from '../../components/ErrorNotice';
@@ -14,8 +14,8 @@ import { StatusMarker } from '../../components/StatusMarker';
 import { describeBounds } from '../../lib/dates';
 import { formatScore, plural } from '../../lib/format';
 import { api, dataVersion } from '../../state/app';
-import { chronologicalContext, showEntry } from '../../state/entry-modal';
-import { refreshSelected } from '../../state/selection';
+import { chronologicalContext, deletedEntries, showEntry } from '../../state/entry-modal';
+import { forgetSelected, refreshSelected } from '../../state/selection';
 import { bounds, filters, view } from '../../state/view';
 import { listNotice } from '../../state/notices';
 import { EntryRow, useRovingRow, type RowsContext } from './EntryRows';
@@ -55,18 +55,40 @@ export function highlight(text: string, query: string): JSX.Element {
 
 const DEBOUNCE_MS = 280;
 
+/** Largest list request; a filter set with more entries cannot be refreshed completely. */
+const REFRESH_LIMIT = 500;
+
+/** A refresh or lookup failure, shown as a compact notice above stale results. */
+function outOfDate(error: unknown): AppError {
+  const cause = toAppError(error, 'Refresh the results');
+  return new AppError({
+    code: cause.code,
+    message: 'Results may be out of date: the matching entries could not be refreshed.',
+    hint: cause.hint ?? 'Try again; the results stay as they were.',
+    details: [{ label: 'Cause', value: cause.message }, ...cause.details],
+    cause: error,
+  });
+}
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404;
+}
+
 /**
  * Summaries for search hits: from the hit itself (the server embeds them), else
  * from one list request per filter set and single lookups beyond it. When
- * entries change, known summaries are refreshed in place; nothing is cleared.
+ * entries change, known summaries are refreshed in place; entries that no
+ * longer exist (404, or missing from a complete refresh) are marked gone.
  */
 function useEntryResolver(currentFilters: EntryFilters, version: number): {
   readonly entries: ReadonlyMap<string, EntrySummary>;
+  readonly gone: ReadonlySet<string>;
   readonly need: (hits: readonly SearchHit[]) => void;
   readonly error: AppError | null;
   readonly retry: () => void;
 } {
   const [entries, setEntries] = useState<ReadonlyMap<string, EntrySummary>>(new Map());
+  const [gone, setGone] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<AppError | null>(null);
   const known = useRef(new Map<string, EntrySummary>());
   const listLoaded = useRef<Promise<void> | null>(null);
@@ -80,6 +102,7 @@ function useEntryResolver(currentFilters: EntryFilters, version: number): {
     known.current = new Map();
     missingIds.current = new Set();
     setEntries(new Map());
+    setGone(new Set());
     setError(null);
   }, [key]);
 
@@ -89,46 +112,71 @@ function useEntryResolver(currentFilters: EntryFilters, version: number): {
     setEntries(new Map(known.current));
   };
 
+  const markGone = (ids: readonly string[]): void => {
+    if (ids.length === 0) return;
+    for (const id of ids) {
+      known.current.delete(id);
+      forgetSelected(id);
+    }
+    setEntries(new Map(known.current));
+    setGone((current) => new Set([...current, ...ids]));
+  };
+
   const fetchMissing = (): void => {
     const missing = [...missingIds.current].filter((id) => !known.current.has(id));
     if (missing.length === 0) return;
     const requestKey = keyRef.current;
     listLoaded.current ??= api()
-      .listEntries({ filters: currentFilters, order: 'desc', limit: 500, offset: 0 })
+      .listEntries({ filters: currentFilters, order: 'desc', limit: REFRESH_LIMIT, offset: 0 })
       .then((page) => {
         if (keyRef.current === requestKey) add(page.items);
       });
     listLoaded.current
       .then(async () => {
-        // Corpora larger than one page: fetch the remaining hits one by one.
+        // Corpora larger than one page: fetch the remaining hits one by one; entries deleted meanwhile answer 404.
         const rest = missing.filter((id) => !known.current.has(id)).slice(0, 40);
         if (rest.length === 0) return;
-        const details = await Promise.all(rest.map((id) => api().getEntry(id)));
-        if (keyRef.current === requestKey) add(details);
+        const results = await Promise.allSettled(rest.map((id) => api().getEntry(id)));
+        if (keyRef.current !== requestKey) return;
+        add(results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : [])));
+        markGone(rest.filter((_, index) => { const result = results[index]; return result?.status === 'rejected' && isNotFound(result.reason); }));
+        const failure = results.find((result) => result.status === 'rejected' && !isNotFound(result.reason));
+        if (failure?.status === 'rejected') setError(outOfDate(failure.reason));
       })
       .catch((caught: unknown) => {
         listLoaded.current = null;
-        if (keyRef.current === requestKey) setError(toAppError(caught, 'Load the matching entries'));
+        if (keyRef.current === requestKey) setError(outOfDate(caught));
       });
   };
+
+  /** Refreshes the shown summaries in place; on a complete page, ids it lacks are gone. */
+  const refresh = (): void => {
+    if (known.current.size === 0) return;
+    const requestKey = keyRef.current;
+    setError(null);
+    api()
+      .listEntries({ filters: currentFilters, order: 'desc', limit: REFRESH_LIMIT, offset: 0 })
+      .then((page) => {
+        if (keyRef.current !== requestKey) return;
+        add(page.items.filter((item) => known.current.has(item.id)));
+        if (page.total <= page.items.length) {
+          const present = new Set(page.items.map((item) => item.id));
+          markGone([...known.current.keys()].filter((id) => !present.has(id)));
+        }
+      })
+      .catch((caught: unknown) => {
+        if (keyRef.current === requestKey) setError(outOfDate(caught));
+      });
+  };
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
 
   // Entries changed: refresh the summaries already shown, quietly, without blanking the results.
   const refreshed = useRef(version);
   useEffect(() => {
     if (refreshed.current === version) return;
     refreshed.current = version;
-    if (known.current.size === 0) return;
-    const requestKey = keyRef.current;
-    api()
-      .listEntries({ filters: currentFilters, order: 'desc', limit: 500, offset: 0 })
-      .then((page) => {
-        if (keyRef.current === requestKey) add(page.items.filter((item) => known.current.has(item.id)));
-      })
-      .catch(() => {
-        // The rows keep their last known state; the next change tries again.
-      });
-    // currentFilters is captured by the key check inside.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    refreshRef.current();
   }, [version]);
 
   const need = (hits: readonly SearchHit[]): void => {
@@ -140,9 +188,10 @@ function useEntryResolver(currentFilters: EntryFilters, version: number): {
   const retry = (): void => {
     setError(null);
     fetchMissing();
+    refresh();
   };
 
-  return { entries, need, error, retry };
+  return { entries, gone, need, error, retry };
 }
 
 interface KeywordState {
@@ -273,9 +322,13 @@ function KeywordResults({ q, onAction }: { readonly q: string; readonly onAction
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
+  // Entries deleted here, or gone from the server, leave the results at once.
+  const deleted = deletedEntries.value;
   const groups = SEARCH_TIERS.flatMap((tier) => {
     const event = state.tiers.get(tier);
-    return event === undefined || event.results.length === 0 ? [] : [{ tier, event }];
+    if (event === undefined) return [];
+    const results = event.results.filter((hit) => !resolver.gone.has(hit.entry_id) && !deleted.has(hit.entry_id));
+    return results.length === 0 ? [] : [{ tier, event: { ...event, results } }];
   });
   const hits = groups.flatMap((group) => group.event.results);
   const visible = useMemo(
@@ -390,7 +443,6 @@ function PendingRow({ hit, q, tier }: { readonly hit: SearchHit; readonly q: str
       class="entry-row is-tall is-pending"
       role="row"
       tabIndex={-1}
-      data-row-id={hit.entry_id}
       onClick={() => {
         showEntry(hit.entry_id, { newestFirst: [hit.entry_id], previews: new Map(), filters: {}, complete: false });
       }}
@@ -446,36 +498,45 @@ function RelevanceResults({ q, onAction }: { readonly q: string; readonly onActi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
-  // Entries changed: refresh the ranked rows' summaries in place, keeping the ranking.
-  const refreshed = useRef(version);
-  useEffect(() => {
-    if (refreshed.current === version) return;
-    refreshed.current = version;
+  // Entries changed: refresh the ranked rows' summaries in place, keeping the ranking; on a
+  // complete page, rows whose entry is gone are dropped.
+  const [refreshError, setRefreshError] = useState<AppError | null>(null);
+  const refresh = (signal?: AbortSignal): void => {
     const shown = state.result;
     if (shown === null || shown.items.length === 0) return;
-    const controller = new AbortController();
+    setRefreshError(null);
     api()
-      .listEntries({ filters: currentFilters, order: 'desc', limit: 500, offset: 0 }, controller.signal)
+      .listEntries({ filters: currentFilters, order: 'desc', limit: REFRESH_LIMIT, offset: 0 }, signal)
       .then((page) => {
         const fresh = new Map(page.items.map((item) => [item.id, item]));
-        setState((s) =>
-          s.result === null
-            ? s
-            : { ...s, result: { ...s.result, items: s.result.items.map((item) => ({ ...item, entry: fresh.get(item.entry.id) ?? item.entry })) } },
-        );
+        const complete = page.total <= page.items.length;
+        setState((s) => {
+          if (s.result === null) return s;
+          const kept = s.result.items.filter((item) => !complete || fresh.has(item.entry.id));
+          for (const item of s.result.items) if (!kept.includes(item)) forgetSelected(item.entry.id);
+          return { ...s, result: { ...s.result, items: kept.map((item) => ({ ...item, entry: fresh.get(item.entry.id) ?? item.entry })) } };
+        });
       })
-      .catch(() => {
-        // The rows keep their last known state; the next change tries again.
+      .catch((caught: unknown) => {
+        if (!isAbort(caught)) setRefreshError(outOfDate(caught));
       });
+  };
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const refreshed = useRef(version);
+  useEffect(() => {
+    if (refreshed.current === version) return undefined;
+    refreshed.current = version;
+    const controller = new AbortController();
+    refreshRef.current(controller.signal);
     return () => {
       controller.abort();
     };
-    // Only entry changes trigger this; the current result and filters are read when it runs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version]);
 
   const result = state.result;
-  const items = useMemo(() => result?.items ?? [], [result]);
+  const deleted = deletedEntries.value;
+  const items = useMemo(() => (result?.items ?? []).filter((item) => !deleted.has(item.entry.id)), [result, deleted]);
   const visible = useMemo(() => items.map((item) => item.entry), [items]);
   const roving = useRovingRow(visible);
   const context: RowsContext = useMemo(
@@ -508,6 +569,11 @@ function RelevanceResults({ q, onAction }: { readonly q: string; readonly onActi
       {state.error !== null && (
         <div class="list-error">
           <ErrorNotice error={state.error} />
+        </div>
+      )}
+      {refreshError !== null && (
+        <div class="list-error">
+          <ErrorNotice error={refreshError} compact onRetry={() => { refresh(); }} />
         </div>
       )}
       <ListNotice />

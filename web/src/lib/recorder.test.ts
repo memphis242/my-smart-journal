@@ -17,8 +17,9 @@ describe('uploadAudioType', () => {
     expect(uploadAudioType('voice.FLAC', 'application/octet-stream')).toBe('audio/flac');
   });
 
-  it('rejects what is not audio', () => {
+  it('rejects what is not audio, whatever the file is called', () => {
     expect(uploadAudioType('notes.txt', 'text/plain')).toBeNull();
     expect(uploadAudioType('photo', 'image/png')).toBeNull();
+    expect(uploadAudioType('clip.webm', 'text/plain')).toBeNull();
   });
 });

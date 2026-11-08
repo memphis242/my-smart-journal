@@ -51,13 +51,15 @@ const EXTENSION_TYPES: Readonly<Record<string, string>> = {
 /**
  * The type to upload a chosen file as, or null when it is not audio the server
  * accepts. Browsers label files by extension and often pick a video or vendor
- * type (Chrome: `.webm` is video/webm, `.m4a` is audio/x-m4a).
+ * type (Chrome: `.webm` is video/webm, `.m4a` is audio/x-m4a). The extension
+ * decides only when the browser gave no type, or the generic octet-stream.
  */
 export function uploadAudioType(fileName: string, declaredType: string): string | null {
   const declared = bareMimeType(declaredType);
   if ((ACCEPTED_AUDIO_TYPES as readonly string[]).includes(declared)) return declared;
   const alias = TYPE_ALIASES[declared];
   if (alias !== undefined) return alias;
+  if (declared !== '' && declared !== 'application/octet-stream') return null;
   const extension = /\.([a-z0-9]+)$/i.exec(fileName)?.[1]?.toLowerCase();
   return extension === undefined ? null : (EXTENSION_TYPES[extension] ?? null);
 }

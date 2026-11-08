@@ -194,6 +194,7 @@ const entrySummaryShape = {
   skills: withDefault(strings, []),
   status: oneOf(ENTRY_STATUSES),
   revision: int,
+  version: nullish(int),
 } as const;
 
 export const entrySummary: Guard<EntrySummary> = object(entrySummaryShape);

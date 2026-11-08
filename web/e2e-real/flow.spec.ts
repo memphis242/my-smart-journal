@@ -132,6 +132,59 @@ test('edits an entry; changed text is processed again', async ({ page, request }
   await expect(row(page, text.id)).toHaveAttribute('data-status', 'done', { timeout: 40_000 });
 });
 
+test('an edit survives a revoked session and a new sign-in', async ({ page, request, expectFailure }) => {
+  expectFailure({ status: 401, path: /^\/api\/v1\// });
+  await open(page);
+  const [text] = await ours(request);
+  if (text === undefined) throw new Error('the written entry is missing');
+  await row(page, text.id).click();
+  await page.getByTestId('modal-edit').click();
+  await page.getByTestId('entry-title').fill(`Kept across a 401 ${RUN}`);
+  // The server forgets this browser's session; the save is answered with 401.
+  expect((await page.request.delete('/api/v1/session', { headers: { 'X-MSJ-CSRF': '1' } })).status()).toBe(204);
+  await page.getByTestId('entry-submit').click();
+  await expect(page.getByTestId('sign-in-dialog')).toBeVisible();
+  await page.getByTestId('sign-in-token').fill(token());
+  await page.getByTestId('sign-in-submit').click();
+  await expect(page.getByTestId('sign-in-dialog')).toBeHidden();
+  await row(page, text.id).click();
+  await page.getByTestId('modal-edit').click();
+  await expect(page.getByTestId('entry-title')).toHaveValue(`Kept across a 401 ${RUN}`);
+  await page.getByTestId('entry-submit').click();
+  await expect(page.getByTestId('entry-editor')).toBeHidden();
+  await expect(page.getByTestId('modal-title')).toHaveText(`Kept across a 401 ${RUN}`);
+});
+
+test('a save over a newer version is refused and my changes are reapplied', async ({ page, request, expectFailure }) => {
+  expectFailure({ status: 409, path: /^\/api\/v1\/entries\/[^/]+$/ });
+  await open(page);
+  const [text] = await ours(request);
+  if (text === undefined) throw new Error('the written entry is missing');
+  await row(page, text.id).click();
+  await page.getByTestId('modal-edit').click();
+  const editor = page.getByTestId('entry-editor');
+  await editor.getByTestId('entry-title').fill(`Mine ${RUN}`);
+  // Another client saves first (unconditional PATCH with the bearer token).
+  const elsewhere = await request.patch(`/api/v1/entries/${text.id}`, {
+    headers: { Authorization: `Bearer ${token()}` },
+    data: { text: `Changed elsewhere ${WORD}: the retry queue is still open.` },
+  });
+  expect(elsewhere.status(), await elsewhere.text()).toBe(200);
+  await editor.getByTestId('entry-submit').click();
+  await expect(editor.getByTestId('entry-changed')).toBeVisible();
+  await expect(editor.getByTestId('entry-title')).toHaveValue(`Mine ${RUN}`);
+  await editor.getByTestId('reapply').click();
+  await expect(editor.getByTestId('entry-text-input')).toHaveValue(`Changed elsewhere ${WORD}: the retry queue is still open.`);
+  await editor.getByTestId('entry-submit').click();
+  await expect(editor).toBeHidden();
+  const saved = (await ours(request)).find((entry) => entry.id === text.id);
+  expect(saved?.title).toBe(`Mine ${RUN}`);
+  expect(saved?.text).toContain('Changed elsewhere');
+  await page.keyboard.press('Escape');
+  await page.getByTestId('run-batch').click();
+  await expect(row(page, text.id)).toHaveAttribute('data-status', 'done', { timeout: 40_000 });
+});
+
 test('filters by date range, tag, project and skill', async ({ page, request }) => {
   await open(page, '?range=all');
   const total = ((await bearer(request, '/api/v1/entries?limit=1')) as { total: number }).total;

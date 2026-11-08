@@ -660,6 +660,13 @@ code {
   color: var(--ink-2);
 }
 
+.notice-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .notice-actions {
   display: flex;
   flex: none;
@@ -679,6 +686,10 @@ code {
   line-height: 17px;
   white-space: nowrap;
   vertical-align: 1px;
+}
+
+.notice-attention .error-code {
+  color: var(--st-attention);
 }
 
 .notice-details > summary {

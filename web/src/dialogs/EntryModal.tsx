@@ -21,7 +21,7 @@ import { formatDateTime, formatTime, weekday } from '../lib/dates';
 import { ENTRY_STATUS_HINTS, ENTRY_STATUS_LABELS, JOB_STATUS_LABELS, paragraphs, stageLabel } from '../lib/format';
 import { copyEntry } from '../pages/entries/EntryRows';
 import { api, bumpData, dataVersion } from '../state/app';
-import { cachedDetail, closeEntry, moveEntry, openEntry, peekDetail, storeDetail, type NavContext, type OpenEntry } from '../state/entry-modal';
+import { cachedDetail, closeEntry, markDeleted, moveEntry, openEntry, peekDetail, storeDetail, type NavContext, type OpenEntry } from '../state/entry-modal';
 import { pokeQueue } from '../state/queue';
 import { forgetSelected } from '../state/selection';
 import { toast } from '../state/toasts';
@@ -424,6 +424,10 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
   const wide = useMediaQuery(WIDE);
   const preview = context.previews.get(id) ?? null;
   const [loaded, setLoaded] = useState<EntryDetail | null>(() => peekDetail(id));
+  /** The data version `loaded` was fetched at; -1 for a cached copy of unknown age. */
+  const [loadedAt, setLoadedAt] = useState(-1);
+  /** Edit or Delete re-reading the entry before it opens. */
+  const [opening, setOpening] = useState<'edit' | 'delete' | null>(null);
   const [error, setError] = useState<AppError | null>(null);
   const [copyError, setCopyError] = useState<AppError | null>(null);
   /** The editor works on a snapshot taken when it opened, so refreshes never reset or close it. */
@@ -436,10 +440,13 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
   const sheetRef = useRef<HTMLElement>(null);
   // Never show another entry's detail, even for the one render after stepping.
   const detail = loaded !== null && loaded.id === id ? loaded : null;
+  // Actions that change or remove the entry need a detail fetched since the last data change.
+  const current = detail !== null && loadedAt === version;
 
   // Stepping to another entry: show what is known about it and start at the top.
   useLayoutEffect(() => {
     setLoaded(peekDetail(id));
+    setLoadedAt(-1);
     setError(null);
     setCopyError(null);
     bodyRef.current?.scrollTo({ top: 0 });
@@ -453,6 +460,7 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
       .then((fresh) => {
         storeDetail(fresh, version);
         setLoaded(fresh);
+        setLoadedAt(version);
         setError(null);
       })
       .catch((caught: unknown) => {
@@ -480,6 +488,24 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
   }, [neighbors.newer, neighbors.older, version]);
 
   const entry: EntrySummary | null = detail ?? preview;
+  /** Re-reads the entry, then opens the editor or the delete confirmation on that copy; on failure neither opens. */
+  const openFresh = async (action: 'edit' | 'delete'): Promise<void> => {
+    setOpening(action);
+    setError(null);
+    try {
+      const fresh = await api().getEntry(id);
+      storeDetail(fresh, version);
+      setLoaded(fresh);
+      setLoadedAt(version);
+      if (action === 'edit') setEditing(fresh);
+      else setDeleting(fresh);
+    } catch (caught) {
+      setError(toAppError(caught, action === 'edit' ? 'Open the editor' : 'Check what deleting removes'));
+    } finally {
+      setOpening(null);
+    }
+  };
+
   const go = (step: -1 | 1): void => {
     const target = step === 1 ? neighbors.newer : neighbors.older;
     if (target !== null) moveEntry(target, step);
@@ -521,6 +547,7 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
 
   const remove = async (target: EntryDetail): Promise<void> => {
     await api().deleteEntry(target.id);
+    markDeleted(target.id);
     forgetSelected(target.id);
     toast(`Deleted entry ${target.entry_date}`);
     setDeleting(null);
@@ -602,13 +629,12 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
                 <button
                   type="button"
                   class={wide ? 'button button-small' : 'icon-button'}
-                  disabled={detail === null}
-                  title={detail === null ? 'Available once the entry has loaded' : 'Edit the date, title, tags or text'}
+                  disabled={!current || opening !== null}
+                  title={current ? 'Edit the date, title, tags or text' : 'Available once the current entry has loaded'}
                   aria-label="Edit entry"
                   data-testid="modal-edit"
-                  onClick={() => {
-                    setEditing(detail);
-                  }}
+                  aria-busy={opening === 'edit'}
+                  onClick={() => void openFresh('edit')}
                 >
                   <Icon name="edit" size={16} />
                   {wide && <span>Edit</span>}
@@ -616,13 +642,12 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
                 <button
                   type="button"
                   class="icon-button"
-                  disabled={detail === null}
-                  title={detail === null ? 'Available once the entry has loaded, so the confirmation can say what else is deleted' : 'Delete this entry'}
+                  disabled={!current || opening !== null}
+                  title={current ? 'Delete this entry' : 'Available once the current entry has loaded, so the confirmation can say what else is deleted'}
                   aria-label="Delete entry"
                   data-testid="modal-delete"
-                  onClick={() => {
-                    setDeleting(detail);
-                  }}
+                  aria-busy={opening === 'delete'}
+                  onClick={() => void openFresh('delete')}
                 >
                   <Icon name="trash" size={16} />
                 </button>

@@ -1,20 +1,39 @@
 /**
  * Add or edit an entry in a modal. New entries are written or recorded; an
  * unsent written draft is kept in this browser so closing the dialog loses
- * nothing. Edits send only the fields that changed.
+ * nothing. Edits send only the fields that changed, with the version they
+ * started from; if the entry changed meanwhile, the server refuses
+ * (ENTRY_CHANGED) and the editor offers to reapply the user's changes on top
+ * of the current entry.
  */
 
 import type { JSX } from 'preact';
 import { useMemo, useRef, useState } from 'preact/hooks';
-import { toAppError, type AppError } from '../api/errors';
+import { ApiError, toAppError, type AppError } from '../api/errors';
 import type { EntryDetail, EntryPatch } from '../api/types';
 import { AudioRecorder, type AudioTake } from '../components/AudioRecorder';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Dialog, DialogHeader } from '../components/Dialog';
 import { ErrorNotice } from '../components/ErrorNotice';
+import { StatusMarker } from '../components/StatusMarker';
 import { TagInput } from '../components/TagInput';
-import { addDays, isIsoDate, weekday } from '../lib/dates';
-import { readEditDraft, readNewDraft, saveEditDraft, saveNewDraft, type Draft } from '../lib/drafts';
+import { addDays, formatDateTime, isIsoDate, weekday } from '../lib/dates';
+import {
+  applyChanges,
+  changedFields,
+  differingFields,
+  dropEditDraft,
+  readEditDraft,
+  readNewDraft,
+  reapply,
+  sameBase,
+  saveEditDraft,
+  saveNewDraft,
+  type DraftBase,
+  type DraftFields,
+  type EditDraft,
+  type FieldName,
+} from '../lib/drafts';
 import { api, bumpData } from '../state/app';
 import { facetState } from '../state/facets';
 import { pokeQueue, runBatchNow } from '../state/queue';
@@ -27,24 +46,61 @@ export type EntryEditorProps =
   | { readonly mode: 'create'; readonly onClose: () => void }
   | { readonly mode: 'edit'; readonly entry: EntryDetail; readonly onClose: () => void };
 
+function fieldsOf(entry: EntryDetail): DraftFields {
+  return { text: entry.text, title: entry.title ?? '', tags: entry.tags, date: entry.entry_date };
+}
+
+function baseOf(entry: EntryDetail): DraftBase {
+  return { ...fieldsOf(entry), version: entry.version, revision: entry.revision };
+}
+
+/** "title and text", "date, tags and text". */
+function listFields(names: readonly FieldName[]): string {
+  if (names.length === 0) return 'nothing you can see';
+  if (names.length === 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names.at(-1) ?? ''}`;
+}
+
+interface Opening {
+  readonly values: DraftFields;
+  readonly base: DraftBase | null;
+  readonly restored: boolean;
+  /** A draft started from an older version of the entry: the user decides. */
+  readonly offer: EditDraft | null;
+}
+
+interface Conflict {
+  readonly current: EntryDetail;
+  /** Fields that changed elsewhere since editing began. */
+  readonly changed: readonly FieldName[];
+}
+
 export function EntryEditor(props: EntryEditorProps): JSX.Element {
   const editing = props.mode === 'edit' ? props.entry : null;
-  const initial = useMemo<{ readonly draft: Draft; readonly restored: boolean }>(() => {
+  const opening = useMemo<Opening>(() => {
     if (editing !== null) {
-      const stored = readEditDraft(editing.id);
-      if (stored !== null) return { draft: stored, restored: true };
-      return { draft: { text: editing.text, title: editing.title ?? '', tags: editing.tags, date: editing.entry_date }, restored: false };
+      const base = baseOf(editing);
+      const draft = readEditDraft(editing.id);
+      if (draft === null) return { values: fieldsOf(editing), base, restored: false, offer: null };
+      if (sameBase(draft.base, base)) return { values: applyChanges(fieldsOf(editing), draft.changes), base, restored: true, offer: null };
+      return { values: fieldsOf(editing), base, restored: false, offer: draft };
     }
     const stored = readNewDraft();
-    return stored === null ? { draft: { text: '', title: '', tags: [], date: today.value }, restored: false } : { draft: stored, restored: stored.text !== '' };
+    return stored === null
+      ? { values: { text: '', title: '', tags: [], date: today.value }, base: null, restored: false, offer: null }
+      : { values: stored, base: null, restored: stored.text !== '', offer: null };
   }, [editing]);
-  const restored = initial.restored;
 
   const [mode, setMode] = useState<Mode>('write');
-  const [text, setText] = useState(initial.draft.text);
-  const [title, setTitle] = useState(initial.draft.title);
-  const [tags, setTags] = useState<readonly string[]>(initial.draft.tags);
-  const [date, setDate] = useState(initial.draft.date);
+  const [text, setText] = useState(opening.values.text);
+  const [title, setTitle] = useState(opening.values.title);
+  const [tags, setTags] = useState<readonly string[]>(opening.values.tags);
+  const [date, setDate] = useState(opening.values.date);
+  const [base, setBase] = useState<DraftBase | null>(opening.base);
+  const [restored, setRestored] = useState(opening.restored);
+  const [offer, setOffer] = useState<EditDraft | null>(opening.offer);
+  const [conflict, setConflict] = useState<Conflict | null>(null);
+  const [storageFailed, setStorageFailed] = useState(false);
   const [take, setTake] = useState<AudioTake | null>(null);
   const [recording, setRecording] = useState(false);
   const [pending, setPending] = useState(false);
@@ -53,38 +109,59 @@ export function EntryEditor(props: EntryEditorProps): JSX.Element {
   const textRef = useRef<HTMLTextAreaElement>(null);
   const suggestions = facetState.value.facets?.tags.map((facet) => facet.value) ?? [];
 
+  const values: DraftFields = { text, title, tags, date };
   const dateValid = isIsoDate(date);
-  const textChanged = editing !== null && text.trim() !== editing.text.trim();
-  const changes: EntryPatch = useMemo(() => {
-    if (editing === null) return {};
-    const patch: { -readonly [K in keyof EntryPatch]: EntryPatch[K] } = {};
-    const newTitle = title.trim() === '' ? null : title.trim();
-    if (newTitle !== editing.title) patch.title = newTitle;
-    if (tags.join('\u0000') !== editing.tags.join('\u0000')) patch.tags = tags;
-    if (date !== editing.entry_date) patch.entry_date = date;
-    if (text.trim() !== editing.text.trim()) patch.text = text.trim();
-    return patch;
-  }, [editing, title, tags, date, text]);
-  const dirty = editing !== null ? Object.keys(changes).length > 0 : false;
+  const changes = editing !== null && base !== null ? changedFields(base, values) : {};
+  const dirty = Object.keys(changes).length > 0;
+  const textChanged = changes.text !== undefined;
 
   const canSubmit =
     !pending &&
     dateValid &&
     !recording &&
-    (editing !== null ? dirty && (changes.text === undefined || changes.text !== '') : mode === 'write' ? text.trim() !== '' : take !== null);
+    conflict === null &&
+    (editing !== null ? dirty && changes.text?.trim() !== '' : mode === 'write' ? text.trim() !== '' : take !== null);
 
-  const remember = (next: Partial<Draft>): void => {
-    const draft = { text, title, tags, date, ...next };
+  const setValues = (next: DraftFields): void => {
+    setText(next.text);
+    setTitle(next.title);
+    setTags(next.tags);
+    setDate(next.date);
+  };
+
+  const remember = (next: Partial<DraftFields>, against: DraftBase | null = base): void => {
+    const all = { ...values, ...next };
     if (editing === null) {
-      saveNewDraft(draft);
+      setStorageFailed(!saveNewDraft(all));
       return;
     }
-    const unchanged =
-      draft.text.trim() === editing.text.trim() &&
-      draft.title.trim() === (editing.title ?? '') &&
-      draft.date === editing.entry_date &&
-      draft.tags.join('\u0000') === editing.tags.join('\u0000');
-    saveEditDraft(unchanged ? null : { ...draft, id: editing.id, revision: editing.revision });
+    // While an older draft waits for the user's decision, it stays as it is.
+    if (offer !== null || against === null) return;
+    setStorageFailed(!saveEditDraft(editing.id, against, all));
+  };
+
+  const applyOffer = (): void => {
+    if (offer === null || base === null || editing === null) return;
+    const next = applyChanges(fieldsOf(editing), offer.changes);
+    setValues(next);
+    setOffer(null);
+    setRestored(true);
+    setStorageFailed(!saveEditDraft(editing.id, base, next));
+  };
+
+  const discardOffer = (): void => {
+    if (editing !== null) dropEditDraft(editing.id);
+    setOffer(null);
+  };
+
+  const reloadAndReapply = (): void => {
+    if (conflict === null || base === null || editing === null) return;
+    const nextBase = baseOf(conflict.current);
+    const next = reapply(base, fieldsOf(conflict.current), values);
+    setValues(next);
+    setBase(nextBase);
+    setConflict(null);
+    setStorageFailed(!saveEditDraft(editing.id, nextBase, next));
   };
 
   const close = (): void => {
@@ -93,7 +170,30 @@ export function EntryEditor(props: EntryEditorProps): JSX.Element {
       setConfirmDiscard(true);
       return;
     }
-    if (editing !== null) saveEditDraft(null);
+    // Nothing changed here; an older draft still waiting for a decision is kept.
+    if (editing !== null && offer === null) dropEditDraft(editing.id);
+    props.onClose();
+  };
+
+  const saveEdit = async (entry: EntryDetail, from: DraftBase): Promise<void> => {
+    const patch: { -readonly [K in keyof EntryPatch]: EntryPatch[K] } = {};
+    if (changes.title !== undefined) patch.title = changes.title.trim() === '' ? null : changes.title.trim();
+    if (changes.tags !== undefined) patch.tags = changes.tags;
+    if (changes.date !== undefined) patch.entry_date = changes.date;
+    if (changes.text !== undefined) patch.text = changes.text.trim();
+    if (from.version !== null) patch.expected_version = from.version;
+    try {
+      await api().patchEntry(entry.id, patch);
+    } catch (caught) {
+      if (!(caught instanceof ApiError && caught.code === 'ENTRY_CHANGED')) throw caught;
+      // Someone else saved first: keep the editor and its text, and show what changed.
+      const current = await api().getEntry(entry.id);
+      setConflict({ current, changed: differingFields(from, fieldsOf(current)) });
+      return;
+    }
+    dropEditDraft(entry.id);
+    toast(patch.text !== undefined ? 'Saved; the new text is queued for processing' : 'Saved');
+    bumpData();
     props.onClose();
   };
 
@@ -104,18 +204,19 @@ export function EntryEditor(props: EntryEditorProps): JSX.Element {
     setError(null);
     const titleValue = title.trim() === '' ? null : title.trim();
     try {
-      if (editing !== null) {
-        await api().patchEntry(editing.id, changes);
-        saveEditDraft(null);
-        toast(changes.text !== undefined ? 'Saved; the new text is queued for processing' : 'Saved');
-      } else if (mode === 'write') {
+      if (editing !== null && base !== null) {
+        await saveEdit(editing, base);
+        setPending(false);
+        return;
+      }
+      if (mode === 'write') {
         await api().createTextEntry({ text: text.trim(), title: titleValue, tags, entry_date: date });
-        saveNewDraft(null);
+        void saveNewDraft(null);
         toast('Entry added to the queue', { label: 'Run batch now', run: () => void runBatchNow() });
       } else if (take !== null) {
         await api().createAudioEntry({ audio: take.blob, mimeType: take.mimeType, fileName: take.fileName, title: titleValue, tags, entry_date: date });
         // The title, tags and date belonged to this recording; written text not yet added stays as the draft.
-        saveNewDraft({ text, title: '', tags: [], date: today.value });
+        void saveNewDraft({ text, title: '', tags: [], date: today.value });
         toast('Recording uploaded and queued', { label: 'Run batch now', run: () => void runBatchNow() });
       }
       bumpData();
@@ -164,6 +265,50 @@ export function EntryEditor(props: EntryEditorProps): JSX.Element {
           )}
         </DialogHeader>
         <div class="dialog-body editor-body">
+          {offer !== null && base !== null && (
+            <div class="notice notice-attention" data-testid="draft-conflict">
+              <StatusMarker kind="attention" label="Draft from an older version" decorative />
+              <div class="notice-main">
+                <p class="notice-message">
+                  <strong>This entry changed since your unsaved edits</strong> from{' '}
+                  <span class="mono">{formatDateTime(new Date(offer.savedAt).toISOString())}</span>: its{' '}
+                  {listFields(differingFields(offer.base, base))} changed. Your edits touched its {listFields(Object.keys(offer.changes) as FieldName[])}.
+                </p>
+                <p class="notice-hint">Apply your edits on top of the current entry, or discard them.</p>
+                <div class="notice-buttons">
+                  <button type="button" class="button button-small" onClick={applyOffer} data-testid="apply-draft">
+                    Apply my edits
+                  </button>
+                  <button type="button" class="button button-small button-quiet" onClick={discardOffer} data-testid="discard-draft">
+                    Discard them
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {conflict !== null && (
+            <div class="notice notice-attention" data-testid="entry-changed">
+              <StatusMarker kind="attention" label="Changed elsewhere" decorative />
+              <div class="notice-main">
+                <p class="notice-message">
+                  <strong>This entry changed while you were editing.</strong> Its {listFields(conflict.changed)} changed
+                  {base?.version != null && conflict.current.version !== null && (
+                    <span class="muted mono">
+                      {' '}
+                      (version {base.version} to {conflict.current.version})
+                    </span>
+                  )}
+                  . Nothing was saved. <code class="error-code">ENTRY_CHANGED</code>
+                </p>
+                <p class="notice-hint">Your changes stay as typed; fields you did not touch take the new values.</p>
+                <div class="notice-buttons">
+                  <button type="button" class="button button-small button-primary" onClick={reloadAndReapply} data-testid="reapply">
+                    Reload and reapply my changes
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           <div class="editor-meta">
             <div class="field field-date">
               <label class="field-label" for="entry-date">
@@ -245,8 +390,12 @@ export function EntryEditor(props: EntryEditorProps): JSX.Element {
                   remember({ text: event.currentTarget.value });
                 }}
               />
-              <p class="field-hint">
-                {editing !== null
+              <p class={storageFailed ? 'field-hint is-invalid' : 'field-hint'} data-testid="draft-hint">
+                {storageFailed
+                  ? editing !== null
+                    ? 'This browser could not keep your changes (storage is unavailable or full). Save them before closing.'
+                    : 'This browser could not keep the draft (storage is unavailable or full). Add the entry before closing.'
+                  : editing !== null
                   ? restored
                     ? 'Restored your unsaved edits from this browser.'
                     : textChanged
@@ -293,7 +442,7 @@ export function EntryEditor(props: EntryEditorProps): JSX.Element {
           }}
           onConfirm={() => {
             setConfirmDiscard(false);
-            if (editing !== null) saveEditDraft(null);
+            if (editing !== null) dropEditDraft(editing.id);
             props.onClose();
           }}
         >

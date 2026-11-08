@@ -162,3 +162,39 @@ describe('real backend shapes', () => {
     );
   });
 });
+
+describe('entry versions', () => {
+  it('reads current_version from a 409 ENTRY_CHANGED', async () => {
+    const { currentVersionOf } = await import('./errors');
+    const problem = {
+      type: 'about:blank',
+      title: 'Conflict',
+      status: 409,
+      detail: 'The entry changed since version 3.',
+      code: 'ENTRY_CHANGED',
+      current_version: 4,
+    };
+    const client = respond(JSON.stringify(problem), { status: 409, headers: { 'Content-Type': 'application/problem+json' } });
+    const error = await client.patchEntry(SUMMARY.id, { title: 'x', expected_version: 3 }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).code).toBe('ENTRY_CHANGED');
+    expect(currentVersionOf(error)).toBe(4);
+  });
+});
+
+describe('queue liveness from an old snapshot', () => {
+  it('trusts worker.stale only while the snapshot is fresh', async () => {
+    const { isBusy } = await import('../state/queue');
+    const fresh = { ...QUEUE_NOW, worker: { ...QUEUE_NOW.worker, stale: false, next_batch_at: null } };
+    const client = respond(JSON.stringify(fresh), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const snapshot = await client.queue();
+    const heartbeat = Date.parse('2026-11-08T10:00:00Z');
+    // Fetched right after the heartbeat: the server says alive.
+    expect(workerStale(snapshot, heartbeat + 5_000, 0, heartbeat + 1_000)).toBe(false);
+    // Polls failing for a minute: the old "alive" is no longer trusted; the heartbeat age decides.
+    expect(workerStale(snapshot, heartbeat + 60_000, 0, heartbeat + 1_000)).toBe(true);
+    // A request waiting on a stopped worker does not keep the queue polling fast.
+    expect(isBusy({ ...snapshot, batch: { ...snapshot.batch, running: false, request_pending: true } }, true)).toBe(false);
+    expect(isBusy({ ...snapshot, batch: { ...snapshot.batch, running: false, request_pending: true } }, false)).toBe(true);
+  });
+});

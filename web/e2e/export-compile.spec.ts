@@ -24,10 +24,11 @@ test.describe('export and compile', () => {
     // The compilation exists: the dialog closes and the selection is cleared.
     await expect(page.getByTestId('compile-dialog')).toBeHidden();
     await expect(page.getByTestId('selection-bar')).toBeHidden();
-    // The batch request's own failure opens the queue sheet with its code.
+    // The batch request is accepted but waits for the stopped worker: the queue sheet opens with that note.
     const sheet = page.getByTestId('queue-sheet');
     await expect(sheet).toBeVisible();
-    await expect(sheet.getByTestId('error-code').filter({ hasText: 'WORKER_NOT_RUNNING' })).toBeVisible();
+    await expect(sheet.getByTestId('worker-stale').getByTestId('request-pending')).toBeVisible();
+    await expect(sheet.getByTestId('error-code')).toHaveCount(0);
     await page.keyboard.press('Escape');
     await page.getByTestId('nav-compilations').click();
     await expect(page.getByTestId('compilation-row')).toHaveCount(3);
