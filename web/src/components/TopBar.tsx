@@ -5,6 +5,7 @@ import { useRef, useState } from 'preact/hooks';
 import { toAppError, type AppError } from '../api/errors';
 import { WIDE, useMediaQuery } from '../hooks/useMediaQuery';
 import { api, auth, isMock } from '../state/app';
+import { forgetLocalSession } from '../state/session';
 import { navigate, page, type Page } from '../state/route';
 import { ErrorNotice } from './ErrorNotice';
 import { Icon } from './Icon';
@@ -47,6 +48,7 @@ function AppMenu(): JSX.Element {
     try {
       await api().signOut();
       hidePopover('app-menu');
+      forgetLocalSession();
       auth.value = 'signed-out';
     } catch (caught) {
       setError(toAppError(caught, 'Sign out'));
@@ -68,7 +70,14 @@ function AppMenu(): JSX.Element {
         <Icon name="more" size={18} />
       </button>
       <Popover id="app-menu" anchor={anchor} label="Menu" align="end" class="menu">
-        <button type="button" class="menu-item" disabled={pending} onClick={() => void signOut()} data-testid="sign-out">
+        <button
+          type="button"
+          class="menu-item"
+          disabled={pending}
+          title="End the session and clear drafts, the selection and cached entries from this browser"
+          onClick={() => void signOut()}
+          data-testid="sign-out"
+        >
           <Icon name="sign-out" />
           <span>{pending ? 'Signing out' : 'Sign out'}</span>
         </button>

@@ -81,7 +81,6 @@ describe('updated session and batch contract', () => {
     await expect(client.createCompilation({ entry_ids: ['missing-entry'], purpose: 'portfolio', period: '2026' }))
       .rejects.toMatchObject({ code: 'ENTRY_NOT_FOUND', status: 404 });
     await client.runBatch();
-    await expect(client.runBatch()).rejects.toMatchObject({ code: 'BATCH_ALREADY_RUNNING', status: 409 });
     await mock.idle();
 
     const limited = setup({ now: () => NOW });
@@ -243,12 +242,13 @@ describe('updated session and batch contract', () => {
         entry_date: '2026-11-08',
       });
       await expect(delayed.client.runBatch()).resolves.toEqual({ requested: true, worker: null });
-      await expect(delayed.client.queue()).resolves.toMatchObject({ batch: { running: false } });
-      await expect(delayed.client.runBatch()).rejects.toMatchObject({ code: 'BATCH_ALREADY_RUNNING', status: 409 });
+      await expect(delayed.client.queue()).resolves.toMatchObject({ batch: { running: false, request_pending: true } });
+      // A second request while one is pending is idempotent.
+      await expect(delayed.client.runBatch()).resolves.toEqual({ requested: true, worker: null });
       await vi.advanceTimersByTimeAsync(29);
-      await expect(delayed.client.queue()).resolves.toMatchObject({ batch: { running: false } });
+      await expect(delayed.client.queue()).resolves.toMatchObject({ batch: { running: false, request_pending: true } });
       await vi.advanceTimersByTimeAsync(2);
-      await expect(delayed.client.queue()).resolves.toMatchObject({ batch: { running: true, trigger: 'manual' } });
+      await expect(delayed.client.queue()).resolves.toMatchObject({ batch: { running: true, trigger: 'manual', request_pending: false } });
       await expect(delayed.client.runBatch()).rejects.toMatchObject({ code: 'BATCH_ALREADY_RUNNING', status: 409 });
       await vi.runAllTimersAsync();
       await delayed.mock.idle();
@@ -259,8 +259,12 @@ describe('updated session and batch contract', () => {
       await expect(stale.client.runBatch()).resolves.toEqual({ requested: true, worker: { stale: true } });
       await vi.advanceTimersByTimeAsync(1000);
       await stale.mock.idle();
-      await expect(stale.client.queue()).resolves.toMatchObject({ batch: { running: false, trigger: null } });
-      await expect(stale.client.runBatch()).rejects.toMatchObject({ code: 'BATCH_ALREADY_RUNNING', status: 409 });
+      // Nobody picks the request up while the worker is stopped; it stays pending.
+      await expect(stale.client.queue()).resolves.toMatchObject({
+        batch: { running: false, trigger: null, request_pending: true },
+        worker: { stale: true },
+      });
+      await expect(stale.client.runBatch()).resolves.toEqual({ requested: true, worker: { stale: true } });
     } finally {
       vi.useRealTimers();
     }

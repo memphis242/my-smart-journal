@@ -83,6 +83,17 @@ test.describe('entry list and detail modal', () => {
     await expect(page.getByTestId('modal-title')).toHaveText('Edited in a test');
   });
 
+  test('delete waits for the entry to load, then names the compilations it removes', async ({ page }) => {
+    await openApp(page, { params: 'mock-latency=700' });
+    // The fourth newest entry is cited by the seeded monthly review.
+    await rows(page).nth(3).click();
+    const remove = page.getByTestId('modal-delete');
+    await expect(remove).toBeDisabled();
+    await expect(remove).toBeEnabled({ timeout: 5000 });
+    await remove.click();
+    await expect(page.getByTestId('confirm-dialog').getByTestId('delete-compilations')).toBeVisible();
+  });
+
   test('deletes an entry after its own confirmation', async ({ page }) => {
     await openApp(page, { params: 'range=all' });
     const before = await rows(page).count();

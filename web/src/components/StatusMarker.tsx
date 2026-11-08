@@ -88,12 +88,23 @@ function shape(kind: MarkerKind): JSX.Element {
 
 export interface StatusMarkerProps {
   readonly kind: MarkerKind;
-  /** Tooltip and accessible name, for example "Needs attention". */
+  /** Tooltip, and the accessible name unless the marker is decorative. */
   readonly label: string;
   readonly size?: 10 | 12 | 14;
+  /** Visible text next to the marker already says the state; hide the marker from assistive tech. */
+  readonly decorative?: boolean;
 }
 
-export function StatusMarker({ kind, label, size = 12 }: StatusMarkerProps): JSX.Element {
+export function StatusMarker({ kind, label, size = 12, decorative = false }: StatusMarkerProps): JSX.Element {
+  if (decorative) {
+    return (
+      <span class={`marker marker-${kind}`} title={label} aria-hidden="true" data-marker={kind}>
+        <svg viewBox="0 0 12 12" width={size} height={size} focusable="false">
+          {shape(kind)}
+        </svg>
+      </span>
+    );
+  }
   return (
     <span class={`marker marker-${kind}`} title={label} role="img" aria-label={label} data-marker={kind}>
       <svg viewBox="0 0 12 12" width={size} height={size} aria-hidden="true" focusable="false">

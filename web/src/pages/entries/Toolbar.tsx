@@ -214,6 +214,8 @@ function FacetList({ kind, values }: { readonly kind: FacetKind; readonly values
   const selected = viewValues(view.value, kind);
   const selectedLower = useMemo(() => new Set(selected.map((v) => v.toLowerCase())), [selected]);
   const [query, setQuery] = useState('');
+  /** The option holding the list's single tab stop. */
+  const [activeIndex, setActiveIndex] = useState(0);
   const anchor = useRef<string | null>(null);
   const pointerType = useRef<string>('mouse');
   const shown = query.trim() === '' ? values : values.filter((v) => v.value.toLowerCase().includes(query.trim().toLowerCase()));
@@ -259,14 +261,17 @@ function FacetList({ kind, values }: { readonly kind: FacetKind; readonly values
         />
       )}
       <ul class="facet-options" role="listbox" aria-multiselectable="true" aria-label={FACET_LABELS[kind]}>
-        {shown.map((facet) => {
+        {shown.map((facet, index) => {
           const on = selectedLower.has(facet.value.toLowerCase());
           return (
             <li
               key={facet.value}
               role="option"
               aria-selected={on}
-              tabIndex={0}
+              tabIndex={index === Math.min(activeIndex, shown.length - 1) ? 0 : -1}
+              onFocus={() => {
+                setActiveIndex(index);
+              }}
               class={on ? 'facet-option is-on' : 'facet-option'}
               data-testid="facet-option"
               onPointerDown={(event) => {
@@ -279,10 +284,17 @@ function FacetList({ kind, values }: { readonly kind: FacetKind; readonly values
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault();
                   choose(facet.value, modeFor(event));
-                } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
                   event.preventDefault();
-                  const sibling = event.key === 'ArrowDown' ? event.currentTarget.nextElementSibling : event.currentTarget.previousElementSibling;
-                  if (sibling instanceof HTMLElement) sibling.focus();
+                  const list = event.currentTarget.parentElement;
+                  const options = list === null ? [] : [...list.querySelectorAll<HTMLElement>('[role=option]')];
+                  const target =
+                    event.key === 'Home'
+                      ? options[0]
+                      : event.key === 'End'
+                        ? options.at(-1)
+                        : options[index + (event.key === 'ArrowDown' ? 1 : -1)];
+                  target?.focus();
                 }
               }}
             >
@@ -423,7 +435,8 @@ export function SearchBox({ inputRef }: { readonly inputRef: RefObject<HTMLInput
           class="search-input"
           type="search"
           placeholder={current.mode === 'relevance' ? 'Find entries relevant to...' : 'Search entries'}
-          title="Search entries (/)"
+          title="Search entries (/); up to 500 characters"
+          maxLength={500}
           value={draft}
           enterKeyHint="search"
           data-testid="search-input"

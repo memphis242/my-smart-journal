@@ -9,6 +9,10 @@ const TRANSCRIPTS = [
   'I spent the morning preparing the project demo. The new workflow is easier to follow. I plan to collect feedback from the team.',
 ] as const;
 
+/** The simulated worker wakes every tick; a heartbeat older than max(10 s, 3 ticks) is stale. */
+const TICK_MS = 2000;
+const BATCH_INTERVAL_MS = 86_400_000;
+
 const SEEDED_BATCH_ERROR = {
   code: 'BATCH_FAILED',
   detail: 'The batch stopped after an unexpected error in the extract wave; 4 jobs were left queued.',
@@ -21,7 +25,9 @@ export class Pipeline {
   readonly #delay: number;
   readonly #pickupDelay: number;
   readonly #stale: boolean;
-  #lastSeen: number;
+  /** The last heartbeat of a worker that stopped; only used while stale. */
+  readonly #staleSeen: number;
+  #nextBatch: number;
   #pending = false;
   #work: Promise<void> = Promise.resolve();
   readonly #batch: {
@@ -48,7 +54,9 @@ export class Pipeline {
     this.#delay = delay;
     this.#pickupDelay = pickupDelay;
     this.#stale = stale;
-    this.#lastSeen = now() - (stale ? 3 * 3600000 : 4 * 60000);
+    this.#staleSeen = now() - 3 * 3600000;
+    // The seeded scheduled batch finished 47 minutes ago; the next one is a day after it started.
+    this.#nextBatch = now() - 47 * 60000 + BATCH_INTERVAL_MS;
     this.#batch = {
       running: false,
       started_at: null,
@@ -71,9 +79,12 @@ export class Pipeline {
     return this.#stale;
   }
 
+  /** Records a manual request; repeated requests while one is pending are idempotent. */
   request(): void {
-    assert(!this.#pending && !this.running, 'the router checks that no batch request is pending or running');
+    assert(!this.running, 'the router checks that no batch is running');
+    if (this.#pending) return;
     this.#pending = true;
+    // A stopped worker never picks the request up; it stays pending, as on the server.
     if (this.#stale) return;
 
     const pickup = async (): Promise<void> => {
@@ -81,7 +92,6 @@ export class Pipeline {
       if (!this.#pending) return;
       this.#pending = false;
       if (this.#stale || this.running) return;
-      this.#lastSeen = this.#now();
       this.#start('manual');
     };
     this.#tasks.track(pickup());
@@ -92,9 +102,9 @@ export class Pipeline {
       !this.#stale
       && !this.#pending
       && !this.running
-      && this.#now() >= this.#lastSeen + 900000
+      && this.#now() >= this.#nextBatch
     ) {
-      this.#lastSeen = this.#now();
+      this.#nextBatch += BATCH_INTERVAL_MS;
       this.#start('schedule');
     }
   }
@@ -274,12 +284,17 @@ export class Pipeline {
       else counts[item.status] += 1;
     }
 
+    const now = this.#now();
+    const lastSeen = this.#stale ? this.#staleSeen : now - (now % TICK_MS);
     return {
-      batch: { ...this.#batch },
+      batch: { ...this.#batch, request_pending: this.#pending },
       worker: {
-        last_seen_at: new Date(this.#lastSeen).toISOString(),
-        interval_s: 900,
-        next_run_at: this.#stale ? null : new Date(this.#lastSeen + 900000).toISOString(),
+        last_seen_at: new Date(lastSeen).toISOString(),
+        interval_s: BATCH_INTERVAL_MS / 1000,
+        // The next wake: due now while a request waits, otherwise one tick after the heartbeat.
+        next_run_at: this.#stale ? null : new Date(this.#pending ? lastSeen : lastSeen + TICK_MS).toISOString(),
+        next_batch_at: this.#stale ? null : new Date(this.#nextBatch).toISOString(),
+        stale: this.#stale,
       },
       counts,
       items: jobs.slice(0, 200).map(({ item }) => item),

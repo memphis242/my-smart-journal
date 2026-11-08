@@ -46,9 +46,9 @@ Switches, added to the page URL:
 | `mock-job-ms=<ms>` | Duration of each simulated job in a batch (default 700) |
 | `mock-search-ms=<ms>` | Delay between search tier lines (default 60; tier 5 waits longer) |
 | `mock-pickup-ms=<ms>` | Delay before the worker picks up a batch request (default 1500) |
-| `mock-worker=stale` | No recent worker heartbeat: the UI shows "worker not running" |
+| `mock-worker=stale` | The worker is stopped (`worker.stale`): the UI shows "worker not running", and batch requests stay pending |
 | `mock-batch-error=1` | The last batch failed (`BATCH_FAILED`) |
-| `mock-embeddings=disabled` or `model_unavailable` | Semantic search unavailable |
+| `mock-embeddings=disabled`, `model_load_failed`, `dependency_missing` or `encoding_failed` | Semantic search unavailable, with the backend's matching code |
 | `mock-token=rotated` | The server token was replaced (`TOKEN_REISSUE_REQUIRED`) |
 | `mock-empty=1` | No entries or compilations, to see the empty states |
 

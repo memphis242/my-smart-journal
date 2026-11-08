@@ -4,7 +4,7 @@ import { assert } from '../lib/assert';
 import { exportResponse } from './export';
 import { abortError, calendarDate, HttpProblem, invalid, json, localDate, record, strings, Tasks } from './http';
 import { Pipeline } from './pipeline';
-import { retrieve, semanticUnavailable, tierResults, type SearchDocument } from './search';
+import { retrieve, semanticUnavailable, tierResults, type EmbeddingsMode, type SearchDocument } from './search';
 import type { SeedCompilation, SeedConcept, SeedEntry } from './seed-types';
 import { compareEntries, Store, type StoredCompilation, type StoredEntry } from './state';
 
@@ -21,7 +21,7 @@ export interface MockOptions {
   readonly batchError?: boolean;
   readonly searchDelayMs?: number;
   readonly workerStale?: boolean;
-  readonly embeddings?: 'ok' | 'disabled' | 'model_unavailable';
+  readonly embeddings?: EmbeddingsMode;
   readonly signedIn?: boolean;
   /** Requires a successful sign-in before authenticated requests are accepted. */
   readonly tokenRotated?: boolean;
@@ -397,13 +397,8 @@ export function createMockApi(options: MockOptions): MockApi {
       }
       case '/api/v1/queue': return json(pipeline.snapshot());
       case '/api/v1/batches/run':
-        if (pipeline.running || pipeline.pending) {
-          throw new HttpProblem(
-            409,
-            'Conflict',
-            'A batch is already running or requested. Wait for the worker to finish it before requesting another.',
-            'BATCH_ALREADY_RUNNING',
-          );
+        if (pipeline.running) {
+          throw new HttpProblem(409, 'Conflict', 'A batch is already running; wait for it to finish.', 'BATCH_ALREADY_RUNNING');
         }
         pipeline.request();
         return json({ requested: true, ...(pipeline.stale ? { worker: { stale: true } } : {}) }, 202);

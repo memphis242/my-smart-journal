@@ -6,7 +6,7 @@
  */
 
 import type { JSX } from 'preact';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { isAbort, toAppError, type AppError } from '../api/errors';
 import { extraction as extractionGuard } from '../api/guards';
 import type { EntryDetail, EntrySummary, Extraction, Job } from '../api/types';
@@ -21,7 +21,7 @@ import { formatDateTime, formatTime, weekday } from '../lib/dates';
 import { ENTRY_STATUS_HINTS, ENTRY_STATUS_LABELS, JOB_STATUS_LABELS, paragraphs, stageLabel } from '../lib/format';
 import { copyEntry } from '../pages/entries/EntryRows';
 import { api, bumpData, dataVersion } from '../state/app';
-import { cachedDetail, closeEntry, moveEntry, openEntry, storeDetail, type NavContext, type OpenEntry } from '../state/entry-modal';
+import { cachedDetail, closeEntry, moveEntry, openEntry, peekDetail, storeDetail, type NavContext, type OpenEntry } from '../state/entry-modal';
 import { pokeQueue } from '../state/queue';
 import { forgetSelected } from '../state/selection';
 import { toast } from '../state/toasts';
@@ -103,7 +103,7 @@ function JobLine({ job, onRetried }: { readonly job: Job; readonly onRetried: ()
   return (
     <li class={`job-row job-${job.status}`} data-testid="entry-job" data-status={job.status}>
       <div class="job-line">
-        <StatusMarker kind={jobMarker(job.status, blocked)} label={status} />
+        <StatusMarker kind={jobMarker(job.status, blocked)} label={status} decorative />
         <span class="job-stage">{label}</span>
         <span class="job-status" title={blocked ? `Waiting on failed ${job.blocked_by.map((b) => stageLabel(b.kind, null, null).toLowerCase()).join(', ')}` : undefined}>
           {status}
@@ -187,7 +187,17 @@ function LabelRows({ entry }: { readonly entry: EntrySummary }): JSX.Element | n
   );
 }
 
-function EntryBody({ entry, detail, onChanged }: { readonly entry: EntrySummary; readonly detail: EntryDetail | null; readonly onChanged: () => void }): JSX.Element {
+function EntryBody({
+  entry,
+  detail,
+  onChanged,
+  onCopyError,
+}: {
+  readonly entry: EntrySummary;
+  readonly detail: EntryDetail | null;
+  readonly onChanged: () => void;
+  readonly onCopyError: (error: AppError | null) => void;
+}): JSX.Element {
   const extraction = parseExtraction(detail);
   const original = originalText(detail);
   const jobs = detail?.jobs ?? [];
@@ -200,7 +210,7 @@ function EntryBody({ entry, detail, onChanged }: { readonly entry: EntrySummary;
     <div class="entry-body">
       {entry.status === 'needs_attention' && (
         <div class="notice notice-attention" data-testid="attention-notice">
-          <StatusMarker kind="attention" label="Needs attention" />
+          <StatusMarker kind="attention" label="Needs attention" decorative />
           <div class="notice-main">
             <p class="notice-message">
               <strong>Needs attention.</strong> The fact check still found claims the source does not support after its last review turn.
@@ -221,7 +231,7 @@ function EntryBody({ entry, detail, onChanged }: { readonly entry: EntrySummary;
       )}
       {failed.length > 0 && (
         <div class="notice notice-error" data-testid="failed-notice">
-          <StatusMarker kind="failed" label="Failed" />
+          <StatusMarker kind="failed" label="Failed" decorative />
           <div class="notice-main">
             <p class="notice-message">
               <strong>Processing failed</strong> at {failed.map((job) => stageLabel(job.kind, job.target, job.turn).toLowerCase()).join(', ')}. The steps after it wait until it is retried.
@@ -232,7 +242,7 @@ function EntryBody({ entry, detail, onChanged }: { readonly entry: EntrySummary;
       )}
       {(entry.status === 'queued' || entry.status === 'processing') && failed.length === 0 && (
         <p class="inline-note" data-testid="pending-note">
-          <StatusMarker kind={entryMarker(entry.status)} label={ENTRY_STATUS_LABELS[entry.status]} />
+          <StatusMarker kind={entryMarker(entry.status)} label={ENTRY_STATUS_LABELS[entry.status]} decorative />
           <span>
             {entry.status === 'queued' ? 'Queued for the next batch.' : 'Being processed now.'} The summary and extraction appear when processing finishes.
           </span>
@@ -257,10 +267,11 @@ function EntryBody({ entry, detail, onChanged }: { readonly entry: EntrySummary;
               onClick={() => {
                 copyText(entry.text.trim())
                   .then(() => {
+                    onCopyError(null);
                     toast('Copied the entry text');
                   })
                   .catch((error: unknown) => {
-                    toast(error instanceof Error ? error.message : 'Copy failed');
+                    onCopyError(toAppError(error, 'Copy'));
                   });
               }}
             >
@@ -387,14 +398,16 @@ function EntryBody({ entry, detail, onChanged }: { readonly entry: EntrySummary;
 }
 
 function NavBar({ side, target, loading, onGo }: { readonly side: 'older' | 'newer'; readonly target: string | null; readonly loading: boolean; readonly onGo: () => void }): JSX.Element {
+  const busy = target === null && loading;
   const label = side === 'older' ? 'Older entry' : 'Newer entry';
   const key = side === 'older' ? 'Left arrow' : 'Right arrow';
   const title = target !== null ? `${label} (${key})` : loading ? `Looking for the ${side} entry` : side === 'older' ? 'No older entry' : 'No newer entry';
   return (
     <button
       type="button"
-      class={`nav-bar nav-${side}`}
+      class={busy ? `nav-bar nav-${side} is-busy` : `nav-bar nav-${side}`}
       disabled={target === null}
+      aria-busy={busy}
       title={title}
       aria-label={label}
       data-testid={`nav-${side}`}
@@ -410,25 +423,37 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
   const version = dataVersion.value;
   const wide = useMediaQuery(WIDE);
   const preview = context.previews.get(id) ?? null;
-  const [detail, setDetail] = useState<EntryDetail | null>(() => cachedDetail(id, version));
+  const [loaded, setLoaded] = useState<EntryDetail | null>(() => peekDetail(id));
   const [error, setError] = useState<AppError | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [copyError, setCopyError] = useState<AppError | null>(null);
+  /** The editor works on a snapshot taken when it opened, so refreshes never reset or close it. */
+  const [editing, setEditing] = useState<EntryDetail | null>(null);
+  /** Deletion confirms against the loaded detail, which carries the compilation count. */
+  const [deleting, setDeleting] = useState<EntryDetail | null>(null);
   const neighbors = useNeighbors(id, context);
   const swipe = useRef<{ readonly x: number; readonly y: number; readonly id: number } | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const sheetRef = useRef<HTMLElement>(null);
+  // Never show another entry's detail, even for the one render after stepping.
+  const detail = loaded !== null && loaded.id === id ? loaded : null;
 
-  useEffect(() => {
-    const cached = cachedDetail(id, version);
-    setDetail(cached);
+  // Stepping to another entry: show what is known about it and start at the top.
+  useLayoutEffect(() => {
+    setLoaded(peekDetail(id));
     setError(null);
+    setCopyError(null);
     bodyRef.current?.scrollTo({ top: 0 });
+  }, [id]);
+
+  // Load, and reload when entries change; the shown detail and the reading position stay until the new one arrives.
+  useEffect(() => {
     const controller = new AbortController();
     api()
       .getEntry(id, controller.signal)
-      .then((loaded) => {
-        storeDetail(loaded, version);
-        setDetail(loaded);
+      .then((fresh) => {
+        storeDetail(fresh, version);
+        setLoaded(fresh);
+        setError(null);
       })
       .catch((caught: unknown) => {
         if (isAbort(caught)) return;
@@ -469,7 +494,7 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
   };
 
   const onKeyDown = (event: KeyboardEvent): void => {
-    if (editing || deleting) return;
+    if (editing !== null || deleting !== null) return;
     const target = event.target as HTMLElement;
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable) return;
     if (event.key === 'ArrowLeft') {
@@ -494,12 +519,11 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
     if (Math.abs(dx) > 64 && Math.abs(dx) > 2 * Math.abs(dy)) go(dx < 0 ? 1 : -1);
   };
 
-  const remove = async (): Promise<void> => {
-    if (entry === null) return;
-    await api().deleteEntry(id);
-    forgetSelected(id);
-    toast(`Deleted entry ${entry.entry_date}`);
-    setDeleting(false);
+  const remove = async (target: EntryDetail): Promise<void> => {
+    await api().deleteEntry(target.id);
+    forgetSelected(target.id);
+    toast(`Deleted entry ${target.entry_date}`);
+    setDeleting(null);
     const next = neighbors.older ?? neighbors.newer;
     if (next !== null) {
       const remaining = context.newestFirst.filter((other) => other !== id);
@@ -514,15 +538,31 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
   const slide = direction === 1 ? 'slide-from-right' : direction === -1 ? 'slide-from-left' : '';
 
   return (
-    <Dialog label={entry?.title ?? 'Entry'} onClose={close} class="dialog-entry" closeOnBackdrop testId="entry-modal" onKeyDown={onKeyDown}>
+    <Dialog
+      label={entry?.title ?? 'Entry'}
+      onClose={close}
+      class="dialog-entry"
+      closeOnBackdrop
+      testId="entry-modal"
+      onKeyDown={onKeyDown}
+      initialFocus={sheetRef}
+    >
       <div class="entry-frame">
         <NavBar side="older" target={neighbors.older} loading={neighbors.loading} onGo={() => { go(-1); }} />
-        <article class="entry-sheet" onPointerDown={onPointerDown} onPointerUp={onPointerUp} data-entry-id={id}>
+        <article
+          class="entry-sheet"
+          ref={sheetRef}
+          tabIndex={-1}
+          aria-labelledby="entry-modal-title"
+          onPointerDown={onPointerDown}
+          onPointerUp={onPointerUp}
+          data-entry-id={id}
+        >
           <header class="entry-head">
             <div class="entry-meta">
               {entry !== null && (
                 <span class="entry-status" title={ENTRY_STATUS_HINTS[entry.status]}>
-                  <StatusMarker kind={entryMarker(entry.status)} label={statusLabel} />
+                  <StatusMarker kind={entryMarker(entry.status)} label={statusLabel} decorative />
                   <span>{statusLabel}</span>
                 </span>
               )}
@@ -552,7 +592,8 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
                   aria-label="Copy entry"
                   data-testid="modal-copy"
                   onClick={() => {
-                    if (entry !== null) void copyEntry(entry);
+                    if (entry === null) return;
+                    void copyEntry(entry).then(setCopyError);
                   }}
                 >
                   <Icon name="copy" size={16} />
@@ -562,11 +603,11 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
                   type="button"
                   class={wide ? 'button button-small' : 'icon-button'}
                   disabled={detail === null}
-                  title="Edit the date, title, tags or text"
+                  title={detail === null ? 'Available once the entry has loaded' : 'Edit the date, title, tags or text'}
                   aria-label="Edit entry"
                   data-testid="modal-edit"
                   onClick={() => {
-                    setEditing(true);
+                    setEditing(detail);
                   }}
                 >
                   <Icon name="edit" size={16} />
@@ -575,12 +616,12 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
                 <button
                   type="button"
                   class="icon-button"
-                  disabled={entry === null}
-                  title="Delete this entry"
+                  disabled={detail === null}
+                  title={detail === null ? 'Available once the entry has loaded, so the confirmation can say what else is deleted' : 'Delete this entry'}
                   aria-label="Delete entry"
                   data-testid="modal-delete"
                   onClick={() => {
-                    setDeleting(true);
+                    setDeleting(detail);
                   }}
                 >
                   <Icon name="trash" size={16} />
@@ -589,7 +630,7 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
                   <Icon name="close" size={18} />
                 </button>
             </div>
-            <h2 class={entry?.title == null ? 'entry-title is-untitled' : 'entry-title'} data-testid="modal-title">
+            <h2 id="entry-modal-title" class={entry?.title == null ? 'entry-title is-untitled' : 'entry-title'} data-testid="modal-title">
               {entry === null ? 'Loading' : entry.title ?? 'Untitled'}
             </h2>
           </header>
@@ -597,10 +638,20 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
             <div class={`entry-content ${slide}`} key={id}>
               {error !== null && <ErrorNotice error={error} />}
               {neighbors.error !== null && <ErrorNotice error={neighbors.error} compact />}
+              {copyError !== null && (
+                <ErrorNotice
+                  error={copyError}
+                  compact
+                  onDismiss={() => {
+                    setCopyError(null);
+                  }}
+                />
+              )}
               {entry !== null && (
                 <EntryBody
                   entry={entry}
                   detail={detail}
+                  onCopyError={setCopyError}
                   onChanged={() => {
                     bumpData();
                   }}
@@ -611,32 +662,32 @@ function EntryModalInner({ open }: { readonly open: OpenEntry }): JSX.Element {
         </article>
         <NavBar side="newer" target={neighbors.newer} loading={neighbors.loading} onGo={() => { go(1); }} />
       </div>
-      {editing && detail !== null && (
+      {editing !== null && (
         <EntryEditor
           mode="edit"
-          entry={detail}
+          entry={editing}
           onClose={() => {
-            setEditing(false);
+            setEditing(null);
           }}
         />
       )}
-      {deleting && entry !== null && (
+      {deleting !== null && (
         <ConfirmDialog
           title="Delete entry?"
           action="Delete entry"
           destructive
           onCancel={() => {
-            setDeleting(false);
+            setDeleting(null);
           }}
-          onConfirm={remove}
+          onConfirm={() => remove(deleting)}
         >
           <p>
-            <span class="mono">{entry.entry_date}</span> {entry.title ?? 'Untitled'}
+            <span class="mono">{deleting.entry_date}</span> {deleting.title ?? 'Untitled'}
           </p>
-          <p>This removes the entry, its processing results{entry.source === 'audio' ? ' and its recording' : ''}. It cannot be undone.</p>
-          {detail !== null && detail.compilation_count > 0 && (
+          <p>This removes the entry, its processing results{deleting.source === 'audio' ? ' and its recording' : ''}. It cannot be undone.</p>
+          {deleting.compilation_count > 0 && (
             <p data-testid="delete-compilations">
-              It also deletes <strong>{detail.compilation_count === 1 ? '1 compilation' : `${detail.compilation_count} compilations`}</strong> that
+              It also deletes <strong>{deleting.compilation_count === 1 ? '1 compilation' : `${deleting.compilation_count} compilations`}</strong> that
               cite this entry.
             </p>
           )}

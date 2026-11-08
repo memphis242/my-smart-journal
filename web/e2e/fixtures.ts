@@ -23,8 +23,11 @@ export { expect };
 
 export async function openApp(page: Page, options: { readonly path?: string; readonly params?: string; readonly signedIn?: boolean } = {}): Promise<void> {
   const signedIn = options.signedIn ?? true;
-  const query = [signedIn ? 'mock-signed-in=1' : '', FAST, options.params ?? ''].filter((part) => part !== '').join('&');
-  await page.goto(`${options.path ?? '/'}?${query}`);
+  // The test's own parameters override the fast defaults.
+  const query = new URLSearchParams(FAST);
+  if (signedIn) query.set('mock-signed-in', '1');
+  for (const [key, value] of new URLSearchParams(options.params ?? '')) query.set(key, value);
+  await page.goto(`${options.path ?? '/'}?${query.toString()}`);
   if (signedIn) await expect(page.getByTestId(options.path === '/compilations' ? 'compilations-page' : 'entries-page')).toBeVisible();
 }
 
@@ -51,6 +54,15 @@ export async function chooseRange(page: Page, key: 'today' | 'week' | 'month' | 
  * viewport, not window.innerWidth: on phones an over-wide page makes the
  * browser zoom out, which widens innerWidth along with the content.
  */
+/** Requests a batch from the queue sheet and closes the sheet again. */
+export async function startBatch(page: Page): Promise<void> {
+  await page.getByTestId('queue-indicator').click();
+  await page.getByTestId('sheet-run-batch').click();
+  await expect(page.getByTestId('batch-state')).toHaveAttribute('data-state', /requested|running/);
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('queue-sheet')).toBeHidden();
+}
+
 export async function noHorizontalScroll(page: Page): Promise<void> {
   const device = page.viewportSize()?.width ?? 0;
   const sizes = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth }));

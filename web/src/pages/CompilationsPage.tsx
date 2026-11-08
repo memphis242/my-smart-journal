@@ -74,12 +74,14 @@ function allText(compilation: Compilation, result: CompileResult): string {
   return [head, ...sections].join('\n\n\n');
 }
 
-async function copy(text: string, what: string): Promise<void> {
+/** Copies and confirms; resolves the error to show in place, or null. */
+async function copy(text: string, what: string): Promise<AppError | null> {
   try {
     await copyText(text);
     toast(`Copied ${what}`);
+    return null;
   } catch (error) {
-    toast(error instanceof Error ? error.message : 'Copy failed');
+    return toAppError(error, 'Copy');
   }
 }
 
@@ -184,6 +186,7 @@ function CompilationDialog({ compilation, onClose }: { readonly compilation: Com
   const firstTab = result === null ? 'bullets' : (TABS.find(({ tab }) => count(result, tab) > 0)?.tab ?? 'bullets');
   const [tab, setTab] = useState<Tab>(firstTab);
   const [deleting, setDeleting] = useState(false);
+  const [copyError, setCopyError] = useState<AppError | null>(null);
   const running = queueState.value.snapshot?.batch.running ?? false;
   const title = `${compilation.purpose}, ${compilation.period}`;
 
@@ -211,7 +214,7 @@ function CompilationDialog({ compilation, onClose }: { readonly compilation: Com
           </button>
         </DialogHeader>
         <p class="dialog-sub">
-          <StatusMarker kind={compilationMarker(compilation.status)} label={COMPILATION_STATUS_LABELS[compilation.status]} />
+          <StatusMarker kind={compilationMarker(compilation.status)} label={COMPILATION_STATUS_LABELS[compilation.status]} decorative />
           <span>{COMPILATION_STATUS_LABELS[compilation.status]}</span>
           <span class="mono muted">{formatDateTime(compilation.created_at)}</span>
           <span class="muted">{plural(compilation.entry_ids.length, 'entry', 'entries')}</span>
@@ -242,6 +245,15 @@ function CompilationDialog({ compilation, onClose }: { readonly compilation: Com
           </div>
         )}
         <div class="dialog-body compilation-body">
+          {copyError !== null && (
+            <ErrorNotice
+              error={copyError}
+              compact
+              onDismiss={() => {
+                setCopyError(null);
+              }}
+            />
+          )}
           {compilation.status === 'failed' && compilation.last_error !== null && (
             <ErrorNotice
               error={
@@ -256,7 +268,7 @@ function CompilationDialog({ compilation, onClose }: { readonly compilation: Com
           )}
           {(compilation.status === 'queued' || compilation.status === 'running') && (
             <div class="inline-note">
-              <StatusMarker kind={compilationMarker(compilation.status)} label={COMPILATION_STATUS_LABELS[compilation.status]} />
+              <StatusMarker kind={compilationMarker(compilation.status)} label={COMPILATION_STATUS_LABELS[compilation.status]} decorative />
               <span>
                 {compilation.status === 'running' ? 'Compiling now; this view updates when it finishes.' : 'Queued; it runs with the next batch.'}
               </span>
@@ -281,7 +293,9 @@ function CompilationDialog({ compilation, onClose }: { readonly compilation: Com
                   <button
                     type="button"
                     class="button button-small"
-                    onClick={() => void copy(sectionText(result, tab), TABS.find((t) => t.tab === tab)?.label.toLowerCase() ?? 'section')}
+                    onClick={() => {
+                      void copy(sectionText(result, tab), TABS.find((t) => t.tab === tab)?.label.toLowerCase() ?? 'section').then(setCopyError);
+                    }}
                   >
                     <Icon name="copy" size={14} />
                     <span>Copy section</span>
@@ -293,7 +307,14 @@ function CompilationDialog({ compilation, onClose }: { readonly compilation: Com
         </div>
         {result !== null && (
           <footer class="dialog-foot">
-            <button type="button" class="button button-primary" onClick={() => void copy(allText(compilation, result), 'the whole compilation')} data-testid="compilation-copy-all">
+            <button
+              type="button"
+              class="button button-primary"
+              onClick={() => {
+                void copy(allText(compilation, result), 'the whole compilation').then(setCopyError);
+              }}
+              data-testid="compilation-copy-all"
+            >
               <Icon name="copy" size={16} />
               <span>Copy all</span>
             </button>

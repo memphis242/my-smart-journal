@@ -10,15 +10,15 @@ import { plural } from '../../lib/format';
 import { api, dataVersion } from '../../state/app';
 import { contextFor, showEntry } from '../../state/entry-modal';
 import { refreshSelected } from '../../state/selection';
-import { bounds, facetFilterCount, filters, updateView, view } from '../../state/view';
-import { EntryRow, type RowsContext } from './EntryRows';
+import { bounds, facetFilterCount, filters, savedScroll, updateView, view } from '../../state/view';
+import { EntryRow, useRovingRow, type RowsContext } from './EntryRows';
+import { ListNotice } from './SearchResults';
 import { EmptyState, ListHead, TableHeader, clearFacetFilters, describeCount, useLabelsWidth, type DialogRequest } from './ListParts';
 
 const PAGE = 100;
 const MAX_LIMIT = 500;
 
-/** Scroll position per view, restored when the user comes back to the same view. */
-const savedScroll = new Map<string, { readonly top: number; readonly loaded: number }>();
+
 
 interface ListState {
   readonly key: string;
@@ -49,11 +49,18 @@ export function EntryList({ onAction, onNewEntry }: EntryListProps): JSX.Element
   stateRef.current = state;
   const scroller = useRef<HTMLDivElement>(null);
   const sentinel = useRef<HTMLDivElement>(null);
+  /** Bumped by every reload; a page fetched for an older generation is dropped. */
+  const generation = useRef(0);
+  const moreController = useRef<AbortController | null>(null);
   const labels = useLabelsWidth(scroller);
 
   // First page, or a reload of what is loaded after entries changed (scroll position stays).
   useEffect(() => {
     const controller = new AbortController();
+    generation.current += 1;
+    // A reload replaces every loaded row, so a page still loading for the old rows is useless.
+    moreController.current?.abort();
+    moreController.current = null;
     const previous = stateRef.current;
     const sameView = previous.key === key;
     const saved = sameView ? undefined : savedScroll.get(key);
@@ -93,16 +100,26 @@ export function EntryList({ onAction, onNewEntry }: EntryListProps): JSX.Element
   const loadMore = async (): Promise<void> => {
     const current = stateRef.current;
     if (current.loading || current.loadingMore || current.items.length >= current.total) return;
+    const ownGeneration = generation.current;
+    const controller = new AbortController();
+    moreController.current = controller;
     setState({ ...current, loadingMore: true });
     try {
-      const page = await api().listEntries({ filters: currentFilters, order, limit: PAGE, offset: current.items.length });
+      const page = await api().listEntries(
+        { filters: currentFilters, order, limit: PAGE, offset: current.items.length },
+        controller.signal,
+      );
+      if (generation.current !== ownGeneration) return;
       setState((s) => {
         if (s.key !== current.key) return s;
         const known = new Set(s.items.map((item) => item.id));
         return { ...s, items: [...s.items, ...page.items.filter((item) => !known.has(item.id))], total: page.total, loadingMore: false };
       });
     } catch (error) {
+      if (isAbort(error) || generation.current !== ownGeneration) return;
       setState((s) => ({ ...s, loadingMore: false, error: toAppError(error, 'Load more entries') }));
+    } finally {
+      if (moreController.current === controller) moreController.current = null;
     }
   };
   const loadMoreRef = useRef(loadMore);
@@ -134,6 +151,7 @@ export function EntryList({ onAction, onNewEntry }: EntryListProps): JSX.Element
   }, []);
 
   const items = state.items;
+  const roving = useRovingRow(items);
   const context: RowsContext = useMemo(
     () => ({
       visible: items,
@@ -178,6 +196,7 @@ export function EntryList({ onAction, onNewEntry }: EntryListProps): JSX.Element
       >
         {headText}
       </ListHead>
+      <ListNotice />
       {state.error !== null && (
         <div class="list-error">
           <ErrorNotice
@@ -189,7 +208,7 @@ export function EntryList({ onAction, onNewEntry }: EntryListProps): JSX.Element
         </div>
       )}
       <div class="list-scroll" ref={scroller} data-testid="list-scroll">
-        <div class="entry-table" role="table" aria-label="Entries" aria-rowcount={state.total}>
+        <div class="entry-table" role="grid" aria-label="Entries" aria-rowcount={state.total} aria-multiselectable="true">
           {items.length > 0 && (
             <TableHeader
               visible={items}
@@ -205,6 +224,8 @@ export function EntryList({ onAction, onNewEntry }: EntryListProps): JSX.Element
               entry={entry}
               context={context}
               continuesDay={index > 0 && items[index - 1]?.entry_date === entry.entry_date}
+              active={entry.id === roving.activeId}
+              onActive={roving.setActive}
             />
           ))}
         </div>

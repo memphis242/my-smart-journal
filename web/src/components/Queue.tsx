@@ -3,30 +3,33 @@
  * with the batch and worker state, every waiting or failed job, and retry.
  */
 
-import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useState } from 'preact/hooks';
 import { toAppError, type AppError } from '../api/errors';
 import type { QueueItem, QueueSnapshot } from '../api/types';
-import { formatDistance, formatTime, formatWhen } from '../lib/dates';
+import { formatDateTime, formatDistance, formatTime, formatWhen } from '../lib/dates';
 import { JOB_STATUS_LABELS, plural, stageLabel } from '../lib/format';
 import { WIDE, useMediaQuery } from '../hooks/useMediaQuery';
 import { useNow } from '../hooks/useNow';
 import { api } from '../state/app';
 import { showEntry } from '../state/entry-modal';
-import { batchRequest, clearBatchError, isBusy, lastBatchError, pokeQueue, queueState, runBatchNow, workerStale } from '../state/queue';
+import {
+  batchRequest,
+  clearBatchError,
+  isBusy,
+  lastBatchError,
+  openQueueSheet,
+  pokeQueue,
+  queueSheetOpen,
+  queueState,
+  runBatchNow,
+  workerStale,
+} from '../state/queue';
 import { toast } from '../state/toasts';
 import { Dialog, DialogHeader } from './Dialog';
 import { ErrorNotice } from './ErrorNotice';
 import { Icon } from './Icon';
 import { StatusMarker, jobMarker, type MarkerKind } from './StatusMarker';
-
-export const queueSheetOpen = signal(false);
-
-function openSheet(): void {
-  queueSheetOpen.value = true;
-  pokeQueue();
-}
 
 interface Summary {
   readonly kind: MarkerKind;
@@ -37,52 +40,57 @@ interface Summary {
   readonly batchFailed: boolean;
 }
 
-function summarize(snapshot: QueueSnapshot, now: number): Summary {
-  const { counts } = snapshot;
+function summarize(snapshot: QueueSnapshot, now: number, skewMs: number): Summary {
+  const { counts, batch } = snapshot;
   const waiting = counts.queued + counts.running + counts.blocked;
-  const stale = workerStale(snapshot, now);
+  const stale = workerStale(snapshot, now, skewMs);
   const failed = counts.failed;
   let text: string;
-  if (snapshot.batch.running) {
+  if (batch.running) {
     text = waiting > 0 ? `Batch running, ${waiting} left` : 'Batch running';
+  } else if (batch.request_pending) {
+    text = stale ? 'Batch requested; worker not running' : 'Batch requested, waiting for the worker';
   } else if (waiting > 0) {
-    const next = snapshot.worker.next_run_at;
-    text = !stale && next !== null ? `${waiting} queued, next ${formatTime(next)}` : `${waiting} queued`;
+    const next = snapshot.worker.next_batch_at;
+    text = !stale && next !== null ? `${waiting} queued, next batch ${formatDateTime(next)}` : `${waiting} queued`;
   } else {
     text = 'Queue empty';
   }
-  const batchFailed = snapshot.batch.last_error !== null && !snapshot.batch.running;
-  const kind: MarkerKind = isBusy(snapshot)
-    ? 'progress'
-    : failed > 0 || batchFailed
-      ? 'failed'
-      : stale
-        ? 'attention'
-        : waiting > 0
-          ? 'queued'
-          : 'done';
+  const batchFailed = batch.last_error !== null && !batch.running;
+  const kind: MarkerKind =
+    batch.request_pending && stale
+      ? 'attention'
+      : isBusy(snapshot)
+        ? 'progress'
+        : failed > 0 || batchFailed
+          ? 'failed'
+          : stale
+            ? 'attention'
+            : waiting > 0
+              ? 'queued'
+              : 'done';
   // Narrow screens show one figure: failures first, since they need action.
-  const short = failed > 0 ? `${failed} failed` : batchFailed ? 'Batch failed' : String(waiting);
+  const short = failed > 0 ? `${failed} failed` : batchFailed ? 'Batch failed' : batch.request_pending ? 'Requested' : String(waiting);
   return { kind, text, short, failed, stale, batchFailed };
 }
 
 export function QueueIndicator(): JSX.Element {
   const wide = useMediaQuery(WIDE);
   const now = useNow();
-  const { snapshot, error } = queueState.value;
+  const { snapshot, error, skewMs } = queueState.value;
   const request = batchRequest.value;
 
   if (snapshot === null) {
     const label = error === null ? 'Loading the queue' : `Queue unavailable (${error.code})`;
     return (
-      <button type="button" class="queue-indicator" title={label} data-testid="queue-indicator" onClick={openSheet}>
-        <StatusMarker kind={error === null ? 'muted' : 'failed'} label={label} />
+      <button type="button" class="queue-indicator" title={label} data-testid="queue-indicator" onClick={openQueueSheet}>
+        <StatusMarker kind={error === null ? 'muted' : 'failed'} label={label} decorative={wide} />
         {wide && <span class="queue-text">{error === null ? 'Queue' : 'Queue unavailable'}</span>}
       </button>
     );
   }
 
-  const summary = summarize(snapshot, now);
+  const summary = summarize(snapshot, now, skewMs);
   const title = [
     summary.text,
     summary.failed > 0 ? `${summary.failed} failed` : null,
@@ -92,16 +100,16 @@ export function QueueIndicator(): JSX.Element {
   ]
     .filter((part) => part !== null)
     .join('; ');
-  const canRun = !snapshot.batch.running && !request.pending;
+  const canRun = !snapshot.batch.running && !snapshot.batch.request_pending && !request.pending;
 
   return (
     <div class="queue-bar" data-testid="queue-bar">
-      <button type="button" class="queue-indicator" title={title} data-testid="queue-indicator" onClick={openSheet}>
-        <StatusMarker kind={summary.kind} label={summary.text} />
+      <button type="button" class="queue-indicator" title={title} aria-label={title} data-testid="queue-indicator" onClick={openQueueSheet}>
+        <StatusMarker kind={summary.kind} label={summary.text} decorative />
         <span class={!wide && (summary.failed > 0 || summary.batchFailed) ? 'queue-text queue-failed' : 'queue-text'}>
           {wide ? summary.text : summary.short}
           {wide && summary.failed > 0 && <span class="queue-failed">{summary.failed} failed</span>}
-          {wide && summary.stale && <span class="queue-stale">Worker not running</span>}
+          {wide && summary.stale && !snapshot.batch.request_pending && <span class="queue-stale">Worker not running</span>}
           {wide && summary.batchFailed && <span class="queue-failed">Last batch failed</span>}
         </span>
       </button>
@@ -110,15 +118,17 @@ export function QueueIndicator(): JSX.Element {
           type="button"
           class="button button-small"
           disabled={!canRun}
-          title={snapshot.batch.running ? 'A batch is running' : 'Process every queued entry now instead of waiting for the worker'}
+          title={
+            snapshot.batch.running
+              ? 'A batch is running'
+              : snapshot.batch.request_pending
+                ? 'A batch is requested and waits for the worker'
+                : 'Process every queued entry now instead of waiting for the scheduled batch'
+          }
           data-testid="run-batch"
-          onClick={() => {
-            void runBatchNow().then(() => {
-              if (batchRequest.value.error !== null) openSheet();
-            });
-          }}
+          onClick={() => void runBatchNow()}
         >
-          {snapshot.batch.running ? 'Running' : request.pending ? 'Starting' : 'Run now'}
+          {snapshot.batch.running ? 'Running' : snapshot.batch.request_pending || request.pending ? 'Requested' : 'Run now'}
         </button>
       )}
     </div>
@@ -150,7 +160,7 @@ function JobRow({ item, now }: { readonly item: QueueItem; readonly now: number 
   return (
     <li class={`job-row job-${item.status}`} data-testid="queue-job" data-status={item.status}>
       <div class="job-line">
-        <StatusMarker kind={jobMarker(item.status, blocked)} label={statusLabel} />
+        <StatusMarker kind={jobMarker(item.status, blocked)} label={statusLabel} decorative />
         <span class="job-stage">{label}</span>
         <span class="job-status" title={blocked ? `Waiting on failed ${item.blocked_by.map((b) => stageLabel(b.kind, null, null).toLowerCase()).join(', ')}` : undefined}>
           {statusLabel}
@@ -211,25 +221,31 @@ function openFromQueue(entryId: string): void {
   showEntry(entryId, { newestFirst: [entryId], previews: new Map(), filters: {}, complete: false });
 }
 
-function StatusBlock({ snapshot, now }: { readonly snapshot: QueueSnapshot; readonly now: number }): JSX.Element {
+function StatusBlock({ snapshot, now, skewMs }: { readonly snapshot: QueueSnapshot; readonly now: number; readonly skewMs: number }): JSX.Element {
   const { batch, worker } = snapshot;
-  const stale = workerStale(snapshot, now);
-  const intervalMin = Math.round(worker.interval_s / 60);
+  const stale = workerStale(snapshot, now, skewMs);
+  const serverNow = new Date(now + skewMs);
   return (
     <div class="queue-status">
-      <p class="queue-status-line" data-testid="batch-state">
-        <StatusMarker kind={batch.running ? 'progress' : 'muted'} label={batch.running ? 'Batch running' : 'Idle'} />
+      <p class="queue-status-line" data-testid="batch-state" data-state={batch.running ? 'running' : batch.request_pending ? 'requested' : 'idle'}>
+        <StatusMarker kind={batch.running || (batch.request_pending && !stale) ? 'progress' : batch.request_pending ? 'attention' : 'muted'} label="Batch" decorative />
         {batch.running ? (
           <span>
             Batch running since <span class="mono">{batch.started_at === null ? 'now' : formatTime(batch.started_at, true)}</span>
-            {batch.trigger !== null && <span class="muted"> ({batch.trigger === 'manual' ? 'started here' : 'scheduled'})</span>}
+            {batch.trigger !== null && <span class="muted"> ({batch.trigger === 'manual' ? 'requested' : 'scheduled'})</span>}
+          </span>
+        ) : batch.request_pending ? (
+          <span data-testid="request-pending">
+            {stale
+              ? 'Batch requested; it starts when the worker runs again.'
+              : 'Batch requested, waiting for the worker to pick it up.'}
           </span>
         ) : batch.last_finished_at !== null ? (
           <span>
             Idle. Last batch finished <span class="mono">{formatWhen(batch.last_finished_at)}</span>
             {batch.last_result !== null && (
               <span class="muted">
-                : {batch.last_result.processed} processed, {batch.last_result.failed} failed
+                : <span class="mono">{batch.last_result.processed}</span> processed, <span class="mono">{batch.last_result.failed}</span> failed
               </span>
             )}
           </span>
@@ -239,7 +255,7 @@ function StatusBlock({ snapshot, now }: { readonly snapshot: QueueSnapshot; read
       </p>
       {stale ? (
         <div class="notice notice-attention" data-testid="worker-stale">
-          <StatusMarker kind="attention" label="Worker not running" />
+          <StatusMarker kind="attention" label="Worker not running" decorative />
           <div class="notice-main">
             <p class="notice-message">
               <strong>Worker not running.</strong>{' '}
@@ -247,26 +263,26 @@ function StatusBlock({ snapshot, now }: { readonly snapshot: QueueSnapshot; read
                 'No heartbeat has been seen.'
               ) : (
                 <>
-                  Last heartbeat <span class="mono">{formatWhen(worker.last_seen_at)}</span> ({formatDistance(worker.last_seen_at, new Date(now))}); it should
-                  report every {intervalMin} min.
+                  Last heartbeat <span class="mono">{formatWhen(worker.last_seen_at, serverNow)}</span> ({formatDistance(worker.last_seen_at, serverNow)}); a
+                  running worker reports every few seconds.
                 </>
               )}
             </p>
             <p class="notice-hint">
-              Start it on the server with <code>msj worker</code>. Until then, entries wait unless you run the batch here.
+              Start it on the server with <code>msj worker</code>. Queued entries and batch requests wait until it runs.
             </p>
           </div>
         </div>
       ) : (
-        <p class="queue-status-line">
-          <StatusMarker kind="done" label="Worker running" />
+        <p class="queue-status-line" data-testid="worker-state">
+          <StatusMarker kind="done" label="Worker running" decorative />
           <span>
-            Worker seen <span class="mono">{worker.last_seen_at === null ? '-' : formatTime(worker.last_seen_at, true)}</span>, every {intervalMin} min.
-            {worker.next_run_at !== null && (
+            Worker running, last seen <span class="mono">{worker.last_seen_at === null ? '-' : formatTime(worker.last_seen_at, true)}</span>.
+            {worker.next_batch_at !== null && (
               <>
                 {' '}
-                Next run <span class="mono">{formatTime(worker.next_run_at)}</span>{' '}
-                <span class="muted">({formatDistance(worker.next_run_at, new Date(now))})</span>
+                Next batch <span class="mono">{formatDateTime(worker.next_batch_at)}</span>{' '}
+                <span class="muted">({formatDistance(worker.next_batch_at, serverNow)})</span>
               </>
             )}
           </span>
@@ -279,7 +295,7 @@ function StatusBlock({ snapshot, now }: { readonly snapshot: QueueSnapshot; read
 export function QueueSheet(): JSX.Element | null {
   const now = useNow(5000);
   if (!queueSheetOpen.value) return null;
-  const { snapshot, error } = queueState.value;
+  const { snapshot, error, skewMs } = queueState.value;
   const request = batchRequest.value;
   const close = (): void => {
     queueSheetOpen.value = false;
@@ -295,12 +311,12 @@ export function QueueSheet(): JSX.Element | null {
             <button
               type="button"
               class="button button-primary button-small"
-              disabled={snapshot.batch.running || request.pending}
+              disabled={snapshot.batch.running || snapshot.batch.request_pending || request.pending}
               title="Process every queued entry now instead of waiting for the worker"
               data-testid="sheet-run-batch"
               onClick={() => void runBatchNow()}
             >
-              {snapshot.batch.running ? 'Batch running' : request.pending ? 'Starting' : 'Run batch now'}
+              {snapshot.batch.running ? 'Batch running' : snapshot.batch.request_pending || request.pending ? 'Requested' : 'Run batch now'}
             </button>
           )}
         </DialogHeader>
@@ -309,7 +325,7 @@ export function QueueSheet(): JSX.Element | null {
           {request.error !== null && <ErrorNotice error={request.error} onDismiss={clearBatchError} />}
           {snapshot !== null && (
             <>
-              <StatusBlock snapshot={snapshot} now={now} />
+              <StatusBlock snapshot={snapshot} now={now} skewMs={skewMs} />
               {(() => {
                 const failure = snapshot.batch.running ? null : lastBatchError(snapshot);
                 return failure === null ? null : <ErrorNotice error={failure} />;

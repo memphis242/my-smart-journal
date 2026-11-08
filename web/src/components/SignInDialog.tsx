@@ -81,7 +81,12 @@ export function SignInDialog(): JSX.Element {
                 ref={input}
                 class="input input-mono"
                 type={reveal ? 'text' : 'password'}
-                autocomplete="current-password"
+                name="msj-access-key"
+                autocomplete="off"
+                data-1p-ignore="true"
+                data-lpignore="true"
+                data-bwignore="true"
+                data-form-type="other"
                 spellcheck={false}
                 value={token}
                 data-testid="sign-in-token"

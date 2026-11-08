@@ -14,6 +14,11 @@ export const facetState = signal<FacetState>({ facets: null, error: null });
 
 let controller: AbortController | null = null;
 
+export function resetFacets(): void {
+  controller?.abort();
+  facetState.value = { facets: null, error: null };
+}
+
 export async function loadFacets(): Promise<void> {
   controller?.abort();
   const own = new AbortController();

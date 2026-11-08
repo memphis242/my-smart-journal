@@ -226,11 +226,20 @@ export interface QueueSnapshot {
     readonly last_finished_at: string | null;
     readonly last_result: { readonly processed: number; readonly failed: number } | null;
     readonly last_error: CodedDetail | null;
+    /** A manual request is recorded and waits for the worker to pick it up. */
+    readonly request_pending: boolean;
   };
   readonly worker: {
+    /** Last heartbeat; liveness only. */
     readonly last_seen_at: string | null;
+    /** Scheduled batch interval (batch_interval_s). */
     readonly interval_s: number;
+    /** Next worker wake-up. */
     readonly next_run_at: string | null;
+    /** Next scheduled batch. */
+    readonly next_batch_at: string | null;
+    /** Server-computed staleness; null when the server does not report it. */
+    readonly stale: boolean | null;
   };
   readonly counts: {
     readonly queued: number;

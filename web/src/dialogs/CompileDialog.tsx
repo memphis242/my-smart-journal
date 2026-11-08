@@ -2,13 +2,13 @@
 
 import type { JSX } from 'preact';
 import { useRef, useState } from 'preact/hooks';
-import { ApiError, toAppError, type AppError } from '../api/errors';
+import { toAppError, type AppError } from '../api/errors';
 import type { EntrySummary } from '../api/types';
 import { Dialog, DialogHeader } from '../components/Dialog';
 import { ErrorNotice } from '../components/ErrorNotice';
 import { plural } from '../lib/format';
 import { api, bumpData } from '../state/app';
-import { pokeQueue, requestBatch } from '../state/queue';
+import { pokeQueue, runBatchNow } from '../state/queue';
 import { navigate } from '../state/route';
 import { clearSelection } from '../state/selection';
 import { toast } from '../state/toasts';
@@ -46,32 +46,27 @@ export function CompileDialog({ entries, onClose }: CompileDialogProps): JSX.Ele
     setError(null);
     try {
       await api().createCompilation({ entry_ids: entries.map((entry) => entry.id), purpose: purpose.trim(), period: period.trim() });
-      let note = 'Compilation queued for the next batch';
-      if (runNow) {
-        try {
-          const requested = await requestBatch();
-          note =
-            requested.worker?.stale === true
-              ? 'Compilation queued, but the worker is not running; start it with msj worker'
-              : 'Compilation queued; the worker starts the batch within a few seconds';
-        } catch (caught) {
-          if (!(caught instanceof ApiError && caught.code === 'BATCH_ALREADY_RUNNING')) throw caught;
-          note = 'Compilation queued; it runs after the current batch';
-        }
-      }
-      toast(note, {
-        label: 'Open compilations',
-        run: () => {
-          navigate('compilations');
-        },
-      });
-      clearSelection();
-      bumpData();
-      pokeQueue();
-      onClose();
     } catch (caught) {
+      // Nothing was created; the dialog stays open with the error so the user can retry.
       setError(toAppError(caught, 'Queue compilation'));
       setPending(false);
+      return;
+    }
+    // The compilation exists from here on: close, so a later failure cannot invite a duplicate.
+    clearSelection();
+    bumpData();
+    onClose();
+    toast(runNow ? 'Compilation queued; requesting a batch' : 'Compilation queued for the next batch', {
+      label: 'Open compilations',
+      run: () => {
+        navigate('compilations');
+      },
+    });
+    if (runNow) {
+      // Reported on its own: a failure opens the queue sheet with its code (for example WORKER_NOT_RUNNING).
+      void runBatchNow({ quiet: true });
+    } else {
+      pokeQueue();
     }
   };
 

@@ -188,7 +188,9 @@ describe('journal API mock through ApiClient', () => {
 
   it.each([
     ['disabled', 'EMBEDDINGS_DISABLED'],
-    ['model_unavailable', 'EMBEDDING_MODEL_UNAVAILABLE'],
+    ['model_load_failed', 'EMBEDDING_MODEL_LOAD_FAILED'],
+    ['dependency_missing', 'EMBEDDING_DEPENDENCY_MISSING'],
+    ['encoding_failed', 'EMBEDDING_ENCODING_FAILED'],
   ] as const)('reports semantic unavailability when embeddings are %s', async (embeddings, code) => {
     const { client } = setup({ embeddings });
     await signIn(client);
@@ -215,11 +217,11 @@ describe('journal API mock through ApiClient', () => {
     await signIn(client);
     const initial = await client.queue();
     expect(initial.batch.running).toBe(false);
-    expect(initial.worker.interval_s).toBe(900);
+    expect(initial.worker.interval_s).toBe(86_400);
+    expect(initial.worker.stale).toBe(false);
     expect(initial.counts.failed).toBeGreaterThan(0);
     const start = await client.runBatch();
     expect(start.requested).toBe(true);
-    await expect(client.runBatch()).rejects.toMatchObject({ code: 'BATCH_ALREADY_RUNNING', status: 409 });
     await mock.idle();
     const after = await client.queue();
     expect(after.batch.running).toBe(false);

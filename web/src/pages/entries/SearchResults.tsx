@@ -17,7 +17,8 @@ import { api, dataVersion } from '../../state/app';
 import { chronologicalContext, showEntry } from '../../state/entry-modal';
 import { refreshSelected } from '../../state/selection';
 import { bounds, filters, view } from '../../state/view';
-import { EntryRow, type RowsContext } from './EntryRows';
+import { listNotice } from '../../state/notices';
+import { EntryRow, useRovingRow, type RowsContext } from './EntryRows';
 import { EmptyState, ListHead, TableHeader, useLabelsWidth, type DialogRequest } from './ListParts';
 
 export const TIER_LABELS: Readonly<Record<SearchTier, string>> = {
@@ -54,14 +55,22 @@ export function highlight(text: string, query: string): JSX.Element {
 
 const DEBOUNCE_MS = 280;
 
-/** Summaries for search hits: from the hit itself, or one list request per filter set. */
+/**
+ * Summaries for search hits: from the hit itself (the server embeds them), else
+ * from one list request per filter set and single lookups beyond it. When
+ * entries change, known summaries are refreshed in place; nothing is cleared.
+ */
 function useEntryResolver(currentFilters: EntryFilters, version: number): {
   readonly entries: ReadonlyMap<string, EntrySummary>;
   readonly need: (hits: readonly SearchHit[]) => void;
+  readonly error: AppError | null;
+  readonly retry: () => void;
 } {
   const [entries, setEntries] = useState<ReadonlyMap<string, EntrySummary>>(new Map());
+  const [error, setError] = useState<AppError | null>(null);
   const known = useRef(new Map<string, EntrySummary>());
   const listLoaded = useRef<Promise<void> | null>(null);
+  const missingIds = useRef(new Set<string>());
   const key = JSON.stringify(currentFilters);
   const keyRef = useRef(key);
 
@@ -69,8 +78,10 @@ function useEntryResolver(currentFilters: EntryFilters, version: number): {
     keyRef.current = key;
     listLoaded.current = null;
     known.current = new Map();
+    missingIds.current = new Set();
     setEntries(new Map());
-  }, [key, version]);
+    setError(null);
+  }, [key]);
 
   const add = (more: readonly EntrySummary[]): void => {
     if (more.length === 0) return;
@@ -78,9 +89,8 @@ function useEntryResolver(currentFilters: EntryFilters, version: number): {
     setEntries(new Map(known.current));
   };
 
-  const need = (hits: readonly SearchHit[]): void => {
-    add(hits.flatMap((hit) => (hit.entry === null ? [] : [hit.entry])));
-    const missing = hits.filter((hit) => hit.entry === null).map((hit) => hit.entry_id);
+  const fetchMissing = (): void => {
+    const missing = [...missingIds.current].filter((id) => !known.current.has(id));
     if (missing.length === 0) return;
     const requestKey = keyRef.current;
     listLoaded.current ??= api()
@@ -88,21 +98,51 @@ function useEntryResolver(currentFilters: EntryFilters, version: number): {
       .then((page) => {
         if (keyRef.current === requestKey) add(page.items);
       });
-    void listLoaded.current
+    listLoaded.current
       .then(async () => {
         // Corpora larger than one page: fetch the remaining hits one by one.
         const rest = missing.filter((id) => !known.current.has(id)).slice(0, 40);
         if (rest.length === 0) return;
-        const details = await Promise.all(rest.map((id) => api().getEntry(id).catch(() => null)));
-        if (keyRef.current === requestKey) add(details.filter((d): d is NonNullable<typeof d> => d !== null));
+        const details = await Promise.all(rest.map((id) => api().getEntry(id)));
+        if (keyRef.current === requestKey) add(details);
       })
-      .catch(() => {
-        // Rows without a summary still open by id; the detail view reports its own errors.
+      .catch((caught: unknown) => {
         listLoaded.current = null;
+        if (keyRef.current === requestKey) setError(toAppError(caught, 'Load the matching entries'));
       });
   };
 
-  return { entries, need };
+  // Entries changed: refresh the summaries already shown, quietly, without blanking the results.
+  const refreshed = useRef(version);
+  useEffect(() => {
+    if (refreshed.current === version) return;
+    refreshed.current = version;
+    if (known.current.size === 0) return;
+    const requestKey = keyRef.current;
+    api()
+      .listEntries({ filters: currentFilters, order: 'desc', limit: 500, offset: 0 })
+      .then((page) => {
+        if (keyRef.current === requestKey) add(page.items.filter((item) => known.current.has(item.id)));
+      })
+      .catch(() => {
+        // The rows keep their last known state; the next change tries again.
+      });
+    // currentFilters is captured by the key check inside.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version]);
+
+  const need = (hits: readonly SearchHit[]): void => {
+    add(hits.flatMap((hit) => (hit.entry === null ? [] : [hit.entry])));
+    for (const hit of hits) if (hit.entry === null) missingIds.current.add(hit.entry_id);
+    fetchMissing();
+  };
+
+  const retry = (): void => {
+    setError(null);
+    fetchMissing();
+  };
+
+  return { entries, need, error, retry };
 }
 
 interface KeywordState {
@@ -140,11 +180,28 @@ function UnavailableNote({ unavailable }: { readonly unavailable: Unavailable })
   const pending = unavailable.code === 'EMBEDDINGS_PENDING';
   return (
     <p class={pending ? 'inline-note' : 'inline-note is-attention'} data-testid="semantic-unavailable" title={unavailable.detail}>
-      <StatusMarker kind={pending ? 'queued' : 'attention'} label={pending ? 'Partly available' : 'Unavailable'} />
+      <StatusMarker kind={pending ? 'queued' : 'attention'} label={pending ? 'Partly available' : 'Unavailable'} decorative />
       <span>{pending ? 'Similar meaning is partial' : 'Similar meaning is unavailable'}</span>
       <span class="note-detail">{unavailable.detail}</span>
       <code class="error-code">{unavailable.code}</code>
     </p>
+  );
+}
+
+/** A row's error (for example a failed copy), in place above the rows. */
+export function ListNotice(): JSX.Element | null {
+  const error = listNotice.value;
+  if (error === null) return null;
+  return (
+    <div class="list-error">
+      <ErrorNotice
+        error={error}
+        compact
+        onDismiss={() => {
+          listNotice.value = null;
+        }}
+      />
+    </div>
   );
 }
 
@@ -212,9 +269,9 @@ function KeywordResults({ q, onAction }: { readonly q: string; readonly onAction
       window.clearTimeout(timer);
       controller.abort();
     };
-    // currentFilters is captured by `key`.
+    // currentFilters is captured by `key`. Entry changes do not restart the search; rows refresh in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, version]);
+  }, [key]);
 
   const groups = SEARCH_TIERS.flatMap((tier) => {
     const event = state.tiers.get(tier);
@@ -243,6 +300,7 @@ function KeywordResults({ q, onAction }: { readonly q: string; readonly onAction
   );
   const semantic = state.tiers.get(5);
   const total = hits.length;
+  const roving = useRovingRow(visible);
 
   return (
     <section class="list-area" aria-label="Search results" data-testid="search-results">
@@ -266,8 +324,14 @@ function KeywordResults({ q, onAction }: { readonly q: string; readonly onAction
           <ErrorNotice error={state.error} />
         </div>
       )}
+      {resolver.error !== null && (
+        <div class="list-error">
+          <ErrorNotice error={resolver.error} compact onRetry={resolver.retry} />
+        </div>
+      )}
+      <ListNotice />
       <div class="list-scroll" ref={scroller} data-testid="list-scroll">
-        <div class="entry-table" role="table" aria-label="Search results">
+        <div class="entry-table" role="grid" aria-label="Search results" aria-multiselectable="true">
           {groups.length > 0 && (
             <TableHeader
               visible={visible}
@@ -281,8 +345,9 @@ function KeywordResults({ q, onAction }: { readonly q: string; readonly onAction
           {groups.map(({ tier, event }) => (
             <div class="tier-group" role="rowgroup" key={tier} data-testid="tier-group" data-tier={tier}>
               <div class="tier-head" role="row" title={TIER_HINTS[tier]}>
-                <span class="tier-head-name">{TIER_LABELS[tier]}</span>
-                <span class="tier-head-count mono">{event.results.length}</span>
+                <span role="gridcell">
+                  <span class="tier-head-name">{TIER_LABELS[tier]}</span> <span class="tier-head-count mono">{event.results.length}</span>
+                </span>
               </div>
               {event.results.map((hit) => {
                 const entry = resolver.entries.get(hit.entry_id);
@@ -295,6 +360,8 @@ function KeywordResults({ q, onAction }: { readonly q: string; readonly onAction
                     figure={formatScore(hit.score)}
                     figureTitle={`Score within ${TIER_LABELS[tier]}`}
                     hit={<HitText hit={hit} q={q} tier={tier} />}
+                    active={entry.id === roving.activeId}
+                    onActive={roving.setActive}
                   />
                 );
               })}
@@ -322,18 +389,18 @@ function PendingRow({ hit, q, tier }: { readonly hit: SearchHit; readonly q: str
     <div
       class="entry-row is-tall is-pending"
       role="row"
-      tabIndex={0}
+      tabIndex={-1}
       data-row-id={hit.entry_id}
       onClick={() => {
         showEntry(hit.entry_id, { newestFirst: [hit.entry_id], previews: new Map(), filters: {}, complete: false });
       }}
     >
-      <span class="cell cell-select" role="cell" />
-      <span class="cell cell-status" role="cell" />
-      <span class="cell cell-date" role="cell">
+      <span class="cell cell-select" role="gridcell" />
+      <span class="cell cell-status" role="gridcell" />
+      <span class="cell cell-date" role="gridcell">
         <span class="date mono muted">loading</span>
       </span>
-      <span class="cell cell-main" role="cell">
+      <span class="cell cell-main" role="gridcell">
         <span class="row-hit">
           <HitText hit={hit} q={q} tier={tier} />
         </span>
@@ -375,13 +442,42 @@ function RelevanceResults({ q, onAction }: { readonly q: string; readonly onActi
       window.clearTimeout(timer);
       controller.abort();
     };
-    // currentFilters is captured by `key`.
+    // currentFilters is captured by `key`. Entry changes do not re-rank; the ranking stays as the user saw it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, version]);
+  }, [key]);
+
+  // Entries changed: refresh the ranked rows' summaries in place, keeping the ranking.
+  const refreshed = useRef(version);
+  useEffect(() => {
+    if (refreshed.current === version) return;
+    refreshed.current = version;
+    const shown = state.result;
+    if (shown === null || shown.items.length === 0) return;
+    const controller = new AbortController();
+    api()
+      .listEntries({ filters: currentFilters, order: 'desc', limit: 500, offset: 0 }, controller.signal)
+      .then((page) => {
+        const fresh = new Map(page.items.map((item) => [item.id, item]));
+        setState((s) =>
+          s.result === null
+            ? s
+            : { ...s, result: { ...s.result, items: s.result.items.map((item) => ({ ...item, entry: fresh.get(item.entry.id) ?? item.entry })) } },
+        );
+      })
+      .catch(() => {
+        // The rows keep their last known state; the next change tries again.
+      });
+    return () => {
+      controller.abort();
+    };
+    // Only entry changes trigger this; the current result and filters are read when it runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version]);
 
   const result = state.result;
   const items = useMemo(() => result?.items ?? [], [result]);
   const visible = useMemo(() => items.map((item) => item.entry), [items]);
+  const roving = useRovingRow(visible);
   const context: RowsContext = useMemo(
     () => ({
       visible,
@@ -414,8 +510,9 @@ function RelevanceResults({ q, onAction }: { readonly q: string; readonly onActi
           <ErrorNotice error={state.error} />
         </div>
       )}
+      <ListNotice />
       <div class="list-scroll" ref={scroller} data-testid="list-scroll">
-        <div class="entry-table" role="table" aria-label="Relevant entries">
+        <div class="entry-table" role="grid" aria-label="Relevant entries" aria-multiselectable="true">
           {items.length > 0 && (
             <TableHeader
               visible={visible}
@@ -434,6 +531,8 @@ function RelevanceResults({ q, onAction }: { readonly q: string; readonly onActi
               figure={formatScore(item.score)}
               figureTitle="Relevance: semantic and keyword ranks fused (reciprocal rank fusion), 0 to 1"
               hit={item.passages[0] === undefined ? undefined : <span class="passage">{item.passages[0]}</span>}
+              active={item.entry.id === roving.activeId}
+              onActive={roving.setActive}
             />
           ))}
         </div>

@@ -2,6 +2,7 @@ import type { FetchLike } from '../api/client';
 import { SEED_COMPILATIONS } from './seed-compilations';
 import { SEED_CONCEPTS } from './seed-concepts';
 import { SEED_ENTRIES } from './seed-entries';
+import { EMBEDDINGS_MODES } from './search';
 import { createMockApi } from './server';
 
 /** Installs a private mock transport; no window.fetch replacement or network access is needed. */
@@ -23,7 +24,11 @@ export function installMock(): FetchLike {
     },
   };
   const empty = params.get('mock-empty') === '1';
-  const embeddings = params.get('mock-embeddings');
+  const embeddingsParam = params.get('mock-embeddings') ?? 'ok';
+  const embeddings = EMBEDDINGS_MODES.find((mode) => mode === embeddingsParam);
+  if (embeddings === undefined) {
+    throw new Error(`Mock option mock-embeddings=${JSON.stringify(embeddingsParam)} is invalid. Use one of: ${EMBEDDINGS_MODES.join(', ')}.`);
+  }
   return createMockApi({
     seeds: empty ? [] : SEED_ENTRIES,
     compilations: empty ? [] : SEED_COMPILATIONS,
@@ -35,7 +40,7 @@ export function installMock(): FetchLike {
     workerStale: params.get('mock-worker') === 'stale',
     batchError: params.get('mock-batch-error') === '1',
     tokenRotated: params.get('mock-token') === 'rotated',
-    embeddings: embeddings === 'disabled' || embeddings === 'model_unavailable' ? embeddings : 'ok',
+    embeddings,
     ...(params.get('mock-signed-in') === '1' ? { signedIn: true } : {}),
     session,
   }).fetch;

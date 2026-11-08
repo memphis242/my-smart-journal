@@ -57,6 +57,16 @@ function fromUrl(search: string): EntriesView {
   };
 }
 
+/** Mock-mode switches (mock-*) stay in every address so a reload keeps them. */
+export function mockQuery(): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of new URLSearchParams(window.location.search)) {
+    if (key.startsWith('mock-')) params.append(key, value);
+  }
+  const text = params.toString();
+  return text === '' ? '' : `?${text}`;
+}
+
 function toUrl(view: EntriesView): string {
   const params = new URLSearchParams();
   if (view.range !== DEFAULT_VIEW.range) params.set('range', view.range);
@@ -75,18 +85,33 @@ function toUrl(view: EntriesView): string {
     if (key.startsWith('mock-')) params.append(key, value);
   }
   const text = params.toString();
-  return text === '' ? window.location.pathname : `${window.location.pathname}?${text}`;
+  return text === '' ? '/' : `/?${text}`;
 }
 
 export const view = signal<EntriesView>(fromUrl(window.location.search));
 
+function onEntriesPage(): boolean {
+  return window.location.pathname === '/' || window.location.pathname === '';
+}
+
+/** The Entries address for the current view, for navigation back to Entries. */
+export function entriesUrl(): string {
+  return toUrl(view.value);
+}
+
 export function updateView(patch: Partial<EntriesView>): void {
   const next = { ...view.value, ...patch };
   view.value = next;
-  if (window.location.pathname === '/' || window.location.pathname === '') {
-    window.history.replaceState(window.history.state, '', toUrl(next));
-  }
+  if (onEntriesPage()) window.history.replaceState(window.history.state, '', toUrl(next));
 }
+
+/** Back and forward: take the view from the address again. */
+export function syncViewFromUrl(): void {
+  if (onEntriesPage()) view.value = fromUrl(window.location.search);
+}
+
+/** Scroll position per entries view, restored when the user comes back to the same view. */
+export const savedScroll = new Map<string, { readonly top: number; readonly loaded: number }>();
 
 /** Today's local date, refreshed when the tab becomes visible again. */
 export const today = signal(localDate());

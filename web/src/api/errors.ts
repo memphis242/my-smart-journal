@@ -100,7 +100,7 @@ const HINTS: Readonly<Record<string, string>> = {
   UNAUTHORIZED: 'Sign in again with the access token.',
   TOKEN_REISSUE_REQUIRED:
     'The access token on the server was replaced. Create a new one on the server with `msj create-token`, then sign in with it.',
-  INVALID_QUERY: 'Remove control characters (such as tabs or line breaks) from the search text.',
+  INVALID_QUERY: 'Use 1-500 characters of search text, without control characters such as tabs or line breaks.',
   BATCH_FAILED: 'Check the worker log on the server for the batch error, then run the batch again.',
   BATCH_LEASE_LOST: 'Another worker took over the batch lease; check that only one worker runs, then run the batch again.',
   WORKER_NOT_RUNNING: 'Start the worker on the server with `msj worker`; it then picks up the request.',
@@ -117,7 +117,10 @@ const HINTS: Readonly<Record<string, string>> = {
   SERVER_ERROR: 'Check the service log on the server for this request.',
   RESPONSE_INVALID: 'This page and the server disagree on the API shape. Deploy matching versions.',
   EMBEDDINGS_DISABLED: 'Set [embedding] provider to "sentence-transformers" in the server config to enable it.',
-  EMBEDDING_MODEL_UNAVAILABLE: 'Check [embedding] model in the server config and the service log.',
+  EMBEDDING_DEPENDENCY_MISSING: 'Install the semantic extra on the server: pip install my-smart-journal[semantic], then restart.',
+  EMBEDDING_MODEL_LOAD_FAILED: 'Check [embedding] model and revision in the server config, the downloaded model cache, and the service log.',
+  EMBEDDING_ENCODING_FAILED: 'The model loaded but could not encode the query; check model compatibility and the service log.',
+  CLIPBOARD_DENIED: 'Allow clipboard access for this site, or select the text and press Ctrl+C.',
   EMBEDDINGS_PENDING: 'Run the batch to embed the remaining entries.',
 };
 

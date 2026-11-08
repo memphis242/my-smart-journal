@@ -14,7 +14,8 @@ export default defineConfig(({ mode }) => ({
     target: 'es2022',
     // Fonts and icons stay separate files: the CSP allows data: only for images.
     assetsInlineLimit: 0,
-    sourcemap: true,
+    // Source maps only for the mock build (test traces); production ships none.
+    sourcemap: mode === 'mock',
   },
   server: {
     port: 15173,

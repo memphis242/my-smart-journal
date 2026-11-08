@@ -1,17 +1,21 @@
 /**
- * Ruled entry rows shared by the list and the search results.
+ * Ruled entry rows shared by the list and the search results, as an ARIA grid
+ * with one tab stop: arrow keys, Home and End move between rows; Enter opens;
+ * Space selects (Shift+Space a range); C copies.
  *
- * Plain click (or Enter) opens the entry. Selection follows the desktop
- * convention: Ctrl/Cmd-click toggles a row, Shift-click selects a range; the
- * hollow box at the row start toggles too, for touch and for discoverability.
+ * Plain click opens the entry. Selection follows the desktop convention:
+ * Ctrl/Cmd-click toggles a row, Shift-click selects a range; the hollow box at
+ * the row start toggles too, for touch and for discoverability.
  */
 
 import type { ComponentChildren, JSX } from 'preact';
-import { useRef } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
 import type { EntrySummary } from '../../api/types';
 import { Icon } from '../../components/Icon';
 import { StatusMarker, entryMarker } from '../../components/StatusMarker';
+import { toAppError, type AppError } from '../../api/errors';
 import { copyText } from '../../lib/clipboard';
+import { listNotice } from '../../state/notices';
 import { weekday } from '../../lib/dates';
 import { ENTRY_STATUS_HINTS, ENTRY_STATUS_LABELS, entryPlainText, headline } from '../../lib/format';
 import { selectRange, selection, toggleSelected } from '../../state/selection';
@@ -24,12 +28,21 @@ export interface RowsContext {
   readonly onOpen: (entry: EntrySummary) => void;
 }
 
-export async function copyEntry(entry: EntrySummary): Promise<void> {
+/** The row that holds the grid's single tab stop: the last focused one, else the first. */
+export function useRovingRow(visible: readonly EntrySummary[]): { readonly activeId: string | null; readonly setActive: (id: string) => void } {
+  const [chosen, setChosen] = useState<string | null>(null);
+  const activeId = chosen !== null && visible.some((entry) => entry.id === chosen) ? chosen : (visible[0]?.id ?? null);
+  return { activeId, setActive: setChosen };
+}
+
+/** Copies one entry as plain text; resolves the error to show in place, or null. */
+export async function copyEntry(entry: EntrySummary): Promise<AppError | null> {
   try {
     await copyText(entryPlainText(entry));
     toast(`Copied ${entry.entry_date}${entry.title === null ? '' : `  ${entry.title}`}`);
+    return null;
   } catch (error) {
-    toast(error instanceof Error ? error.message : 'Copy failed');
+    return toAppError(error, 'Copy');
   }
 }
 
@@ -49,7 +62,7 @@ function Labels({ entry }: { readonly entry: EntrySummary }): JSX.Element | null
   return (
     <span class="row-labels" title={allText}>
       {shownProjects.map((project) => (
-        <span class="chip chip-project" key={project}>
+        <span class="chip chip-project" key={project} title={project}>
           {project}
         </span>
       ))}
@@ -59,11 +72,11 @@ function Labels({ entry }: { readonly entry: EntrySummary }): JSX.Element | null
   );
 }
 
-function focusRow(container: HTMLElement | null, from: HTMLElement, step: 1 | -1): void {
+function focusRow(container: HTMLElement | null, from: HTMLElement, step: 1 | -1 | 'first' | 'last'): void {
   if (container === null) return;
   const rows = [...container.querySelectorAll<HTMLElement>('[data-row-id]')];
   const index = rows.indexOf(from);
-  const target = rows[index + step];
+  const target = step === 'first' ? rows[0] : step === 'last' ? rows.at(-1) : rows[index + step];
   if (target === undefined) return;
   target.focus({ preventScroll: true });
   // Keep the row visible by moving this list's own scroller only, never the window.
@@ -86,9 +99,12 @@ export interface EntryRowProps {
   /** Right-aligned figure such as a relevance score. */
   readonly figure?: string | null;
   readonly figureTitle?: string;
+  /** Holds the grid's tab stop. */
+  readonly active: boolean;
+  readonly onActive: (id: string) => void;
 }
 
-export function EntryRow({ entry, context, continuesDay = false, hit, figure = null, figureTitle }: EntryRowProps): JSX.Element {
+export function EntryRow({ entry, context, continuesDay = false, hit, figure = null, figureTitle, active, onActive }: EntryRowProps): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
   const selected = selection.value.has(entry.id);
   const statusLabel = ENTRY_STATUS_LABELS[entry.status];
@@ -123,10 +139,21 @@ export function EntryRow({ entry, context, continuesDay = false, hit, figure = n
         break;
       case 'ArrowDown':
       case 'ArrowUp':
+      case 'Home':
+      case 'End':
         event.preventDefault();
         if (ref.current !== null) {
-          focusRow(ref.current.closest('.list-scroll'), ref.current, event.key === 'ArrowDown' ? 1 : -1);
+          const step = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : event.key === 'Home' ? 'first' : 'last';
+          focusRow(ref.current.closest('.list-scroll'), ref.current, step);
         }
+        break;
+      case 'c':
+      case 'C':
+        if (event.ctrlKey || event.metaKey || event.altKey) break;
+        event.preventDefault();
+        void copyEntry(entry).then((error) => {
+          listNotice.value = error;
+        });
         break;
       default:
         break;
@@ -140,17 +167,22 @@ export function EntryRow({ entry, context, continuesDay = false, hit, figure = n
       ref={ref}
       class={`entry-row${selected ? ' is-selected' : ''}${showSummary ? ' is-tall' : ''}`}
       role="row"
-      tabIndex={0}
+      tabIndex={active ? 0 : -1}
       aria-selected={selected}
+      aria-keyshortcuts="Enter Space C"
       data-row-id={entry.id}
       data-testid="entry-row"
       data-status={entry.status}
       onClick={onClick}
       onKeyDown={onKeyDown}
+      onFocus={() => {
+        onActive(entry.id);
+      }}
     >
-      <span class="cell cell-select" role="cell">
+      <span class="cell cell-select" role="gridcell">
         <button
           type="button"
+          tabIndex={-1}
           class={selected ? 'select-box is-on' : 'select-box'}
           aria-pressed={selected}
           aria-label={selected ? 'Deselect entry' : 'Select entry'}
@@ -168,14 +200,14 @@ export function EntryRow({ entry, context, continuesDay = false, hit, figure = n
           </svg>
         </button>
       </span>
-      <span class="cell cell-status" role="cell">
+      <span class="cell cell-status" role="gridcell">
         <StatusMarker kind={entryMarker(entry.status)} label={`${statusLabel}: ${ENTRY_STATUS_HINTS[entry.status]}`} />
       </span>
-      <span class={continuesDay ? 'cell cell-date is-continued' : 'cell cell-date'} role="cell">
+      <span class={continuesDay ? 'cell cell-date is-continued' : 'cell cell-date'} role="gridcell">
         <span class="date mono">{entry.entry_date}</span>
         <span class="weekday mono">{weekday(entry.entry_date)}</span>
       </span>
-      <span class="cell cell-main" role="cell">
+      <span class="cell cell-main" role="gridcell">
         <span class={entry.title === null ? 'row-headline is-untitled' : 'row-headline'}>{main}</span>
         {showSummary && summaryLine !== null && hit === undefined && <span class="row-summary">{summaryLine}</span>}
         {showSummary && summaryLine === null && hit === undefined && entry.title !== null && !pendingAudio && (
@@ -183,29 +215,32 @@ export function EntryRow({ entry, context, continuesDay = false, hit, figure = n
         )}
         {hit !== undefined && <span class="row-hit">{hit}</span>}
       </span>
-      <span class="cell cell-labels" role="cell">
+      <span class="cell cell-labels" role="gridcell">
         <Labels entry={entry} />
       </span>
-      <span class="cell cell-figure mono" role="cell" title={figureTitle}>
+      <span class="cell cell-figure mono" role="gridcell" title={figureTitle}>
         {figure}
       </span>
-      <span class="cell cell-source" role="cell">
+      <span class="cell cell-source" role="gridcell">
         {entry.source === 'audio' && (
           <span class="source-audio" title="Recorded as audio" aria-label="Recorded as audio" role="img">
             <Icon name="audio" size={14} />
           </span>
         )}
       </span>
-      <span class="cell cell-copy" role="cell">
+      <span class="cell cell-copy" role="gridcell">
         <button
           type="button"
+          tabIndex={-1}
           class="icon-button icon-button-small row-copy"
-          title="Copy this entry as plain text"
+          title="Copy this entry as plain text (C)"
           aria-label="Copy entry"
           data-testid="row-copy"
           onClick={(event) => {
             event.stopPropagation();
-            void copyEntry(entry);
+            void copyEntry(entry).then((error) => {
+              listNotice.value = error;
+            });
           }}
         >
           <Icon name="copy" size={16} />

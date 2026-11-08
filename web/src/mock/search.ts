@@ -160,16 +160,35 @@ export function tierResults(
   return TIER_NAMES.map((_name, index) => tiers[index] ?? []);
 }
 
+/** How the simulated embedder behaves; the failure modes mirror the backend's codes. */
+export type EmbeddingsMode = 'ok' | 'disabled' | 'model_load_failed' | 'dependency_missing' | 'encoding_failed';
+
+export const EMBEDDINGS_MODES: readonly EmbeddingsMode[] = ['ok', 'disabled', 'model_load_failed', 'dependency_missing', 'encoding_failed'];
+
+const EMBEDDING_FAILURES: ReadonlyMap<EmbeddingsMode, Unavailable> = new Map([
+  ['dependency_missing', {
+    code: 'EMBEDDING_DEPENDENCY_MISSING',
+    detail: 'Install the backend embedding dependency with `pip install my-smart-journal[semantic]`.',
+  }],
+  ['model_load_failed', {
+    code: 'EMBEDDING_MODEL_LOAD_FAILED',
+    detail: 'The configured embedding model could not load; verify embedding.model, embedding.revision, cache access, and model availability. See service logs.',
+  }],
+  ['encoding_failed', {
+    code: 'EMBEDDING_ENCODING_FAILED',
+    detail: 'The configured embedding model failed to encode the query; verify model compatibility and dimensions. See service logs.',
+  }],
+]);
+
 export function semanticUnavailable(
   documents: readonly SearchDocument[],
-  embeddings: 'ok' | 'disabled' | 'model_unavailable',
+  embeddings: EmbeddingsMode,
 ): Unavailable | null {
   if (embeddings === 'disabled') {
     return { code: 'EMBEDDINGS_DISABLED', detail: 'Semantic search is off: [embedding] provider is "none".' };
   }
-  if (embeddings === 'model_unavailable') {
-    return { code: 'EMBEDDING_MODEL_UNAVAILABLE', detail: 'The embedding model BAAI/bge-small-en-v1.5 failed to load. Check [embedding] model and the service log.' };
-  }
+  const failure = EMBEDDING_FAILURES.get(embeddings);
+  if (failure !== undefined) return failure;
   const pending = documents.filter((document) => !document.embedded).length;
   return pending === 0 ? null : {
     code: 'EMBEDDINGS_PENDING',
@@ -181,7 +200,7 @@ export function retrieve(
   documents: readonly SearchDocument[],
   query: string,
   concepts: readonly SeedConcept[],
-  embeddings: 'ok' | 'disabled' | 'model_unavailable',
+  embeddings: EmbeddingsMode,
   k: number,
   now = Date.now(),
 ): RetrieveResult {

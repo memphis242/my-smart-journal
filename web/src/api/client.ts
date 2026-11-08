@@ -127,12 +127,15 @@ function readProblem(body: string): Problem | null {
     return typeof value === 'string' && value !== '' ? value : null;
   };
   const errors = Array.isArray(record['errors']) ? (record['errors'] as readonly unknown[]) : [];
+  // Validation issues name the field and the failed check (`type`); some servers add a `message`.
   const fieldErrors = errors.flatMap((item): string[] => {
     if (typeof item !== 'object' || item === null) return [];
     const issue = item as Readonly<Record<string, unknown>>;
-    const field = typeof issue['field'] === 'string' ? issue['field'] : '?';
-    const message = typeof issue['message'] === 'string' ? issue['message'] : 'invalid';
-    return [`${field}: ${message}`];
+    const field = typeof issue['field'] === 'string' ? issue['field'] : '(unnamed field)';
+    const type = typeof issue['type'] === 'string' ? issue['type'] : null;
+    const message = typeof issue['message'] === 'string' ? issue['message'] : null;
+    const reason = type !== null && message !== null ? `${type} (${message})` : (type ?? message ?? 'invalid');
+    return [`${field}: ${reason}`];
   });
   return { title: text('title'), detail: text('detail'), code: text('code'), type: text('type'), fieldErrors };
 }
@@ -483,7 +486,30 @@ export class ApiClient {
   // ---------------------------------------------------------------- queue
 
   queue(signal?: AbortSignal): Promise<QueueSnapshot> {
-    return this.#json({ operation: 'Load the queue', method: 'GET', path: '/queue', signal }, queueSnapshot);
+    return this.queueStatus(signal).then((status) => status.snapshot);
+  }
+
+  /**
+   * GET /queue with the server's clock from the Date header (null when absent),
+   * so liveness can be judged without trusting the browser's clock.
+   */
+  async queueStatus(signal?: AbortSignal): Promise<{ readonly snapshot: QueueSnapshot; readonly serverTimeMs: number | null }> {
+    const spec: RequestSpec = { operation: 'Load the queue', method: 'GET', path: '/queue', signal };
+    const response = await this.#send(spec);
+    const header = response.headers.get('Date');
+    const parsedDate = header === null ? Number.NaN : Date.parse(header);
+    let parsed: unknown;
+    try {
+      parsed = await response.json();
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      throw this.#shapeError(spec, error);
+    }
+    try {
+      return { snapshot: queueSnapshot(parsed, ''), serverTimeMs: Number.isNaN(parsedDate) ? null : parsedDate };
+    } catch (error) {
+      throw this.#shapeError(spec, error);
+    }
   }
 
   /** Asks the worker to run a batch; it starts within a few seconds when the worker is alive. */

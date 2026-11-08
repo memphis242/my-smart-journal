@@ -227,20 +227,27 @@ describe('journal API mock validation and boundary behavior', () => {
     await expect(second.client.sessionProblem()).resolves.toMatchObject({ status: 401, code: 'UNAUTHORIZED' });
   });
 
-  it('advances scheduled batches at the heartbeat and marks stale workers unavailable', async () => {
+  it('reports a ticking worker, runs the daily scheduled batch, and marks a stopped worker stale', async () => {
     let clock = FIXED_NOW;
     const scheduled = setup({ now: () => clock, signedIn: true });
     const before = await scheduled.client.queue();
-    expect(before.worker.interval_s).toBe(900);
-    expect(before.worker.next_run_at).toBe(new Date(clock + 11 * 60_000).toISOString());
-    clock += 12 * 60_000;
+    expect(before.worker).toMatchObject({ interval_s: 86_400, stale: false });
+    // The heartbeat is at most one tick old and the next wake is one tick after it.
+    const seen = Date.parse(before.worker.last_seen_at ?? '');
+    expect(clock - seen).toBeLessThan(2000);
+    expect(Date.parse(before.worker.next_run_at ?? '')).toBe(seen + 2000);
+    const nextBatch = Date.parse(before.worker.next_batch_at ?? '');
+    expect(nextBatch).toBe(clock - 47 * 60_000 + 86_400_000);
+    clock = nextBatch + 1000;
     await scheduled.client.queue();
     await scheduled.mock.idle();
-    await expect(scheduled.client.queue()).resolves.toMatchObject({ batch: { running: false, trigger: 'schedule' } });
+    const after = await scheduled.client.queue();
+    expect(after.batch).toMatchObject({ running: false });
+    expect(Date.parse(after.worker.next_batch_at ?? '')).toBe(nextBatch + 86_400_000);
     const stale = setup({ now: () => clock, workerStale: true, signedIn: true });
     const snapshot = await stale.client.queue();
-    expect(snapshot.worker.next_run_at).toBeNull();
-    expect(Date.parse(snapshot.worker.last_seen_at ?? '')).toBeLessThan(clock - 2 * 900_000);
+    expect(snapshot.worker).toMatchObject({ stale: true, next_run_at: null, next_batch_at: null });
+    expect(Date.parse(snapshot.worker.last_seen_at ?? '')).toBeLessThan(clock - 3600_000);
   });
 
   it('aborts search after a tier and during request latency, and idle waits for running timers', async () => {

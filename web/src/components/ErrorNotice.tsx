@@ -3,6 +3,12 @@
 import type { JSX } from 'preact';
 import type { AppError } from '../api/errors';
 
+/** Hints write commands in backticks; show those as inline code. */
+function withCode(text: string): JSX.Element {
+  const parts = text.split('`');
+  return <>{parts.map((part, index) => (index % 2 === 1 ? <code key={index}>{part}</code> : part))}</>;
+}
+
 export interface ErrorNoticeProps {
   readonly error: AppError;
   readonly compact?: boolean;
@@ -20,7 +26,7 @@ export function ErrorNotice({ error, compact = false, onDismiss, onRetry }: Erro
             {error.code}
           </code>
         </p>
-        {error.hint !== null && <p class="notice-hint">{error.hint}</p>}
+        {error.hint !== null && <p class="notice-hint">{withCode(error.hint)}</p>}
         {error.details.length > 0 && (
           <details class="notice-details">
             <summary>Show details</summary>

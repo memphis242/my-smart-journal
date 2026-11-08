@@ -14,38 +14,12 @@ import { Dialog, DialogHeader } from '../components/Dialog';
 import { ErrorNotice } from '../components/ErrorNotice';
 import { TagInput } from '../components/TagInput';
 import { addDays, isIsoDate, weekday } from '../lib/dates';
-import { readJsonPref, writePref } from '../lib/prefs';
+import { readEditDraft, readNewDraft, saveEditDraft, saveNewDraft, type Draft } from '../lib/drafts';
 import { api, bumpData } from '../state/app';
 import { facetState } from '../state/facets';
 import { pokeQueue, runBatchNow } from '../state/queue';
 import { toast } from '../state/toasts';
 import { today } from '../state/view';
-
-interface Draft {
-  readonly text: string;
-  readonly title: string;
-  readonly tags: readonly string[];
-  readonly date: string;
-}
-
-const DRAFT_KEY = 'draft';
-
-function isDraft(value: unknown): value is Draft {
-  if (typeof value !== 'object' || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record['text'] === 'string' &&
-    typeof record['title'] === 'string' &&
-    typeof record['date'] === 'string' &&
-    Array.isArray(record['tags']) &&
-    record['tags'].every((tag) => typeof tag === 'string')
-  );
-}
-
-function saveDraft(draft: Draft | null): void {
-  // Losing the draft copy only matters after a reload; the dialog itself still holds it.
-  void writePref(DRAFT_KEY, draft === null || (draft.text.trim() === '' && draft.title.trim() === '') ? null : JSON.stringify(draft));
-}
 
 type Mode = 'write' | 'record';
 
@@ -55,20 +29,22 @@ export type EntryEditorProps =
 
 export function EntryEditor(props: EntryEditorProps): JSX.Element {
   const editing = props.mode === 'edit' ? props.entry : null;
-  const initial = useMemo<Draft>(() => {
+  const initial = useMemo<{ readonly draft: Draft; readonly restored: boolean }>(() => {
     if (editing !== null) {
-      return { text: editing.text, title: editing.title ?? '', tags: editing.tags, date: editing.entry_date };
+      const stored = readEditDraft(editing.id);
+      if (stored !== null) return { draft: stored, restored: true };
+      return { draft: { text: editing.text, title: editing.title ?? '', tags: editing.tags, date: editing.entry_date }, restored: false };
     }
-    const stored = readJsonPref(DRAFT_KEY, isDraft);
-    return stored ?? { text: '', title: '', tags: [], date: today.value };
+    const stored = readNewDraft();
+    return stored === null ? { draft: { text: '', title: '', tags: [], date: today.value }, restored: false } : { draft: stored, restored: stored.text !== '' };
   }, [editing]);
-  const restored = editing === null && initial.text !== '';
+  const restored = initial.restored;
 
   const [mode, setMode] = useState<Mode>('write');
-  const [text, setText] = useState(initial.text);
-  const [title, setTitle] = useState(initial.title);
-  const [tags, setTags] = useState<readonly string[]>(initial.tags);
-  const [date, setDate] = useState(initial.date);
+  const [text, setText] = useState(initial.draft.text);
+  const [title, setTitle] = useState(initial.draft.title);
+  const [tags, setTags] = useState<readonly string[]>(initial.draft.tags);
+  const [date, setDate] = useState(initial.draft.date);
   const [take, setTake] = useState<AudioTake | null>(null);
   const [recording, setRecording] = useState(false);
   const [pending, setPending] = useState(false);
@@ -98,8 +74,17 @@ export function EntryEditor(props: EntryEditorProps): JSX.Element {
     (editing !== null ? dirty && (changes.text === undefined || changes.text !== '') : mode === 'write' ? text.trim() !== '' : take !== null);
 
   const remember = (next: Partial<Draft>): void => {
-    if (editing !== null) return;
-    saveDraft({ text, title, tags, date, ...next });
+    const draft = { text, title, tags, date, ...next };
+    if (editing === null) {
+      saveNewDraft(draft);
+      return;
+    }
+    const unchanged =
+      draft.text.trim() === editing.text.trim() &&
+      draft.title.trim() === (editing.title ?? '') &&
+      draft.date === editing.entry_date &&
+      draft.tags.join('\u0000') === editing.tags.join('\u0000');
+    saveEditDraft(unchanged ? null : { ...draft, id: editing.id, revision: editing.revision });
   };
 
   const close = (): void => {
@@ -108,6 +93,7 @@ export function EntryEditor(props: EntryEditorProps): JSX.Element {
       setConfirmDiscard(true);
       return;
     }
+    if (editing !== null) saveEditDraft(null);
     props.onClose();
   };
 
@@ -120,10 +106,11 @@ export function EntryEditor(props: EntryEditorProps): JSX.Element {
     try {
       if (editing !== null) {
         await api().patchEntry(editing.id, changes);
+        saveEditDraft(null);
         toast(changes.text !== undefined ? 'Saved; the new text is queued for processing' : 'Saved');
       } else if (mode === 'write') {
         await api().createTextEntry({ text: text.trim(), title: titleValue, tags, entry_date: date });
-        saveDraft(null);
+        saveNewDraft(null);
         toast('Entry added to the queue', { label: 'Run batch now', run: () => void runBatchNow() });
       } else if (take !== null) {
         await api().createAudioEntry({ audio: take.blob, mimeType: take.mimeType, fileName: take.fileName, title: titleValue, tags, entry_date: date });
@@ -258,9 +245,11 @@ export function EntryEditor(props: EntryEditorProps): JSX.Element {
               />
               <p class="field-hint">
                 {editing !== null
-                  ? textChanged
-                    ? 'Changed text is cleaned up, summarized and extracted again in the next batch.'
-                    : 'Date, title and tag changes apply without reprocessing.'
+                  ? restored
+                    ? 'Restored your unsaved edits from this browser.'
+                    : textChanged
+                      ? 'Changed text is cleaned up, summarized and extracted again in the next batch.'
+                      : 'Date, title and tag changes apply without reprocessing.'
                   : restored
                     ? 'Restored your unsent draft from this browser.'
                     : 'Your draft is kept in this browser until you add it.'}
@@ -302,6 +291,7 @@ export function EntryEditor(props: EntryEditorProps): JSX.Element {
           }}
           onConfirm={() => {
             setConfirmDiscard(false);
+            if (editing !== null) saveEditDraft(null);
             props.onClose();
           }}
         >

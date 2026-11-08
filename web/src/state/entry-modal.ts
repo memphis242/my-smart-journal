@@ -69,26 +69,30 @@ export function chronologicalContext(entries: readonly EntrySummary[]): NavConte
   };
 }
 
-/** Details fetched recently, keyed by id; dropped whenever entries change. */
-const details = new Map<string, EntryDetail>();
-let cachedVersion = -1;
+/** Details fetched recently, keyed by id, with the data version they were fetched at. */
+const details = new Map<string, { readonly detail: EntryDetail; readonly version: number }>();
+const MAX_DETAILS = 60;
 
+/** A detail fetched at this data version, or null. */
 export function cachedDetail(id: string, version: number): EntryDetail | null {
-  if (version !== cachedVersion) {
-    details.clear();
-    cachedVersion = version;
-  }
-  return details.get(id) ?? null;
+  const hit = details.get(id);
+  return hit?.version === version ? hit.detail : null;
+}
+
+/** The latest detail fetched for the id, however old, to show while a fresh one loads. */
+export function peekDetail(id: string): EntryDetail | null {
+  return details.get(id)?.detail ?? null;
 }
 
 export function storeDetail(detail: EntryDetail, version: number): void {
-  if (version !== cachedVersion) {
-    details.clear();
-    cachedVersion = version;
-  }
-  details.set(detail.id, detail);
-  if (details.size > 60) {
+  details.delete(detail.id);
+  details.set(detail.id, { detail, version });
+  if (details.size > MAX_DETAILS) {
     const oldest = details.keys().next();
     if (oldest.done !== true) details.delete(oldest.value);
   }
+}
+
+export function clearDetails(): void {
+  details.clear();
 }

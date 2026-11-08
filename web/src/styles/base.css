@@ -468,12 +468,12 @@ code {
 /* ------------------------------------------------------------------ chips */
 
 .chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  display: inline-block;
   height: 20px;
   max-width: 100%;
   padding: 0 7px;
+  line-height: 18px;
+  vertical-align: middle;
   border: var(--hairline) solid var(--rule-strong);
   border-radius: 3px;
   background: transparent;
@@ -511,6 +511,7 @@ code {
 .chip-button {
   height: 26px;
   padding: 0 10px;
+  line-height: 24px;
   cursor: pointer;
 }
 
@@ -526,6 +527,9 @@ code {
 }
 
 .chip-removable {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding-right: 1px;
   overflow: visible;
 }

@@ -10,9 +10,13 @@ export interface QueueState {
   readonly snapshot: QueueSnapshot | null;
   readonly error: AppError | null;
   readonly fetchedAt: number | null;
+  /** Server clock minus browser clock when the snapshot arrived (0 when unknown). */
+  readonly skewMs: number;
 }
 
-export const queueState = signal<QueueState>({ snapshot: null, error: null, fetchedAt: null });
+const EMPTY_QUEUE: QueueState = { snapshot: null, error: null, fetchedAt: null, skewMs: 0 };
+
+export const queueState = signal<QueueState>(EMPTY_QUEUE);
 
 export interface BatchRequestState {
   readonly pending: boolean;
@@ -21,22 +25,39 @@ export interface BatchRequestState {
 
 export const batchRequest = signal<BatchRequestState>({ pending: false, error: null });
 
+/** Whether the queue sheet is open; batch-request failures open it so their code is visible. */
+export const queueSheetOpen = signal(false);
+
+export function openQueueSheet(): void {
+  queueSheetOpen.value = true;
+  pokeQueue();
+}
+
 const FAST_MS = 2500;
 const SLOW_MS = 20_000;
 /** After a batch request, poll quickly until the worker has had time to pick it up. */
 const REQUEST_WINDOW_MS = 20_000;
 let fastUntil = 0;
 
-/** No heartbeat within twice the interval means the worker is not running. */
-export function workerStale(snapshot: QueueSnapshot, now: number = Date.now()): boolean {
+/** Heartbeat age beyond which a server that does not report `worker.stale` is assumed stopped. */
+const FALLBACK_STALE_MS = 15_000;
+
+/**
+ * True when the worker is not running. The server's own judgement wins; without
+ * it, the heartbeat age is measured on the server's clock (browser time plus the
+ * skew seen in the Date header), so a wrong browser clock cannot flip it.
+ */
+export function workerStale(snapshot: QueueSnapshot, browserNow: number = Date.now(), skewMs = 0): boolean {
+  if (snapshot.worker.stale !== null) return snapshot.worker.stale;
   const seen = snapshot.worker.last_seen_at;
   if (seen === null) return true;
   const at = Date.parse(seen);
-  return Number.isNaN(at) || now - at > 2 * snapshot.worker.interval_s * 1000;
+  return Number.isNaN(at) || browserNow + skewMs - at > FALLBACK_STALE_MS;
 }
 
+/** Work is moving or about to: poll quickly. */
 export function isBusy(snapshot: QueueSnapshot): boolean {
-  return snapshot.batch.running || snapshot.counts.running > 0;
+  return snapshot.batch.running || snapshot.batch.request_pending || snapshot.counts.running > 0;
 }
 
 function signature(snapshot: QueueSnapshot): string {
@@ -54,11 +75,12 @@ export async function refreshQueue(): Promise<void> {
   const controller = new AbortController();
   inFlight = controller;
   try {
-    const snapshot = await api().queue(controller.signal);
+    const { snapshot, serverTimeMs } = await api().queueStatus(controller.signal);
+    const received = Date.now();
     const next = signature(snapshot);
     if (lastSignature !== null && next !== lastSignature) bumpData();
     lastSignature = next;
-    queueState.value = { snapshot, error: null, fetchedAt: Date.now() };
+    queueState.value = { snapshot, error: null, fetchedAt: received, skewMs: serverTimeMs === null ? 0 : serverTimeMs - received };
   } catch (error) {
     if (isAbort(error)) return;
     queueState.value = { ...queueState.value, error: toAppError(error, 'Load the queue') };
@@ -114,28 +136,33 @@ export async function requestBatch(): Promise<BatchRequested> {
   }
 }
 
-export async function runBatchNow(): Promise<void> {
-  if (batchRequest.value.pending) return;
+/**
+ * Requests a batch and reports the outcome: a short confirmation on success
+ * (unless `quiet`), or the error with its code in the queue sheet, which opens.
+ * Resolves true when the worker will pick the request up.
+ */
+export async function runBatchNow(options: { readonly quiet?: boolean } = {}): Promise<boolean> {
+  if (batchRequest.value.pending) return false;
   batchRequest.value = { pending: true, error: null };
+  let error: AppError | null = null;
   try {
     const result = await requestBatch();
     if (result.worker?.stale === true) {
-      batchRequest.value = {
-        pending: false,
-        error: new AppError({
-          code: 'WORKER_NOT_RUNNING',
-          message: 'Batch requested, but the worker is not running, so the batch will not start.',
-          hint: hintForCode('WORKER_NOT_RUNNING', null),
-        }),
-      };
-    } else {
-      batchRequest.value = { pending: false, error: null };
+      error = new AppError({
+        code: 'WORKER_NOT_RUNNING',
+        message: 'Batch requested, but the worker is not running, so the batch will not start.',
+        hint: hintForCode('WORKER_NOT_RUNNING', null),
+      });
+    } else if (options.quiet !== true) {
       toast('Batch requested; the worker starts it within a few seconds');
     }
-  } catch (error) {
-    // BATCH_ALREADY_RUNNING included: the code stays visible next to the button while the queue shows the batch.
-    batchRequest.value = { pending: false, error: toAppError(error, 'Run batch') };
+  } catch (caught) {
+    // BATCH_ALREADY_RUNNING included: the sheet shows the code next to the running batch.
+    error = toAppError(caught, 'Run batch');
   }
+  batchRequest.value = { pending: false, error };
+  if (error !== null) openQueueSheet();
+  return error === null;
 }
 
 /** The last batch's failure as a displayable error, or null. */
@@ -150,6 +177,16 @@ export function lastBatchError(snapshot: QueueSnapshot): AppError | null {
     hint: hintForCode(failure.code, null),
     details,
   });
+}
+
+/** Forgets everything about the queue, for sign-out. */
+export function resetQueue(): void {
+  inFlight?.abort();
+  lastSignature = null;
+  fastUntil = 0;
+  queueState.value = EMPTY_QUEUE;
+  batchRequest.value = { pending: false, error: null };
+  queueSheetOpen.value = false;
 }
 
 export function clearBatchError(): void {
