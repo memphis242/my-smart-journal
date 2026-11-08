@@ -32,6 +32,15 @@ class Conflict(ValueError):
     """The requested transition is not valid for the resource's state."""
 
 
+class EntryChanged(Conflict):
+    def __init__(self, current_version: int) -> None:
+        self.current_version = current_version
+        super().__init__(
+            f"This entry was changed elsewhere (now version {current_version}); "
+            "reload it and reapply your changes."
+        )
+
+
 class AudioCleanupPending(RuntimeError):
     """Audio creation failed and removal of its untracked file is still pending."""
 
@@ -554,7 +563,13 @@ class Store:
             _ = db.execute("BEGIN")
             return self.all_entries(db=db)
 
-    def patch_entry(self, entry_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+    def patch_entry(
+        self,
+        entry_id: str,
+        changes: dict[str, Any],
+        *,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
         allowed = {"title", "tags", "entry_date", "text"}
         if not changes or not set(changes) <= allowed:
             raise ValueError("Patch must contain title, tags, entry_date or text")
@@ -564,6 +579,8 @@ class Store:
         with self.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
             entry = self._entry(db, entry_id)
+            if expected_version is not None and expected_version != int(entry["version"]):
+                raise EntryChanged(int(entry["version"]))
             for field in ("title", "tags", "entry_date"):
                 if field in changes:
                     value = (
@@ -590,6 +607,8 @@ class Store:
                 )
                 _ = self._artifact(db, entry_id, revision, "user_text", text)
                 self._queue(db, entry_id, revision, False)
+            version = int(entry["version"]) + 1
+            _ = db.execute("UPDATE entries SET version=? WHERE id=?", (version, entry_id))
             self._refresh_search(db, entry_id)
         return self.get_entry(entry_id)
 

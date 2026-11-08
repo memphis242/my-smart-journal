@@ -22,7 +22,7 @@ from .config import Settings
 from .diagnostics import SafeMessageError, safe_exception, validation_issues
 from .entry_views import export_item, facet_values, filter_entries, summary_fields, summary_item
 from .search import tiered_search
-from .storage import AudioCleanupPending, Conflict, NotFound, Store
+from .storage import AudioCleanupPending, Conflict, EntryChanged, NotFound, Store
 from .web_auth import (
     SESSION_TTL_S,
     LoginLimiter,
@@ -113,6 +113,7 @@ class EntryPatch(BaseModel):
     tags: list[str] | None = None
     entry_date: str | None = None
     text: str | None = None
+    expected_version: int | None = Field(default=None, strict=True, ge=1)
 
     @field_validator("entry_date")
     @classmethod
@@ -138,6 +139,8 @@ class EntryPatch(BaseModel):
             raise ValueError("Entry date must be an ISO calendar date")
         if "text" in self.model_fields_set and self.text is None:
             raise ValueError("Text must contain non-whitespace characters")
+        if "expected_version" in self.model_fields_set and self.expected_version is None:
+            raise ValueError("Expected version must be an integer")
         return self
 
 
@@ -274,6 +277,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(Conflict)
     async def conflict_handler(_request: Request, exc: Conflict) -> JSONResponse:
+        if isinstance(exc, EntryChanged):
+            return JSONResponse(
+                status_code=409,
+                media_type="application/problem+json",
+                headers={"Cache-Control": "no-store"},
+                content={
+                    "type": "about:blank",
+                    "title": "Conflict",
+                    "status": 409,
+                    "detail": str(exc),
+                    "code": "ENTRY_CHANGED",
+                    "current_version": exc.current_version,
+                },
+            )
         return _problem(409, "Conflict", str(exc))
 
     @app.exception_handler(SafeMessageError)
@@ -656,8 +673,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             patch = EntryPatch.model_validate(changes)
         except ValidationError as exc:
             raise APIProblem(422, "Validation Error", "Provide valid entry fields.") from exc
+        changes = patch.model_dump(exclude_unset=True)
+        expected_version = changes.pop("expected_version", None)
+        if not changes:
+            raise APIProblem(422, "Validation Error", "Provide at least one entry field.")
         return await run_in_threadpool(
-            store.patch_entry, entry_id, patch.model_dump(exclude_unset=True)
+            store.patch_entry, entry_id, changes, expected_version=expected_version
         )
 
     @app.delete("/api/v1/entries/{entry_id}", status_code=204, dependencies=[Depends(authorized)])
@@ -692,7 +713,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> StreamingResponse:
         if not _valid_query(q):
             raise APIProblem(
-                422, "Validation Error", "q must contain 1-500 characters.", "INVALID_QUERY"
+                422,
+                "Validation Error",
+                "q must contain 1-500 characters and no control characters (tabs, newlines, NUL).",
+                "INVALID_QUERY",
             )
         try:
             selected = tuple(int(value) for value in tiers.split(","))
