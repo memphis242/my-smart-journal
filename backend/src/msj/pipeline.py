@@ -37,7 +37,7 @@ def validate_output(kind: str, content: str, *, retryable: bool = True) -> Valid
         raise SafeProviderError(
             "Inference returned empty text; check model and token limit", retryable=retryable
         )
-    if kind not in {"extract", "review"}:
+    if kind not in {"extract", "review", "compile"}:
         return ValidationResult()
     try:
         data = json.loads(content)
@@ -50,6 +50,10 @@ def validate_output(kind: str, content: str, *, retryable: bool = True) -> Valid
     if kind == "extract":
         schema = json.loads(
             files("msj").joinpath("resources/extraction.schema.json").read_text(encoding="utf-8")
+        )
+    elif kind == "compile":
+        schema = json.loads(
+            files("msj").joinpath("resources/compile.schema.json").read_text(encoding="utf-8")
         )
     else:
         schema = {
@@ -77,11 +81,19 @@ class Runner:
         self.store = store
         self.settings = settings
         self._provider = provider
+        self._embedding: Any = None
 
-    def run_batch(self) -> dict[str, Any]:
+    def run_batch(self, *, _lease_id: str | None = None) -> dict[str, Any]:
+        from .batch import BatchCoordinator
+
+        if _lease_id is not None:
+            return self._execute_batch(_lease_id)
+        return BatchCoordinator(self.store, self).run_sync("manual")
+
+    def _execute_batch(self, lease_id: str) -> dict[str, Any]:
         # Session follow-ups stay in the batch; new entry revisions wait for another pass.
         snapshot = {
-            (job["entry_id"], job["revision"])
+            (job["entry_id"], job["revision"], job.get("compilation_id"))
             for job in self.store.list_jobs()
             if job["status"] in {"queued", "running"}
         }
@@ -93,15 +105,45 @@ class Runner:
                 eligible = {
                     job["id"]
                     for job in self.store.list_jobs()
-                    if (job["entry_id"], job["revision"]) in snapshot
+                    if (job["entry_id"], job["revision"], job.get("compilation_id")) in snapshot
                     and job["status"] in {"queued", "running"}
                     and job["id"] not in attempted
                 }
-                job = self.store.claim(eligible)
+                from .batch import BatchCoordinator
+
+                BatchCoordinator(self.store, self).renew(lease_id)
+                job = self.store.claim(eligible, batch_id=lease_id)
                 if job is None:
                     break
                 attempted.add(job["id"])
                 try:
+                    if job["kind"] == "embed":
+                        from .embedding import EmbeddingService
+
+                        if self._embedding is None:
+                            self._embedding = EmbeddingService(self.store, self.settings)
+                        if self.settings.embedding.provider == "none":
+                            with self.store.connect() as db:
+                                self._embedding.reconcile(db)
+                            stats["discarded"] += 1
+                            continue
+                        try:
+                            published = self._embedding.process(job)
+                        except Exception as exc:
+                            _logger.error(
+                                "Embedding job failed (%s); check [embedding] model "
+                                "and service logs",
+                                type(exc).__name__,
+                            )
+                            recorded = self.store.fail_job(
+                                job,
+                                "Embedding failed; check [embedding] model and service logs, "
+                                "then retry this job",
+                            )
+                            stats["failed" if recorded else "discarded"] += 1
+                            continue
+                        stats["done" if published else "discarded"] += 1
+                        continue
                     source, candidate, audio = self.store.job_inputs(job)
                     kind = cast(TaskKind, job["target"] if job["kind"] == "revise" else job["kind"])
                     route = self.store.job_route(job)

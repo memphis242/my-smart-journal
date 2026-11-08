@@ -10,8 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import EnvSettingsSource
 
-TaskKind = Literal["transcribe", "cleanup", "review", "summarize", "extract"]
-TASKS: tuple[TaskKind, ...] = ("transcribe", "cleanup", "review", "summarize", "extract")
+TaskKind = Literal["transcribe", "cleanup", "review", "summarize", "extract", "compile"]
+TASKS: tuple[TaskKind, ...] = (
+    "transcribe", "cleanup", "review", "summarize", "extract", "compile"
+)
 ProducerKind = Literal["cleanup", "summarize", "extract"]
 PRODUCERS: tuple[ProducerKind, ...] = ("cleanup", "summarize", "extract")
 
@@ -25,6 +27,23 @@ class ReviewSettings(BaseModel):
     def unique_targets(self) -> ReviewSettings:
         if len(self.enabled_for) != len(set(self.enabled_for)):
             raise ValueError("review.enabled_for must not contain duplicate producers")
+        return self
+
+
+class EmbeddingSettings(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+    provider: Literal["sentence-transformers", "fake", "none"] = "sentence-transformers"
+    model: str = Field(default="BAAI/bge-small-en-v1.5", min_length=1)
+    device: Literal["cpu"] = "cpu"
+    chunk_tokens: int = Field(default=256, ge=1, le=4096)
+    chunk_overlap: int = Field(default=32, ge=0, le=2048)
+    min_score: float = Field(default=0.35, ge=-1, le=1)
+    top_k: int = Field(default=20, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def coherent_chunks(self) -> EmbeddingSettings:
+        if self.chunk_overlap >= self.chunk_tokens:
+            raise ValueError("embedding.chunk_overlap must be smaller than chunk_tokens")
         return self
 
 
@@ -73,7 +92,12 @@ class Settings(BaseSettings):
     )
     data_dir: Path = Path("~/.local/share/my-smart-journal").expanduser()
     config_file: Path | None = None
+    web_dir: Path | None = None
+    insecure_cookies: bool = False
+    login_rate_limit: int = Field(default=10, ge=1)
+    login_rate_window_s: float = Field(default=60, gt=0)
     review: ReviewSettings = Field(default_factory=ReviewSettings)
+    embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     tasks: dict[TaskKind, TaskRoute] = Field(
         default_factory=lambda: {
             kind: TaskRoute(
@@ -102,9 +126,11 @@ class Settings(BaseSettings):
             defaults: dict[str, Any] = {
                 kind: {
                     "provider": "openai",
-                    "model": {"transcribe": "turbo", "cleanup": "Phi-4-mini"}.get(
-                        kind, "Gemma-4-26B-A4B"
-                    ),
+                    "model": {
+                        "transcribe": "turbo",
+                        "cleanup": "Phi-4-mini",
+                        "compile": "Gemma-4-26B-A4B",
+                    }.get(kind, "Gemma-4-26B-A4B"),
                 }
                 for kind in TASKS
             }
@@ -114,7 +140,9 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def coherent(self) -> Settings:
         if set(self.tasks) != set(TASKS):
-            raise ValueError("tasks must define transcribe, cleanup, review, summarize, extract")
+            raise ValueError(
+                "tasks must define transcribe, cleanup, review, summarize, extract, compile"
+            )
         if self.lease_s <= self.provider_timeout_s + 30:
             raise ValueError("lease_s must exceed provider_timeout_s by more than 30 seconds")
         if self.poll_max_s < self.poll_initial_s:

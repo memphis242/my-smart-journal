@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import time
-import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -23,7 +22,9 @@ from .config import Settings, TaskKind, TaskRoute
 
 _logger = logging.getLogger(__name__)
 _ERROR_BODY_LIMIT = 8 * 1024
-_ERROR_FIELD_LIMIT = 300
+_SAFE_PROVIDER_CODES = frozenset(
+    {"ENDPOINT_PAUSED", "QUOTA_LIMIT", "RATE_LIMITED", "INVALID_API_KEY", "MODEL_NOT_FOUND"}
+)
 
 
 class Message(TypedDict):
@@ -133,7 +134,13 @@ def revision_messages(
 
 
 def _request_json(
-    http: httpx.Client, method: str, url: str, *, endpoint_id: str, **kwargs: Any
+    http: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    endpoint_id: str,
+    provider_kind: str,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     try:
         response = http.request(method, url, **kwargs)
@@ -143,7 +150,7 @@ def _request_json(
             transient=True,
         ) from None
     if not response.is_success:
-        raise _http_status_error(response.status_code, response, endpoint_id)
+        raise _http_status_error(response.status_code, response, endpoint_id, provider_kind)
     try:
         value: Any = response.json()
     except ValueError, RecursionError:
@@ -208,11 +215,12 @@ def _chat_body(
         body["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
     else:
         body["chat_template_kwargs"] = {"enable_thinking": False}
-    if kind == "extract":
+    if kind in {"extract", "compile"}:
         from importlib.resources import files
 
+        schema_name = "compile.schema.json" if kind == "compile" else "extraction.schema.json"
         schema = json.loads(
-            files("msj.resources").joinpath("extraction.schema.json").read_text(encoding="utf-8")
+            files("msj.resources").joinpath(schema_name).read_text(encoding="utf-8")
         )
         body["response_format"] = {
             "type": "json_schema",
@@ -309,6 +317,15 @@ class InferenceProvider:
                         "tags": [],
                     }
                 )
+            case "compile":
+                text = json.dumps(
+                    {
+                        "resume_bullets": [],
+                        "star_stories": [],
+                        "technical_topics": [],
+                        "open_threads": [],
+                    }
+                )
         return Generation(text, "fake")
 
     def _runpod(
@@ -360,6 +377,7 @@ class InferenceProvider:
             "POST",
             f"{endpoint}/run",
             endpoint_id=route.endpoint_id or "",
+            provider_kind=route.provider,
             timeout=min(30, self._settings.provider_timeout_s),
             **submission,
         )
@@ -378,6 +396,7 @@ class InferenceProvider:
                     "POST",
                     f"{endpoint}/cancel/{quote(job_id, safe='')}",
                     endpoint_id=route.endpoint_id or "",
+                    provider_kind=route.provider,
                     headers=headers,
                     timeout=min(30, self._settings.provider_timeout_s),
                 )
@@ -424,6 +443,7 @@ class InferenceProvider:
                         "GET",
                         status_url,
                         endpoint_id=route.endpoint_id or "",
+                        provider_kind=route.provider,
                         headers=headers,
                         timeout=min(30, remaining),
                     )
@@ -556,7 +576,10 @@ class InferenceProvider:
                         )
                     if not response.is_success:
                         raise _http_status_error(
-                            response.status_code, response, route.endpoint_id or route.base_url
+                            response.status_code,
+                            response,
+                            route.endpoint_id or route.base_url,
+                            route.provider,
                         )
                     value: Any = response.json()
         except httpx.HTTPError as exc:
@@ -588,11 +611,6 @@ class InferenceProvider:
         return _parse_chat(value)
 
 
-def _clean_provider_field(value: str) -> str:
-    cleaned = "".join(char for char in value if not unicodedata.category(char).startswith("C"))
-    return cleaned[:_ERROR_FIELD_LIMIT].strip()
-
-
 def _provider_error_fields(response: httpx.Response) -> dict[str, str]:
     try:
         value: Any = json.loads(response.content[:_ERROR_BODY_LIMIT])
@@ -600,14 +618,10 @@ def _provider_error_fields(response: httpx.Response) -> dict[str, str]:
         return {}
     if not isinstance(value, dict):
         return {}
-    fields: dict[str, str] = {}
-    for name in ("code", "title", "detail", "error", "message"):
-        raw = value.get(name)
-        if isinstance(raw, str):
-            text = _clean_provider_field(raw)
-            if text:
-                fields[name] = text
-    return fields
+    code = value.get("code")
+    if isinstance(code, str) and code in _SAFE_PROVIDER_CODES:
+        return {"code": code}
+    return {}
 
 
 _HTTP_ERROR_GUIDANCE = {
@@ -621,12 +635,10 @@ _HTTP_ERROR_GUIDANCE = {
 
 
 def _http_status_error(
-    status_code: int, response: httpx.Response, endpoint_id: str
+    status_code: int, response: httpx.Response, endpoint_id: str, provider_kind: str
 ) -> SafeProviderError:
     fields = _provider_error_fields(response)
     code = fields.get("code")
-    detail = fields.get("detail") or fields.get("error") or fields.get("message")
-    title = fields.get("title")
     if status_code == 409 and code == "ENDPOINT_PAUSED":
         summary = (
             "endpoint paused and not accepting work; set max workers >= 1 in RunPod; "
@@ -638,26 +650,14 @@ def _http_status_error(
             "provider-side error" if status_code >= 500 else "provider request failed",
         )
     if status_code in {401, 403}:
-        key_name = (
-            "RUNPOD_API_KEY"
-            if "api.runpod.ai" in str(response.request.url)
-            else "OPENAI_API_KEY"
-        )
+        key_name = "RUNPOD_API_KEY" if provider_kind == "runpod" else "OPENAI_API_KEY"
         summary = summary.format(key_name=key_name)
-    provider_info = "; ".join(part for part in (title, detail) if part)
-    suffix = "".join(
-        part
-        for part in (
-            f"; provider code {code}" if code else "",
-            f"; provider detail: {provider_info}" if provider_info else "",
-        )
-    )
+    suffix = f"; provider code {code}" if code else ""
     _logger.warning(
-        "Provider HTTP error endpoint_id=%s status=%d code=%s detail=%s",
+        "Provider HTTP error endpoint_id=%s status=%d code=%s",
         endpoint_id,
         status_code,
         code or "-",
-        detail or "-",
     )
     retryable = status_code not in {401, 403, 404, 413}
     transient = status_code in {408, 429} or status_code >= 500

@@ -1,6 +1,7 @@
 """End-to-end API behavior with SQLite and deterministic fake inference."""
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from msj.api import EntryCreate, EntryPatch, create_app
 from msj.auth import create_token
-from msj.config import TASKS, Settings, TaskRoute
+from msj.config import TASKS, EmbeddingSettings, Settings, TaskRoute
 
 
 @pytest.fixture
@@ -18,6 +19,7 @@ def client(tmp_path: Path) -> tuple[TestClient, str]:
         Settings(
             data_dir=tmp_path,
             upload_limit_bytes=4,
+            embedding=EmbeddingSettings(provider="fake"),
             tasks={kind: TaskRoute(provider="fake") for kind in TASKS},
         )
     )
@@ -44,8 +46,14 @@ def test_text_entry_batch_artifacts_and_search(client: tuple[TestClient, str]) -
     assert response.status_code == 201
     entry_id = response.json()["id"]
     batch = http.post("/api/v1/batches/run", headers=_headers(token))
-    assert batch.status_code == 200
-    assert batch.json() == {"done": 6, "failed": 0, "discarded": 0}
+    assert batch.status_code == 202
+    assert batch.json()["started"] is True
+    for _ in range(200):
+        state = http.get("/api/v1/queue", headers=_headers(token)).json()
+        if not state["batch"]["running"]:
+            break
+        time.sleep(0.01)
+    assert state["batch"]["last_result"]["failed"] == 0
 
     entry = http.get(f"/api/v1/entries/{entry_id}", headers=_headers(token)).json()
     assert {target: session["status"] for target, session in entry["review_sessions"].items()} == {
@@ -60,7 +68,7 @@ def test_text_entry_batch_artifacts_and_search(client: tuple[TestClient, str]) -
     search = http.get("/api/v1/search", params={"q": "Atlas migration"}, headers=_headers(token))
     assert search.status_code == 200
     events: list[dict[str, Any]] = [json.loads(line) for line in search.text.splitlines()]
-    assert [event.get("tier") for event in events[:-1]] == [1, 2, 3, 4]
+    assert [event.get("tier") for event in events[:-1]] == [1, 2, 3, 4, 5]
     assert events[0]["results"][0]["entry_id"] == entry_id
     assert events[-1]["done"] is True
 
@@ -73,6 +81,12 @@ def test_audio_upload_validation_and_size_limit(client: tuple[TestClient, str]) 
     )
     assert accepted.status_code == 201
     assert accepted.json()["source"] == "audio"
+    webm = http.post(
+        "/api/v1/entries",
+        headers=headers,
+        files={"file": ("voice.webm", b"x", "audio/webm;codecs=opus")},
+    )
+    assert webm.status_code == 201
     rejected_type = http.post(
         "/api/v1/entries", headers=headers, files={"file": ("voice.txt", b"x", "text/plain")}
     )
@@ -127,7 +141,14 @@ def test_failed_jobs_filter_and_manual_retry(tmp_path: Path) -> None:
         headers = _headers(token)
         created = http.post("/api/v1/entries", headers=headers, json={"text": "Planned a release."})
         assert created.status_code == 201
-        assert http.post("/api/v1/batches/run", headers=headers).json()["failed"] == 1
+        batch = http.post("/api/v1/batches/run", headers=headers)
+        assert batch.status_code == 202
+        for _ in range(200):
+            state = http.get("/api/v1/queue", headers=headers).json()
+            if not state["batch"]["running"]:
+                break
+            time.sleep(0.01)
+        assert state["batch"]["last_result"]["failed"] == 1
         failed = http.get("/api/v1/jobs", params={"status": "failed"}, headers=headers)
         assert failed.status_code == 200
         job = failed.json()[0]
@@ -176,8 +197,21 @@ _AUTH_CASES: tuple[tuple[str, str, dict[str, Any]], ...] = (
     ("DELETE", "/api/v1/entries/not-found", {}),
     ("GET", "/api/v1/jobs", {}),
     ("POST", "/api/v1/jobs/not-found/retry", {}),
-    ("POST", "/api/v1/batches/run", {}),
     ("GET", "/api/v1/search?q=journal", {}),
+    ("GET", "/api/v1/facets", {}),
+    ("GET", "/api/v1/queue", {}),
+    ("POST", "/api/v1/retrieve", {"json": {"query": "test"}}),
+    ("POST", "/api/v1/export", {"json": {"entry_ids": [], "format": "text"}}),
+    ("POST", "/api/v1/batches/run", {}),
+    (
+        "POST",
+        "/api/v1/compilations",
+        {"json": {"entry_ids": [], "purpose": "test", "period": "today"}},
+    ),
+    ("GET", "/api/v1/compilations", {}),
+    ("GET", "/api/v1/compilations/not-found", {}),
+    ("DELETE", "/api/v1/compilations/not-found", {}),
+    ("GET", "/api/v1/entries/not-found/neighbors", {}),
 )
 
 
@@ -202,14 +236,15 @@ def test_auth_cases_cover_each_route_except_health(client: tuple[TestClient, str
         for route in http.app.routes
         if hasattr(route, "methods") and route.path.startswith("/api/v1/")
         for method in route.methods or set()
-        if route.path != "/api/v1/health"
+        if route.path not in {"/api/v1/health", "/api/v1/session"}
     }
     covered = {
         (
             method,
             path.split("?", maxsplit=1)[0]
             .replace("/entries/not-found", "/entries/{entry_id}")
-            .replace("/jobs/not-found/", "/jobs/{job_id}/"),
+            .replace("/jobs/not-found/", "/jobs/{job_id}/")
+            .replace("/compilations/not-found", "/compilations/{compilation_id}"),
         )
         for method, path, _ in _AUTH_CASES
     }

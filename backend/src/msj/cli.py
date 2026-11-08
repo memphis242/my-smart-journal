@@ -10,6 +10,7 @@ import uvicorn
 
 from .api import create_app
 from .auth import create_token
+from .batch import BatchCoordinator
 from .config import Settings, load_settings
 from .pipeline import Runner
 from .storage import Store
@@ -34,9 +35,12 @@ def _store(settings: Settings) -> Store:
     return store
 
 
-def _run_batch(settings: Settings) -> dict[str, Any]:
+def _run_batch(settings: Settings, trigger: str = "manual") -> dict[str, Any]:
     store = _store(settings)
-    return Runner(store, settings).run_batch()
+    coordinator = BatchCoordinator(store, Runner(store, settings))
+    if trigger == "schedule":
+        coordinator.heartbeat_worker()
+    return coordinator.run_sync("schedule" if trigger == "schedule" else "manual")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -59,11 +63,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 while True:
                     try:
-                        result = _run_batch(settings)
+                        result = _run_batch(settings, "schedule")
                         logging.info("Batch finished: %s", result)
-                    except Exception:
-                        logging.exception(
-                            "Batch failed; inspect persisted job errors and service logs"
+                    except Exception as exc:
+                        logging.error(
+                            "Scheduled batch failed (%s); inspect persisted job errors "
+                            "and service logs",
+                            type(exc).__name__,
                         )
                     time.sleep(settings.batch_interval_s)
             case "run-batch":
@@ -81,6 +87,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 130
     except Exception as exc:
-        logging.error("%s", exc)
+        logging.error(
+            "Command failed (%s); check the command configuration and service logs",
+            type(exc).__name__,
+        )
         return 1
     return 0

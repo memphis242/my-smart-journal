@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from msj.search import tiered_search
+from msj.search import reciprocal_rank_fusion, tiered_search
 
 
 def test_search_emits_four_tiers_then_done_and_deduplicates() -> None:
@@ -48,7 +48,7 @@ def test_search_emits_four_tiers_then_done_and_deduplicates() -> None:
             fuzzy_threshold=75,
         )
     )
-    assert [event.get("tier") for event in events[:-1]] == [1, 2, 3, 4]
+    assert [event.get("tier") for event in events[:-1]] == [1, 2, 3, 4, 5]
     assert events[-1]["done"] is True
     ids = [[item["entry_id"] for item in event["results"]] for event in events[:-1]]
     assert ids[0] == ["exact"]
@@ -71,7 +71,7 @@ def test_exact_tier_preserves_case_and_empty_tiers_still_stream() -> None:
     ]
     events = list(tiered_search("Garden", documents, []))
     assert events[0]["results"] == []
-    assert len(events) == 5
+    assert len(events) == 6
     assert all("elapsed_ms" in event for event in events)
 
 
@@ -100,6 +100,51 @@ def test_fts_is_deferred_until_the_fourth_event() -> None:
     assert calls == []
     assert next(stream)["tier"] == 4
     assert calls == ["fts"]
+
+
+def test_semantic_tier_can_be_selected_and_deduplicates_prior_results() -> None:
+    documents = [
+        {
+            "entry_id": "lexical",
+            "text": "We shipped Atlas",
+            "summary": "",
+            "title": None,
+            "tags": [],
+            "created_at": "",
+        }
+    ]
+    calls: list[str] = []
+
+    def semantic() -> tuple[list[dict[str, object]], None]:
+        calls.append("semantic")
+        return (
+            [
+                {"entry_id": "lexical", "score": 0.8, "passage": "same entry"},
+                {"entry_id": "semantic", "score": 0.7, "passage": "related passage"},
+            ],
+            None,
+        )
+
+    events = list(
+        tiered_search(
+            "Atlas", documents, [], tiers=(1, 5), semantic=semantic
+        )
+    )
+    assert calls == ["semantic"]
+    assert [event.get("tier") for event in events[:-1]] == [1, 5]
+    assert [item["entry_id"] for item in events[1]["results"]] == ["semantic"]
+    assert events[1]["results"][0]["passage"] == "related passage"
+
+
+def test_reciprocal_rank_fusion_combines_lists_and_is_stable() -> None:
+    ranked = reciprocal_rank_fusion(
+        [
+            [{"entry_id": "a"}, {"entry_id": "b"}],
+            [{"entry_id": "b"}, {"entry_id": "c"}],
+        ],
+        k=10,
+    )
+    assert [entry_id for entry_id, _score in ranked] == ["b", "a", "c"]
 
 
 def test_real_fuzzy_match_and_sqlite_fts_recency(tmp_path) -> None:

@@ -43,6 +43,11 @@ def create_token(store: TokenStore) -> str:
 def verify_token(store: TokenStore, token: str) -> bool:
     """Verify an access token without exposing stored hash details."""
     stored = store.token_hash()
+    return verify_token_hash(token, stored)
+
+
+def verify_token_hash(token: str, stored: str | None) -> bool:
+    """Verify a token against one stored digest snapshot."""
     if stored is None:
         return False
     try:

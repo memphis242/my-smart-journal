@@ -2,6 +2,11 @@
 # Set RUNPOD_API_KEY in the process environment; never put credentials here.
 
 batch_interval_s = 86400
+upload_limit_bytes = 52428800
+insecure_cookies = false
+# web_dir = "/opt/msj/web" # or MSJ_WEB_DIR
+login_rate_limit = 10
+login_rate_window_s = 60
 max_attempts = 3
 retry_base_s = 30
 provider_timeout_s = 900
@@ -11,6 +16,15 @@ poll_max_s = 10
 runpod_max_payload_bytes = 9500000
 # Tolerate this many consecutive transient status failures; 0 disables tolerance.
 runpod_status_max_failures = 3
+
+[embedding]
+provider = "sentence-transformers" # fake for development; none to disable
+model = "BAAI/bge-small-en-v1.5"
+device = "cpu"
+chunk_tokens = 256
+chunk_overlap = 32
+min_score = 0.35
+top_k = 20
 
 [review]
 max_turns = 3
@@ -44,4 +58,10 @@ expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
 provider = "runpod"
 endpoint_id = "your-gemma-endpoint-id"
 model = "any"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
+
+[tasks.compile]
+provider = "runpod"
+endpoint_id = "your-gemma-endpoint-id"
+model = "Gemma-4-26B-A4B"
 expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
