@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -71,13 +72,23 @@ class Provider(Protocol):
     ) -> Generation: ...
 
 
+_MODEL_NAME = re.compile(r"[A-Za-z0-9._:/@+-]{1,128}")
+
+
 def ensure_model(generation: Generation, route: TaskRoute) -> Generation:
     """Reject artifacts produced by an unexpected or unidentified worker model."""
     expected = route.expect_model
     if expected is not None and generation.model != expected:
+        observed = generation.model
+        if observed is None:
+            shown = "no model name"
+        elif _MODEL_NAME.fullmatch(observed):
+            shown = repr(observed)
+        else:
+            shown = "a value that is not a model name (withheld)"
         raise SafeProviderError(
-            "Stale worker or wrong model: provider metadata did not match the "
-            "configured expectation"
+            f"Stale worker or wrong model: expected {expected!r} from the worker but it "
+            f"reported {shown}; update expect_model for this task or redeploy the endpoint"
         )
     return generation
 
@@ -621,7 +632,7 @@ class InferenceProvider:
 def _provider_error_fields(response: httpx.Response) -> dict[str, str]:
     try:
         value: Any = json.loads(response.content[:_ERROR_BODY_LIMIT])
-    except (ValueError, RecursionError):
+    except ValueError, RecursionError:
         return {}
     if not isinstance(value, dict):
         return {}

@@ -4,10 +4,15 @@
 
 | Name | Endpoint ID | Worker (Hub release) | GPU pools | Model |
 |---|---|---|---|---|
-| msj-bench-whisper | b92qs7e2v6wi3n | runpod-workers/worker-faster_whisper 1.0.10 | AMPERE_16, AMPERE_24 | Whisper large-v3-turbo (`"model": "turbo"`) |
-| msj-bench-llm | rcybvy10rvnu2q | eniewold/llama-cpp-runpod b11723 | AMPERE_16, AMPERE_24 | unsloth/Qwen3.5-4B-GGUF Q4_K_M, ctx 16384 |
+| msj-bench-whisper | b92qs7e2v6wi3n | runpod-workers/worker-faster_whisper 1.0.10 | AMPERE_16, AMPERE_24, ADA_24; min CUDA 12.3, no upper cap | Whisper large-v3-turbo (`"model": "turbo"`; the worker reports `"turbo"`) |
+| msj-bench-llm | rcybvy10rvnu2q | eniewold/llama-cpp-runpod b11723 | AMPERE_24, ADA_24, ADA_32_PRO; min CUDA 12.8 | unsloth/gemma-4-26B-A4B-it-GGUF UD-Q4_K_XL, ctx 16384 |
 
-Serverless prices at deploy time (list-gpu-types): AMPERE_16 $0.58/hr, AMPERE_24 $0.75/hr.
+Serverless prices (list-gpu-types, 2026-11-10): AMPERE_16 $0.58/hr, AMPERE_24 $0.75/hr, ADA_24 $1.34/hr, ADA_32_PRO $1.79/hr.
+
+Both endpoints are pinned to EU-RO-1 by the network volume. RunPod support (2026-11-08) traced intermittent
+`ENDPOINT_PAUSED` responses to GPU pools with no stock there, so keep several pools that EU-RO-1 stocks
+(check `get-data-center EU-RO-1` with GPU availability). EU-RO-1 hosts report CUDA 13.2, so do not cap
+`allowedCudaVersions` below that; faster-whisper 1.0.10 runs on it (verified 2026-11-10).
 
 ## Request formats
 

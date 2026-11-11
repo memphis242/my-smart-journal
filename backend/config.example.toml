@@ -39,7 +39,7 @@ enabled_for = ["cleanup", "summarize", "extract"]
 provider = "runpod"
 endpoint_id = "your-whisper-endpoint-id"
 model = "turbo"
-expect_model = "large-v3-turbo"
+expect_model = "turbo" # faster-whisper worker reports the requested model alias
 
 [tasks.cleanup]
 provider = "runpod"

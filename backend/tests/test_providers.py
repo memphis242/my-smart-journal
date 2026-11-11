@@ -153,6 +153,9 @@ def test_wrong_or_missing_model_is_rejected() -> None:
     with pytest.raises(ProviderError) as failure:
         ensure_model(Generation("text", private), route)
     assert private not in str(failure.value)
+    with pytest.raises(ProviderError) as named:
+        ensure_model(Generation("text", "turbo"), route)
+    assert "'expected'" in str(named.value) and "'turbo'" in str(named.value)
 
 
 def test_fake_extraction_is_valid_json() -> None:
