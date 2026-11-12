@@ -2,9 +2,7 @@
 # Usage: source android/scripts/env.sh
 # Every value can be overridden by exporting it first.
 
-if [ -n "${MSJ_E2E_ENV_LOADED:-}" ]; then
-  return 0
-fi
+# Every value below keeps an exported override, so sourcing again (each script does) is idempotent.
 
 _msj_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export MSJ_REPO_ROOT="$(cd "$_msj_here/../.." && pwd)"
@@ -42,4 +40,3 @@ export ANDROID_USER_HOME="$MSJ_ANDROID_BUILD_ROOT/android-user"
 msj_die() { echo "ERROR: $*" >&2; exit 1; }
 case "$MSJ_E2E_PORT" in 18765|18770) msj_die "MSJ_E2E_PORT=$MSJ_E2E_PORT belongs to another instance; choose another port.";; esac
 
-export MSJ_E2E_ENV_LOADED=1

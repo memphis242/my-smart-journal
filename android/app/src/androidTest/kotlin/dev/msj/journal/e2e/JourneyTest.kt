@@ -287,8 +287,9 @@ class JourneyTest {
     @Test
     fun rejectedUploadIsListedWithItsCodeAndCanBeDiscarded() {
         val id = UUID.randomUUID().toString()
-        // Not a calendar date: the server answers 422, which no retry can fix.
-        runBlocking { E2e.services.outbox.enqueueText(id, "Rejected e2e upload $run", null, emptyList(), "2026-02-30") }
+        // Year 0 is valid ISO 8601 on the phone but outside Python's date range: the server answers 422,
+        // which no retry can fix.
+        runBlocking { E2e.services.outbox.enqueueText(id, "Rejected e2e upload $run", null, emptyList(), "0000-01-01") }
         launch()
         compose.waitForTag(TestTags.UNSENT_STRIP, 30_000)
         compose.onNodeWithTag(TestTags.UNSENT_STRIP).performClick()

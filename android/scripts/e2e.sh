@@ -60,7 +60,8 @@ trap cleanup EXIT
 "$here/backend.sh" status >/dev/null 2>&1 || { "$here/backend.sh" stop >/dev/null; "$here/backend.sh" start; }
 
 "$here/emulator.sh" create
-"$here/emulator.sh" start
+# A run with --keep leaves the emulator up; the next run reuses it.
+"$here/emulator.sh" status >/dev/null 2>&1 || "$here/emulator.sh" start
 "$here/emulator.sh" wait
 
 # The token travels as a file (never an argument) that only the shell user can read.
