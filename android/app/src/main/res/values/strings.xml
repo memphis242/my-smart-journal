@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Journal</string>
+    <string name="shortcut_record_short">Record</string>
+    <string name="shortcut_record_long">Record a voice entry</string>
+    <string name="shortcut_write_short">Write</string>
+    <string name="shortcut_write_long">Write a text entry</string>
+    <string name="share_label">Journal entry</string>
+</resources>

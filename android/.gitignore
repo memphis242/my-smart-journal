@@ -1,0 +1,12 @@
+# Gradle and IDE state (build output goes to the build root; see build.gradle.kts)
+.gradle/
+.kotlin/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+# Never commit signing material
+*.jks
+*.keystore
+release.properties
