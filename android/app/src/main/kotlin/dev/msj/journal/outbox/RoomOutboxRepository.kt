@@ -7,6 +7,7 @@ import dev.msj.journal.core.outbox.OutboxRecord
 import dev.msj.journal.core.outbox.OutboxState
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -66,38 +67,32 @@ class RoomOutboxRepository(
                 // A saved id keeps its file; the caller's recording is left untouched.
                 if (store.get(id) != null) return@withLock false
                 val adopted = withContext(ioDispatcher) { files.adopt(recording, id, extension) }
-                val record =
+                val stored =
                     try {
-                        withContext(ioDispatcher) {
-                            val sizeBytes = adopted.length()
-                            if (sizeBytes <= 0L) {
-                                throw IOException("Save recording failed: the recording ${recording.path} is empty.")
+                        val record =
+                            withContext(ioDispatcher) {
+                                val sizeBytes = adopted.length()
+                                if (sizeBytes <= 0L) {
+                                    throw IOException(
+                                        "Save recording failed: the recording ${recording.path} is empty.",
+                                    )
+                                }
+                                val audio =
+                                    OutboxPayload.Audio(
+                                        path = adopted.path,
+                                        mimeType = mimeType,
+                                        fileName = adopted.name,
+                                        sha256 = files.sha256(adopted),
+                                        sizeBytes = sizeBytes,
+                                        durationMs = durationMs,
+                                    )
+                                newRecord(id, title, tags, entryDate, audio)
                             }
-                            newRecord(
-                                id,
-                                title,
-                                tags,
-                                entryDate,
-                                OutboxPayload.Audio(
-                                    path = adopted.path,
-                                    mimeType = mimeType,
-                                    fileName = adopted.name,
-                                    sha256 = files.sha256(adopted),
-                                    sizeBytes = sizeBytes,
-                                    durationMs = durationMs,
-                                ),
-                            )
-                        }
+                        store.insert(record)
                     } catch (error: Throwable) {
-                        // Not committed: the recording must not linger without a record.
-                        if (!files.delete(adopted.path)) {
-                            error.addSuppressed(
-                                IOException("Could not delete the uncommitted recording ${adopted.path}."),
-                            )
-                        }
+                        withContext(NonCancellable) { returnUncommitted(id, adopted, recording, error) }
                         throw error
                     }
-                val stored = store.insert(record)
                 if (!stored) {
                     val existing = store.get(id)?.payload as? OutboxPayload.Audio
                     if (existing?.path != adopted.path) deleteFileOf(adopted.path)
@@ -182,6 +177,34 @@ class RoomOutboxRepository(
             serverEntryId = null,
             updatedAtMs = nowMs,
         )
+    }
+
+    /**
+     * After a failed save, moves [adopted] back to [original] so the caller
+     * still has the recording, unless the record was committed after all
+     * (a cancellation that arrived after the insert). Problems are attached
+     * to [error] rather than replacing it.
+     */
+    private suspend fun returnUncommitted(
+        id: String,
+        adopted: File,
+        original: File,
+        error: Throwable,
+    ) {
+        val committedPath =
+            try {
+                (store.get(id)?.payload as? OutboxPayload.Audio)?.path
+            } catch (readError: Exception) {
+                error.addSuppressed(readError)
+                // Unknown whether the record exists, so the file stays where a record may point.
+                return
+            }
+        if (committedPath == adopted.path) return
+        try {
+            withContext(ioDispatcher) { files.restore(adopted, original) }
+        } catch (restoreError: IOException) {
+            error.addSuppressed(restoreError)
+        }
     }
 
     private suspend fun deleteFileOf(path: String) {

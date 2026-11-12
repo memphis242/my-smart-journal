@@ -66,6 +66,18 @@ class OutboxFiles(
         return target
     }
 
+    /** Moves [adopted] back to [original] after a save whose record was not committed. */
+    fun restore(
+        adopted: File,
+        original: File,
+    ) {
+        try {
+            Files.move(adopted.toPath(), original.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } catch (error: IOException) {
+            throw IOException("Save recording: could not move ${adopted.path} back to ${original.path}.", error)
+        }
+    }
+
     /** Lowercase hex SHA-256 of [file], read in a streaming fashion. */
     fun sha256(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")
