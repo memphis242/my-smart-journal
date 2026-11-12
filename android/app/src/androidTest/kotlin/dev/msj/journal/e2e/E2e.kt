@@ -122,5 +122,5 @@ fun SemanticsNodeInteraction.isEnabled(): Boolean = !fetchSemanticsNode().config
 /** Nodes whose test tag starts with [prefix] (rows tagged with their entry id). */
 fun hasTagPrefix(prefix: String): SemanticsMatcher =
     SemanticsMatcher("test tag starts with $prefix") { node ->
-        node.config.getOrNull(SemanticsProperties.TestTag)?.startsWith(prefix) == true
+        node.config.getOrElseNullable(SemanticsProperties.TestTag) { null }?.startsWith(prefix) == true
     }
