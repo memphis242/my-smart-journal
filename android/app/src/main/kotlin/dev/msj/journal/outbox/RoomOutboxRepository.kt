@@ -32,6 +32,8 @@ class RoomOutboxRepository(
 
     override val unsent: Flow<List<OutboxRecord>> = store.unsent
 
+    override val lastSentAtMs: Flow<Long?> = store.lastSentAtMs
+
     override suspend fun enqueueText(
         id: String,
         text: String,
@@ -61,6 +63,17 @@ class RoomOutboxRepository(
             }
         validateCapture(id, entryDate)
         require(durationMs >= 0) { "Save recording: negative duration $durationMs ms (record $id)" }
+        // Size and hash come from the caller's file, so the only window in which a process death can strand
+        // the recording without a record is the rename plus the insert.
+        val (sizeBytes, sha256) =
+            withContext(ioDispatcher) {
+                if (!recording.isFile) {
+                    throw IOException("Save recording failed: ${recording.path} does not exist or is not a file.")
+                }
+                val size = recording.length()
+                if (size <= 0L) throw IOException("Save recording failed: the recording ${recording.path} is empty.")
+                size to files.sha256(recording)
+            }
         // Two saves of one id cannot both move a file onto `<id>.<ext>`, and the orphan sweep waits for the commit.
         val inserted =
             files.saveLock.withLock {
@@ -69,26 +82,23 @@ class RoomOutboxRepository(
                 val adopted = withContext(ioDispatcher) { files.adopt(recording, id, extension) }
                 val stored =
                     try {
-                        val record =
-                            withContext(ioDispatcher) {
-                                val sizeBytes = adopted.length()
-                                if (sizeBytes <= 0L) {
-                                    throw IOException(
-                                        "Save recording failed: the recording ${recording.path} is empty.",
-                                    )
-                                }
-                                val audio =
-                                    OutboxPayload.Audio(
-                                        path = adopted.path,
-                                        mimeType = mimeType,
-                                        fileName = adopted.name,
-                                        sha256 = files.sha256(adopted),
-                                        sizeBytes = sizeBytes,
-                                        durationMs = durationMs,
-                                    )
-                                newRecord(id, title, tags, entryDate, audio)
-                            }
-                        store.insert(record)
+                        val adoptedSize = withContext(ioDispatcher) { adopted.length() }
+                        if (adoptedSize != sizeBytes) {
+                            throw IOException(
+                                "Save recording failed: ${recording.path} changed size while it was saved " +
+                                    "($sizeBytes then $adoptedSize bytes); stop the recording before saving it.",
+                            )
+                        }
+                        val audio =
+                            OutboxPayload.Audio(
+                                path = adopted.path,
+                                mimeType = mimeType,
+                                fileName = adopted.name,
+                                sha256 = sha256,
+                                sizeBytes = sizeBytes,
+                                durationMs = durationMs,
+                            )
+                        store.insert(newRecord(id, title, tags, entryDate, audio))
                     } catch (error: Throwable) {
                         withContext(NonCancellable) { returnUncommitted(id, adopted, recording, error) }
                         throw error
@@ -134,11 +144,21 @@ class RoomOutboxRepository(
     }
 
     override suspend fun wipe() {
-        scheduler.cancelAll()
-        val rows = store.deleteAll()
-        val emptied = withContext(ioDispatcher) { files.wipe() }
-        if (!emptied) {
-            throw IOException("Sign-out: deleted $rows outbox record(s) but could not delete every saved recording.")
+        // No upload can be enqueued and no recording saved until the outbox is gone.
+        scheduler.cancelAllWhile {
+            files.saveLock.withLock {
+                val rows = store.deleteAll()
+                val emptied = withContext(ioDispatcher) { files.wipe() }
+                val truncated = withContext(ioDispatcher) { store.checkpointAndTruncateLog() }
+                if (!truncated) {
+                    Log.w(TAG, "Sign-out: a reader kept the outbox write-ahead log from being truncated")
+                }
+                if (!emptied) {
+                    throw IOException(
+                        "Sign-out: deleted $rows outbox record(s) but could not delete every saved recording.",
+                    )
+                }
+            }
         }
     }
 

@@ -50,6 +50,7 @@ internal data class OutboxEntity(
     val errorAtMs: Long?,
     val serverEntryId: String?,
     val updatedAtMs: Long,
+    val consecutiveInterruptions: Int,
 )
 
 internal object PayloadKind {
@@ -106,6 +107,7 @@ internal fun OutboxRecord.toEntity(): OutboxEntity {
         errorAtMs = error?.atMs,
         serverEntryId = serverEntryId,
         updatedAtMs = updatedAtMs,
+        consecutiveInterruptions = consecutiveInterruptions,
     )
 }
 
@@ -129,6 +131,7 @@ internal fun OutboxEntity.toRecord(): OutboxRecord =
         lastError = storedError(),
         serverEntryId = serverEntryId,
         updatedAtMs = updatedAtMs,
+        consecutiveInterruptions = consecutiveInterruptions,
     )
 
 private fun OutboxEntity.payload(): OutboxPayload =

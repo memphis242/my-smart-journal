@@ -197,7 +197,8 @@ internal class FakeScheduler : OutboxScheduler {
         wakeupAtMs = atMs
     }
 
-    override suspend fun cancelAll() {
+    override suspend fun cancelAllWhile(block: suspend () -> Unit) {
         cancelled++
+        block()
     }
 }

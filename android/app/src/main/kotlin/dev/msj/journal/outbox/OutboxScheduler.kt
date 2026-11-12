@@ -30,8 +30,13 @@ interface OutboxScheduler {
     /** Wakes the uploader at [atMs] (at least [MIN_WAKEUP_DELAY_MS] from now), or cancels the wakeup when null. */
     suspend fun scheduleWakeup(atMs: Long?)
 
-    /** Cancels the uploader and the wakeup (sign-out). */
-    suspend fun cancelAll()
+    /**
+     * Cancels the uploader and the wakeup, then runs [block] (sign-out:
+     * deleting the outbox) while no upload run or wakeup can be enqueued;
+     * [enqueueUpload], [kick] and [scheduleWakeup] wait until it returns.
+     * [block] must not call back into this scheduler.
+     */
+    suspend fun cancelAllWhile(block: suspend () -> Unit)
 
     companion object {
         const val UPLOAD_WORK: String = "msj-outbox-upload"
@@ -47,6 +52,7 @@ interface OutboxScheduler {
  *   reads every due record when it starts;
  * - a RUNNING run is never replaced (that would cancel a request mid-flight);
  *   a new run is appended after it instead;
+ * - a FAILED or CANCELLED chain with nothing running is replaced;
  * - otherwise a new run replaces the finished chain.
  * The decision reads WorkManager's state first, so it can race with a run
  * that is just starting or finishing. That is safe: a cancelled attempt
@@ -58,6 +64,8 @@ class WorkManagerOutboxScheduler(
 ) : OutboxScheduler {
     private val appContext: Context = context.applicationContext
     private val workManager: WorkManager by lazy { WorkManager.getInstance(appContext) }
+
+    /** Serializes every enqueue and wakeup, and is held across [cancelAllWhile]. */
     private val enqueueLock = Mutex()
     private val scope =
         CoroutineScope(
@@ -78,8 +86,13 @@ class WorkManagerOutboxScheduler(
             val states = workManager.getWorkInfosForUniqueWorkFlow(OutboxScheduler.UPLOAD_WORK).first().map { it.state }
             val policy =
                 when {
+                    states.any { it == WorkInfo.State.FAILED || it == WorkInfo.State.CANCELLED } &&
+                        WorkInfo.State.RUNNING !in states -> ExistingWorkPolicy.REPLACE
+
                     states.any { it == WorkInfo.State.ENQUEUED || it == WorkInfo.State.BLOCKED } -> return
-                    states.any { it == WorkInfo.State.RUNNING } -> ExistingWorkPolicy.APPEND_OR_REPLACE
+
+                    WorkInfo.State.RUNNING in states -> ExistingWorkPolicy.APPEND_OR_REPLACE
+
                     else -> ExistingWorkPolicy.REPLACE
                 }
             val request =
@@ -91,22 +104,27 @@ class WorkManagerOutboxScheduler(
     }
 
     override suspend fun scheduleWakeup(atMs: Long?) {
-        if (atMs == null) {
-            workManager.cancelUniqueWork(OutboxScheduler.WAKEUP_WORK).await()
-            return
+        enqueueLock.withLock {
+            if (atMs == null) {
+                workManager.cancelUniqueWork(OutboxScheduler.WAKEUP_WORK).await()
+                return
+            }
+            val delayMs = (atMs - clock()).coerceAtLeast(OutboxScheduler.MIN_WAKEUP_DELAY_MS)
+            val request =
+                OneTimeWorkRequestBuilder<WakeupWorker>()
+                    .setConstraints(networkConstraint)
+                    .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
+                    .build()
+            workManager.enqueueUniqueWork(OutboxScheduler.WAKEUP_WORK, ExistingWorkPolicy.REPLACE, request).await()
         }
-        val delayMs = (atMs - clock()).coerceAtLeast(OutboxScheduler.MIN_WAKEUP_DELAY_MS)
-        val request =
-            OneTimeWorkRequestBuilder<WakeupWorker>()
-                .setConstraints(networkConstraint)
-                .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
-                .build()
-        workManager.enqueueUniqueWork(OutboxScheduler.WAKEUP_WORK, ExistingWorkPolicy.REPLACE, request).await()
     }
 
-    override suspend fun cancelAll() {
-        workManager.cancelUniqueWork(OutboxScheduler.UPLOAD_WORK).await()
-        workManager.cancelUniqueWork(OutboxScheduler.WAKEUP_WORK).await()
+    override suspend fun cancelAllWhile(block: suspend () -> Unit) {
+        enqueueLock.withLock {
+            workManager.cancelUniqueWork(OutboxScheduler.UPLOAD_WORK).await()
+            workManager.cancelUniqueWork(OutboxScheduler.WAKEUP_WORK).await()
+            block()
+        }
     }
 
     private companion object {

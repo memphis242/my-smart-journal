@@ -8,6 +8,8 @@ import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
 import dev.msj.journal.session.ApiSource
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 /** Everything the outbox's background work needs; built once per process by the [OutboxHost]. */
 class OutboxDependencies(
@@ -40,11 +42,12 @@ class OutboxWorkerFactory(
 }
 
 /**
- * One upload run: recovers interrupted uploads, reconciles uncertain ones,
- * uploads every due record oldest first, purges old sent records and
- * schedules a wakeup for the earliest waiting record. Signed out, it does
- * nothing. Failed uploads are recorded on their records, so the work itself
- * succeeds; it fails only on an unexpected error, which is logged.
+ * One upload run: recovers interrupted uploads (even signed out, since that
+ * touches no network and makes them discardable), then, signed in,
+ * reconciles uncertain records, uploads every due record oldest first,
+ * purges old sent records and, however the run ends, schedules a wakeup for
+ * the next due record. Failed uploads are recorded on their records, so the
+ * work itself succeeds; it fails only on an unexpected error, which is logged.
  */
 class UploadWorker(
     context: Context,
@@ -52,21 +55,38 @@ class UploadWorker(
     private val dependencies: OutboxDependencies,
 ) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
-        val api = dependencies.apiSource.current() ?: return Result.success()
         val store = OutboxStore(dependencies.database)
+        try {
+            store.recoverInterrupted(dependencies.clock())
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            Log.e(TAG, "Outbox upload run failed recovering interrupted uploads; the next kick retries", error)
+            return Result.failure()
+        }
+        val api = dependencies.apiSource.current() ?: return Result.success()
         return try {
             val summary = OutboxUploader(store, dependencies.files, api, dependencies.clock).run()
             val stoppedBy = summary.stoppedBy
             if (stoppedBy != null && Log.isLoggable(TAG, Log.INFO)) {
                 Log.i(TAG, "Outbox upload run stopped early: ${stoppedBy.code}: ${stoppedBy.message}")
             }
-            dependencies.scheduler.scheduleWakeup(store.earliestFutureAttemptAt(dependencies.clock()))
             Result.success()
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
-            Log.e(TAG, "Outbox upload run failed unexpectedly; the next kick or wakeup starts a new run", error)
+            Log.e(TAG, "Outbox upload run failed unexpectedly; the wakeup or next kick starts a new run", error)
             Result.failure()
+        } finally {
+            withContext(NonCancellable) { scheduleWakeup(store) }
+        }
+    }
+
+    private suspend fun scheduleWakeup(store: OutboxStore) {
+        try {
+            dependencies.scheduler.scheduleWakeup(store.nextWakeupAt(dependencies.clock()))
+        } catch (error: Exception) {
+            Log.e(TAG, "Scheduling the outbox wakeup failed; uploads resume on the next save or retry", error)
         }
     }
 

@@ -38,7 +38,8 @@ internal interface OutboxDao {
             state = :state, attempts = :attempts, nextAttemptAtMs = :nextAttemptAtMs, firstSentAtMs = :firstSentAtMs,
             errorCode = :errorCode, errorMessage = :errorMessage, errorHint = :errorHint,
             errorDetailsJson = :errorDetailsJson, errorStatus = :errorStatus, errorDelivery = :errorDelivery,
-            errorAtMs = :errorAtMs, serverEntryId = :serverEntryId, updatedAtMs = :updatedAtMs
+            errorAtMs = :errorAtMs, serverEntryId = :serverEntryId, updatedAtMs = :updatedAtMs,
+            consecutiveInterruptions = :consecutiveInterruptions
         WHERE id = :id AND state = :expectedState
         """,
     )
@@ -58,17 +59,26 @@ internal interface OutboxDao {
         errorAtMs: Long?,
         serverEntryId: String?,
         updatedAtMs: Long,
+        consecutiveInterruptions: Int,
     ): Int
 
     @Query("SELECT serverEntryId FROM outbox WHERE state = 'SENT' AND serverEntryId IS NOT NULL")
     suspend fun sentServerEntryIds(): List<String>
 
-    /** The earliest time after [nowMs] at which a waiting record becomes due, or null when none waits. */
+    /**
+     * When the uploader should next wake: [nowMs] if a record is PENDING (due
+     * now), else the earliest future nextAttemptAtMs of a waiting record, or
+     * null when nothing waits.
+     */
     @Query(
-        "SELECT MIN(nextAttemptAtMs) FROM outbox " +
-            "WHERE state IN ('RETRY_WAIT', 'UNCERTAIN') AND nextAttemptAtMs > :nowMs",
+        "SELECT MIN(CASE WHEN state = 'PENDING' THEN :nowMs ELSE nextAttemptAtMs END) FROM outbox " +
+            "WHERE state = 'PENDING' OR (state IN ('RETRY_WAIT', 'UNCERTAIN') AND nextAttemptAtMs > :nowMs)",
     )
-    suspend fun earliestFutureAttemptAt(nowMs: Long): Long?
+    suspend fun nextWakeupAt(nowMs: Long): Long?
+
+    /** The last time a record became SENT (the largest updatedAtMs among SENT rows), or null when none is kept. */
+    @Query("SELECT MAX(updatedAtMs) FROM outbox WHERE state = 'SENT'")
+    fun observeLastSentAt(): Flow<Long?>
 
     @Query("SELECT * FROM outbox WHERE state = 'SENT' AND updatedAtMs < :cutoffMs")
     suspend fun sentBefore(cutoffMs: Long): List<OutboxEntity>

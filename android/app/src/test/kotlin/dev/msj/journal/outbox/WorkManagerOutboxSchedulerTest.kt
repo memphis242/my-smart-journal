@@ -6,15 +6,20 @@ import androidx.work.Configuration
 import androidx.work.NetworkType
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import androidx.work.await
 import androidx.work.testing.SynchronousExecutor
 import androidx.work.testing.WorkManagerTestInitHelper
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
@@ -65,5 +70,32 @@ class WorkManagerOutboxSchedulerTest {
 
             scheduler.scheduleWakeup(null)
             assertTrue(infos(OutboxScheduler.WAKEUP_WORK).all { it.state == WorkInfo.State.CANCELLED })
+        }
+
+    @Test
+    fun aCancelledUploadChainIsReplaced() =
+        runTest {
+            scheduler.enqueueUpload()
+            workManager.cancelUniqueWork(OutboxScheduler.UPLOAD_WORK).await()
+
+            scheduler.enqueueUpload()
+
+            assertEquals(1, infos(OutboxScheduler.UPLOAD_WORK).count { it.state == WorkInfo.State.ENQUEUED })
+        }
+
+    @Test
+    fun nothingIsEnqueuedWhileTheOutboxIsBeingWiped() =
+        runTest {
+            scheduler.enqueueUpload()
+            lateinit var blocked: Job
+            scheduler.cancelAllWhile {
+                blocked = launch { scheduler.enqueueUpload() }
+                repeat(5) { yield() }
+                assertFalse(blocked.isCompleted, "an enqueue waits for the wipe")
+                assertTrue(infos(OutboxScheduler.UPLOAD_WORK).all { it.state == WorkInfo.State.CANCELLED })
+            }
+            blocked.join()
+
+            assertEquals(1, infos(OutboxScheduler.UPLOAD_WORK).count { it.state == WorkInfo.State.ENQUEUED })
         }
 }

@@ -6,6 +6,7 @@ import dev.msj.journal.core.outbox.OutboxMachine
 import dev.msj.journal.core.outbox.OutboxRecord
 import dev.msj.journal.core.outbox.OutboxState
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
 /**
@@ -31,7 +32,11 @@ internal class OutboxStore(
 
     suspend fun sentServerEntryIds(): Set<String> = dao.sentServerEntryIds().toSet()
 
-    suspend fun earliestFutureAttemptAt(nowMs: Long): Long? = dao.earliestFutureAttemptAt(nowMs)
+    /** When the uploader should next run: [nowMs] if a record is PENDING, else the earliest future attempt; null when nothing waits. */
+    suspend fun nextWakeupAt(nowMs: Long): Long? = dao.nextWakeupAt(nowMs)
+
+    /** The last time a record became SENT; null while no SENT record is kept. */
+    val lastSentAtMs: Flow<Long?> = dao.observeLastSentAt().distinctUntilChanged()
 
     suspend fun audioPaths(): Set<String> = dao.audioPaths().toSet()
 
@@ -110,6 +115,18 @@ internal class OutboxStore(
 
     suspend fun deleteAll(): Int = dao.deleteAll()
 
+    /**
+     * Copies the write-ahead log into the database file and truncates it, so
+     * deleted rows do not survive in the log. Returns false when a reader kept
+     * the checkpoint from completing. Must not run inside a transaction.
+     */
+    fun checkpointAndTruncateLog(): Boolean =
+        database.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(TRUNCATE)").use { cursor ->
+            check(cursor.moveToFirst()) { "PRAGMA wal_checkpoint returned no row" }
+            // Columns: busy, log frames, checkpointed frames; busy = 1 means it could not finish.
+            cursor.getInt(0) == 0
+        }
+
     sealed interface DeleteResult {
         data object Missing : DeleteResult
 
@@ -144,6 +161,7 @@ internal class OutboxStore(
                 errorAtMs = row.errorAtMs,
                 serverEntryId = row.serverEntryId,
                 updatedAtMs = row.updatedAtMs,
+                consecutiveInterruptions = row.consecutiveInterruptions,
             )
         assert(changed in 0..1) { "a primary-key update changes at most one row, changed $changed" }
         return changed == 1
