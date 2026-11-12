@@ -217,3 +217,19 @@ pep621_dev_dependency_groups = ["dev"]
 # Used without an import: Starlette loads python-multipart to parse forms, and torch is
 # sentence-transformers' backend (listed only to pin the CPU wheel index).
 DEP002 = ["python-multipart", "torch"]
+
+[tool.coverage.run]
+branch = true
+source = ["msj"]
+# Integration tests run `msj` subprocesses; measure them too and combine the data files.
+parallel = true
+patch = ["subprocess"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# Branch coverage is about 88.7% for the default suite (unit and property tests) and 89.5%
+# with the integration suite combined. Raise the floor as coverage grows; never lower it
+# to admit a change.
+fail_under = 87
+precision = 2
