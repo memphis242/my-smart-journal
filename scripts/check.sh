@@ -128,7 +128,7 @@ fi
 export PYTHONDONTWRITEBYTECODE=1
 export RUFF_CACHE_DIR="${build}/ruff-cache"
 export UV_CACHE_DIR="${build}/uv-cache"
-export MSJ_HYPOTHESIS_DB="${build}/hypothesis"
+export MSJ_HYPOTHESIS_DIR="${build}/hypothesis"
 export MSJ_WEB_BUILD_ROOT="${build}/web"
 bin="${venv}/bin"
 

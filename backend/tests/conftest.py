@@ -2,21 +2,32 @@
 
 import importlib
 import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 from hypothesis import settings
+from hypothesis.configuration import set_hypothesis_home_dir
 from hypothesis.database import DirectoryBasedExampleDatabase
 
-# Hypothesis keeps failing examples in an example database, `.hypothesis/` in the working
-# directory by default. Generated output stays out of the source tree: the database lives
-# where MSJ_HYPOTHESIS_DB points (scripts/check.sh uses the build directory), and is
-# disabled otherwise. Deadlines are off because xdist and CI timing make them flaky.
-_EXAMPLE_DB = os.environ.get("MSJ_HYPOTHESIS_DB")
+# Hypothesis writes caches and failing examples under its home directory, `.hypothesis/` in
+# the working directory by default. Generated output stays out of the source tree: the home
+# is MSJ_HYPOTHESIS_DIR (scripts/check.sh uses the build directory), which also enables the
+# example database, or else a scratch directory with the database disabled. Deadlines are
+# off because xdist and CI timing make them flaky.
+_HYPOTHESIS_DIR = os.environ.get("MSJ_HYPOTHESIS_DIR")
+set_hypothesis_home_dir(
+    _HYPOTHESIS_DIR or str(Path(tempfile.gettempdir()) / "my-smart-journal-hypothesis")
+)
 settings.register_profile(
     "dev",
-    database=DirectoryBasedExampleDatabase(_EXAMPLE_DB) if _EXAMPLE_DB else None,
+    database=(
+        DirectoryBasedExampleDatabase(Path(_HYPOTHESIS_DIR) / "examples")
+        if _HYPOTHESIS_DIR
+        else None
+    ),
     deadline=None,
 )
 settings.register_profile("ci", parent=settings.get_profile("dev"), max_examples=300)

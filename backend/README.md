@@ -223,7 +223,8 @@ scripts/check.sh --list
 Pytest runs with every warning as an error, strict markers and config, and no cache directory.
 Integration tests carry the `integration` marker and are deselected by default; run them with
 `pytest -m integration`. Hypothesis uses the `dev` profile (`HYPOTHESIS_PROFILE=ci` runs more
-examples) and keeps its example database in `$MSJ_HYPOTHESIS_DB` (check.sh: the build directory).
+examples) and keeps its caches and example database in `$MSJ_HYPOTHESIS_DIR` (check.sh: the build directory;
+otherwise a temporary directory, without the example database).
 Direct runs from `backend/`, with the venv's `bin/` on `PATH`:
 
 ```sh
