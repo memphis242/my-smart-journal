@@ -175,7 +175,11 @@ def test_worker_publishes_earlier_schedule_or_conflict_retry(
             ).timestamp()
             expected = min(settings.worker_tick_s, interval_s)
             assert 0 < delay <= expected
-            assert abs(published - cli.time.time() - delay) < 0.05
+            # Time spent between publishing and this wait only makes the gap
+            # smaller, so bound it on one side; 0.15 s absorbs a slow CI runner
+            # while still rejecting a schedule that is a whole tick (0.25 s) off.
+            drift = published - cli.time.time() - delay
+            assert -0.15 < drift <= 0.01, drift
             finished[0] = True
             return True
 
