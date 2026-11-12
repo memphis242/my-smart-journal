@@ -78,6 +78,11 @@ object TestTags {
     const val OUTBOX_EMPTY = "outbox.empty"
 
     const val SEARCH_OPEN = "search.open"
+    const val FILTER_OPEN = "filter.open"
+    const val FILTER_SHEET = "filter.sheet"
+    const val FILTER_CHIP_PREFIX = "filter.chip."
+    const val FILTER_CLEAR = "filter.clear"
+    const val FILTER_ACTIVE = "filter.active"
     const val SEARCH_SCREEN = "search.screen"
     const val SEARCH_FIELD = "search.field"
     const val SEARCH_RESULT_PREFIX = "search.result."

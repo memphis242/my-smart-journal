@@ -6,6 +6,7 @@ import dev.msj.journal.AppServices
 import dev.msj.journal.core.api.ApiException
 import dev.msj.journal.core.api.EntryFilters
 import dev.msj.journal.core.api.EntrySummary
+import dev.msj.journal.core.api.Facets
 import dev.msj.journal.core.api.QueueSnapshot
 import dev.msj.journal.core.api.SortOrder
 import dev.msj.journal.core.dates.DateBounds
@@ -32,9 +33,49 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
+/** Which facet values the list is narrowed to; values of one kind are ORed, kinds are ANDed (as on the server). */
+data class FacetSelection(
+    val tags: Set<String> = emptySet(),
+    val projects: Set<String> = emptySet(),
+    val skills: Set<String> = emptySet(),
+) {
+    val size: Int get() = tags.size + projects.size + skills.size
+
+    fun toggled(
+        kind: FacetKind,
+        value: String,
+    ): FacetSelection {
+        fun Set<String>.flip() = if (value in this) this - value else this + value
+        return when (kind) {
+            FacetKind.TAG -> copy(tags = tags.flip())
+            FacetKind.PROJECT -> copy(projects = projects.flip())
+            FacetKind.SKILL -> copy(skills = skills.flip())
+        }
+    }
+
+    fun has(
+        kind: FacetKind,
+        value: String,
+    ): Boolean =
+        when (kind) {
+            FacetKind.TAG -> value in tags
+            FacetKind.PROJECT -> value in projects
+            FacetKind.SKILL -> value in skills
+        }
+}
+
+enum class FacetKind { TAG, PROJECT, SKILL }
+
+data class FacetsState(
+    val facets: Facets? = null,
+    val loading: Boolean = false,
+    val error: UserError? = null,
+)
+
 data class ListState(
     val range: RangeKey,
     val bounds: DateBounds,
+    val selection: FacetSelection = FacetSelection(),
     val entries: List<EntrySummary> = emptyList(),
     val total: Int = 0,
     val loaded: Boolean = false,
@@ -43,7 +84,15 @@ data class ListState(
     val error: UserError? = null,
 ) {
     val complete: Boolean get() = loaded && entries.size >= total
-    val filters: EntryFilters get() = EntryFilters(from = bounds.fromIso, to = bounds.toIso)
+    val filters: EntryFilters
+        get() =
+            EntryFilters(
+                from = bounds.fromIso,
+                to = bounds.toIso,
+                tags = selection.tags.sorted(),
+                projects = selection.projects.sorted(),
+                skills = selection.skills.sorted(),
+            )
 }
 
 data class QueueState(
@@ -121,7 +170,50 @@ class HomeViewModel(
 
     fun selectRange(range: RangeKey) {
         services.prefs.range = range.name
-        mutableList.value = ListState(range = range, bounds = presetBounds(range, services.today()))
+        mutableList.value =
+            ListState(
+                range = range,
+                bounds = presetBounds(range, services.today()),
+                selection = mutableList.value.selection,
+            )
+        refresh()
+    }
+
+    private val mutableFacets = MutableStateFlow(FacetsState())
+    val facets: StateFlow<FacetsState> = mutableFacets.asStateFlow()
+
+    /** `GET /facets` for the filter sheet; reloaded each time the sheet opens so counts are current. */
+    fun loadFacets() {
+        mutableFacets.update { it.copy(loading = true, error = null) }
+        viewModelScope.launch {
+            val api = services.session.current() ?: return@launch
+            try {
+                mutableFacets.value = FacetsState(facets = api.facets())
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: ApiException) {
+                mutableFacets.update { it.copy(loading = false, error = UserError.of(error.error)) }
+            }
+        }
+    }
+
+    fun toggleFacet(
+        kind: FacetKind,
+        value: String,
+    ) {
+        mutableList.update {
+            it.copy(
+                selection = it.selection.toggled(kind, value),
+                entries = emptyList(),
+                loaded = false,
+            )
+        }
+        refresh()
+    }
+
+    fun clearFacets() {
+        if (mutableList.value.selection.size == 0) return
+        mutableList.update { it.copy(selection = FacetSelection(), entries = emptyList(), loaded = false) }
         refresh()
     }
 

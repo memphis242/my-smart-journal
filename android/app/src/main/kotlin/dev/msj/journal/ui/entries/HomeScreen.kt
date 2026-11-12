@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -92,6 +93,8 @@ fun HomeScreen(
     }
     LaunchedEffect(viewModel) { viewModel.messages.collect { snackbar.showSnackbar(it) } }
     var menuOpen by rememberSaveable { mutableStateOf(false) }
+    var filterOpen by rememberSaveable { mutableStateOf(false) }
+    val facets by viewModel.facets.collectAsStateWithLifecycle()
 
     Box(modifier.fillMaxSize().testTag(TestTags.HOME_SCREEN)) {
         Column(Modifier.fillMaxSize()) {
@@ -104,6 +107,13 @@ fun HomeScreen(
                         "Search entries",
                         onSearch,
                         modifier = Modifier.testTag(TestTags.SEARCH_OPEN),
+                    )
+                    FilterAction(
+                        selected = list.selection.size,
+                        onOpen = {
+                            filterOpen = true
+                            viewModel.loadFacets()
+                        },
                     )
                     themeSwitch()
                     Box {
@@ -144,6 +154,31 @@ fun HomeScreen(
                 tag = { TestTags.RANGE_PREFIX + it.name },
                 modifier = Modifier.padding(horizontal = Space.gutter, vertical = Space.s3),
             )
+            if (list.selection.size > 0) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Space.gutter)
+                        .testTag(TestTags.FILTER_ACTIVE),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        (list.selection.tags + list.selection.projects + list.selection.skills).sorted().joinToString(
+                            ", ",
+                        ),
+                        style = Journal.type.monoSmall,
+                        color = Journal.colors.accent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    InlineAction(
+                        "Clear filters",
+                        onClick = viewModel::clearFacets,
+                        modifier = Modifier.testTag(TestTags.FILTER_CLEAR),
+                    )
+                }
+            }
             QueueBand(queue, stale = viewModel.isWorkerStale(queue), onRunNow = viewModel::runNow)
             QueueNotices(queue, onDismiss = viewModel::dismissRunError, onSignInAgain = onSignInAgain)
             if (unsent.total > 0) UnsentBand(unsent, onOutbox)
@@ -174,6 +209,15 @@ fun HomeScreen(
                 EntryList(list, viewModel::loadMore, onOpenEntry, onSignInAgain, onRetry = viewModel::refresh)
             }
             CaptureBar(onWrite = onWrite, onRecord = onRecord)
+        }
+        if (filterOpen) {
+            FilterSheet(
+                facets = facets,
+                selection = list.selection,
+                onToggle = viewModel::toggleFacet,
+                onClear = viewModel::clearFacets,
+                onDismiss = { filterOpen = false },
+            )
         }
         SnackbarHost(
             snackbar,
