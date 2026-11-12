@@ -212,7 +212,9 @@ public data class EntryFilters(
     }
 }
 
-public enum class SortOrder(public val wire: String) {
+public enum class SortOrder(
+    public val wire: String,
+) {
     NEWEST_FIRST("desc"),
     OLDEST_FIRST("asc"),
 }
