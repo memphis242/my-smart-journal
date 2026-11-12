@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from importlib.resources import files
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import httpx
 from jsonschema import Draft202012Validator
@@ -25,6 +25,12 @@ if TYPE_CHECKING:
     from .embedding import EmbeddingService
 
 _logger = logging.getLogger(__name__)
+
+
+class StopSignal(Protocol):
+    """A shutdown request checked between jobs, such as a threading.Event."""
+
+    def is_set(self) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -87,11 +93,13 @@ class Runner:
         settings: Settings,
         provider: Provider | None = None,
         embedding: EmbeddingService | None = None,
+        stop: StopSignal | None = None,
     ) -> None:
         self.store = store
         self.settings = settings
         self._provider = provider
         self._embedding: EmbeddingService | None = embedding
+        self._stop = stop
 
     def run_batch(self, *, _lease_id: str | None = None) -> dict[str, Any]:
         from .batch import BatchCoordinator
@@ -112,6 +120,10 @@ class Runner:
         with httpx.Client() as http:
             provider = self._provider or InferenceProvider(self.settings, http)
             while True:
+                if self._stop is not None and self._stop.is_set():
+                    # Unclaimed jobs stay queued; the lease is released normally.
+                    _logger.info("Batch ended early for shutdown; remaining jobs stay queued")
+                    break
                 eligible = {
                     job["id"]
                     for job in self.store.list_jobs()

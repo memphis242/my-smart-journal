@@ -3,11 +3,14 @@
 import argparse
 import logging
 import os
+import signal
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 import uvicorn
@@ -20,6 +23,8 @@ from .diagnostics import safe_exception
 from .embedding import EmbeddingService
 from .pipeline import Runner
 from .storage import Conflict, Store
+
+_logger = logging.getLogger(__name__)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -42,7 +47,7 @@ def _store(settings: Settings) -> Store:
     try:
         check_token_secret(store)
     except (TokenReissueRequired, TokenSecretError) as exc:
-        logging.warning("%s: %s", exc.code, exc.message)
+        _logger.warning("%s: %s", exc.code, exc.message)
     return store
 
 
@@ -70,14 +75,50 @@ def _run_batch(settings: Settings, trigger: str = "manual") -> dict[str, Any]:
     return coordinator.run_sync("schedule" if trigger == "schedule" else "manual")
 
 
+@contextmanager
+def _graceful_shutdown(stop: threading.Event) -> Iterator[None]:
+    """Turn the first SIGTERM or SIGINT into a stop request; a second one interrupts.
+
+    A stop request lets the running job finish, ends the batch before the next claim,
+    releases its lease, and leaves the worker loop, so the interpreter shuts down normally
+    (joblib/loky release their semaphores instead of leaking them to the resource tracker).
+    """
+
+    def request_stop(signum: int, _frame: FrameType | None) -> None:
+        if stop.is_set():
+            raise KeyboardInterrupt
+        _logger.info(
+            "%s received; finishing the current job, then exiting (send again to abort)",
+            signal.Signals(signum).name,
+        )
+        stop.set()
+
+    signals = [signal.SIGTERM]
+    # A process started with SIGINT ignored (nohup, background job) keeps ignoring it.
+    if signal.getsignal(signal.SIGINT) is not signal.SIG_IGN:
+        signals.append(signal.SIGINT)
+    previous = {signum: signal.signal(signum, request_stop) for signum in signals}
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            _ = signal.signal(signum, handler)
+
+
 def _worker(settings: Settings) -> None:
+    wake = threading.Event()
+    with _graceful_shutdown(wake):
+        _worker_loop(settings, wake)
+    _logger.info("Worker stopped")
+
+
+def _worker_loop(settings: Settings, wake: threading.Event) -> None:  # noqa: C901, PLR0915
     store = _store(settings)
     embedding = EmbeddingService(store, settings)
-    runner = Runner(store, settings, embedding=embedding)
+    runner = Runner(store, settings, embedding=embedding, stop=wake)
     coordinator = BatchCoordinator(store, runner)
     tick_s = settings.worker_tick_s
     next_schedule = time.monotonic()
-    wake = threading.Event()
     schedule_pending = False
     while not wake.is_set():
         now = time.monotonic()
@@ -87,8 +128,8 @@ def _worker(settings: Settings) -> None:
         try:
             request_at = coordinator.pending_request_at()
             requested = request_at is not None
-        except Exception as exc:
-            logging.warning(
+        except Exception as exc:  # noqa: BLE001 - the worker outlives transient storage errors
+            _logger.warning(
                 "Worker request check failed: %s",
                 safe_exception(exc, trusted_paths=_trusted_paths(settings)),
             )
@@ -103,8 +144,8 @@ def _worker(settings: Settings) -> None:
                     ).isoformat(),
                     observed_request_at=request_at,
                 )
-            except Exception as exc:
-                logging.warning(
+            except Exception as exc:  # noqa: BLE001 - a missed heartbeat must not stop work
+                _logger.warning(
                     "Worker heartbeat update failed: %s",
                     safe_exception(exc, trusted_paths=_trusted_paths(settings)),
                 )
@@ -114,18 +155,18 @@ def _worker(settings: Settings) -> None:
                 else:
                     result = coordinator.run_sync("schedule", worker=True)
                 if result is not None:
-                    logging.info("Batch finished: %s", result)
+                    _logger.info("Batch finished: %s", result)
                 next_schedule = time.monotonic() + settings.batch_interval_s
                 schedule_pending = False
             except Conflict as exc:
-                logging.info(
+                _logger.info(
                     "Batch deferred while another owner holds lease (%s)",
                     safe_exception(exc, trusted_paths=_trusted_paths(settings)),
                 )
                 # Recheck ownership every tick so a released lease is picked up promptly.
                 retry_at = time.monotonic() + tick_s
-            except Exception as exc:
-                logging.error(
+            except Exception as exc:  # noqa: BLE001 - one failed batch must not stop the worker
+                _logger.error(
                     "Scheduled batch failed: %s",
                     safe_exception(exc, trusted_paths=_trusted_paths(settings)),
                 )
@@ -139,8 +180,8 @@ def _worker(settings: Settings) -> None:
                 datetime.fromtimestamp(next_run_at, UTC).isoformat(),
                 observed_request_at=request_at,
             )
-        except Exception as exc:
-            logging.warning(
+        except Exception as exc:  # noqa: BLE001 - a missed heartbeat must not stop work
+            _logger.warning(
                 "Worker heartbeat update failed: %s",
                 safe_exception(exc, trusted_paths=_trusted_paths(settings)),
             )
@@ -159,6 +200,54 @@ def _quiet_service_logs() -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
+def _dispatch(command: str, args: argparse.Namespace, settings: Settings) -> None:
+    match command:
+        case "serve":
+            store = _store(settings)
+            if store.token_hash() == "reissue-required":
+                _logger.warning(
+                    "TOKEN_REISSUE_REQUIRED: token must be re-issued: run `msj create-token`."
+                )
+            uvicorn.run(
+                create_app(settings),
+                host=args.host,
+                port=args.port,
+                log_level="info",
+                access_log=False,
+                forwarded_allow_ips=settings.forwarded_allow_ips,
+            )
+        case "worker":
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s %(levelname)s %(message)s",
+            )
+            _worker(settings)
+        case "run-batch":
+            result = _run_batch(settings)
+            print(result)
+        case "migrate":
+            store = _store(settings)
+            print(f"Database ready at {settings.data_dir.expanduser() / 'journal.db'}")
+            if store.token_hash() == "reissue-required":
+                print("TOKEN_REISSUE_REQUIRED: token must be re-issued: run `msj create-token`.")
+        case "create-token":
+            store = _store(settings)
+            print(create_token(store))
+        case "embedding-download":
+            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found,unused-ignore]
+
+            _ = SentenceTransformer(
+                settings.embedding.model,
+                device=settings.embedding.device,
+                revision=settings.embedding.revision,
+            )
+            print(
+                f"Downloaded {settings.embedding.model} at revision {settings.embedding.revision}."
+            )
+        case _:
+            raise AssertionError(f"Unhandled command: {command}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command in {"serve", "worker"}:
@@ -166,62 +255,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     settings: Settings | None = None
     try:
         settings = load_settings()
-        match args.command:
-            case "serve":
-                store = _store(settings)
-                if store.token_hash() == "reissue-required":
-                    logging.warning(
-                        "TOKEN_REISSUE_REQUIRED: token must be re-issued: run `msj create-token`."
-                    )
-                uvicorn.run(
-                    create_app(settings),
-                    host=args.host,
-                    port=args.port,
-                    log_level="info",
-                    access_log=False,
-                    forwarded_allow_ips=settings.forwarded_allow_ips,
-                )
-            case "worker":
-                logging.basicConfig(
-                    level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(message)s",
-                )
-                _worker(settings)
-            case "run-batch":
-                result = _run_batch(settings)
-                print(result)
-            case "migrate":
-                store = _store(settings)
-                print(f"Database ready at {settings.data_dir.expanduser() / 'journal.db'}")
-                if store.token_hash() == "reissue-required":
-                    print(
-                        "TOKEN_REISSUE_REQUIRED: token must be re-issued: run `msj create-token`."
-                    )
-                del store
-            case "create-token":
-                store = _store(settings)
-                print(create_token(store))
-            case "embedding-download":
-                from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found,unused-ignore]
-
-                _ = SentenceTransformer(
-                    settings.embedding.model,
-                    device=settings.embedding.device,
-                    revision=settings.embedding.revision,
-                )
-                print(
-                    f"Downloaded {settings.embedding.model} at revision "
-                    f"{settings.embedding.revision}."
-                )
-            case _:
-                raise AssertionError(f"Unhandled command: {args.command}")
+        _dispatch(args.command, args, settings)
     except KeyboardInterrupt:
         return 130
     except TokenReissueRequired:
-        logging.error("TOKEN_REISSUE_REQUIRED: token must be re-issued: run `msj create-token`.")
+        _logger.error("TOKEN_REISSUE_REQUIRED: token must be re-issued: run `msj create-token`.")
         return 1
-    except Exception as exc:
-        logging.error(
+    except Exception as exc:  # noqa: BLE001 - the command boundary turns failures into exit 1
+        _logger.error(
             "Command failed: %s",
             safe_exception(exc, trusted_paths=_trusted_paths(settings)),
         )
