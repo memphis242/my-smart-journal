@@ -52,9 +52,12 @@ object E2eConfig {
     private fun readToken(): String {
         val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
         val descriptor: ParcelFileDescriptor = automation.executeShellCommand("cat $TOKEN_FILE")
-        val text = ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { stream ->
-            BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).readText()
-        }.trim()
+        val text =
+            ParcelFileDescriptor
+                .AutoCloseInputStream(descriptor)
+                .use { stream ->
+                    BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).readText()
+                }.trim()
         check(text.isNotEmpty()) {
             "Token file $TOKEN_FILE is empty or unreadable on the device. " +
                 "Push it first: adb -s <serial> push <build root>/backend/token.out $TOKEN_FILE (android/scripts/e2e.sh does this)."

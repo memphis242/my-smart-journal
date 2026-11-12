@@ -15,7 +15,10 @@ class BackendReachabilityTest {
     @get:Rule
     val localNetwork: TestRule = E2eConfig.localNetworkRule()
 
-    private fun statusOf(path: String, bearer: String?): Int {
+    private fun statusOf(
+        path: String,
+        bearer: String?,
+    ): Int {
         val connection = URL(E2eConfig.serverUrl + path).openConnection() as HttpURLConnection
         try {
             connection.connectTimeout = TIMEOUT_MS

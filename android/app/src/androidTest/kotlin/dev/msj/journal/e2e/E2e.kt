@@ -2,8 +2,6 @@ package dev.msj.journal.e2e
 
 import android.Manifest
 import android.content.Context
-import android.os.Build
-import android.os.ParcelFileDescriptor
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
@@ -23,40 +21,20 @@ import dev.msj.journal.core.api.JournalHttp
 import dev.msj.journal.core.api.ServerUrl
 import dev.msj.journal.core.api.ServerUrlResult
 import dev.msj.journal.core.dates.isoDate
+import dev.msj.journal.harness.E2eConfig
 import dev.msj.journal.session.ParsedServer
 import dev.msj.journal.ui.components.CountKey
 import dev.msj.journal.ui.components.EntryIdKey
 import kotlinx.coroutines.runBlocking
-import java.io.FileInputStream
+import org.junit.rules.RuleChain
+import org.junit.rules.TestRule
 import java.time.LocalDate
 
-/**
- * The real backend the tests talk to (started by scripts/e2e.sh): its URL from
- * the `msjServerUrl` instrumentation argument, and the access token read from
- * the device file the script pushed. The token is read through the shell user
- * (the app cannot read /data/local/tmp) and never printed.
- */
+/** Shared helpers for the journeys; the backend URL, token and local-network grant come from [E2eConfig]. */
 object E2e {
-    private const val TOKEN_FILE = "/data/local/tmp/msj-e2e-token"
-    private const val DEFAULT_URL = "http://10.0.2.2:18780"
+    val serverUrl: String get() = E2eConfig.serverUrl
 
-    val serverUrl: String by lazy {
-        InstrumentationRegistry.getArguments().getString("msjServerUrl")?.takeIf { it.isNotBlank() } ?: DEFAULT_URL
-    }
-
-    val token: String by lazy {
-        val pfd = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("cat $TOKEN_FILE")
-        val text =
-            ParcelFileDescriptor
-                .AutoCloseInputStream(pfd)
-                .use {
-                    FileInputStream(it.fd).bufferedReader().readText()
-                }.trim()
-        check(text.isNotEmpty() && !text.contains("No such file")) {
-            "No e2e token at $TOKEN_FILE on the device; run android/scripts/e2e.sh, which pushes it"
-        }
-        text
-    }
+    val token: String get() = E2eConfig.token
 
     val services: AppServices get() = ApplicationProvider.getApplicationContext<Context>().appServices
 
@@ -68,15 +46,11 @@ object E2e {
     }
 
     /** Permissions the journeys need: the microphone, and local network access on Android 17. */
-    fun permissions(): GrantPermissionRule {
-        val wanted = mutableListOf(Manifest.permission.RECORD_AUDIO)
-        if (Build.VERSION.SDK_INT >=
-            Build.VERSION_CODES.CINNAMON_BUN
-        ) {
-            wanted += "android.permission.ACCESS_LOCAL_NETWORK"
-        }
-        return GrantPermissionRule.grant(*wanted.toTypedArray())
-    }
+    fun permissions(): TestRule =
+        RuleChain
+            .outerRule(
+                GrantPermissionRule.grant(Manifest.permission.RECORD_AUDIO),
+            ).around(E2eConfig.localNetworkRule())
 
     /** Signs in without the UI (for journeys that test something else); call before launching the activity. */
     fun signInDirectly() {
