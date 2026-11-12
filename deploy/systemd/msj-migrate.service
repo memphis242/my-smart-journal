@@ -1,0 +1,49 @@
+# One-shot database migration with the live release, in the same sandbox as
+# the services. msj-release starts it between switching releases and starting
+# msj.target, so a failing migration stops a deploy at a clear point.
+# (msj serve and msj worker also migrate on start; this is the explicit step.)
+[Unit]
+Description=My Smart Journal database migration
+# The data directory is on the encrypted volume. While it is locked this
+# fails the start with a clear "Assertion failed" instead of creating an
+# unencrypted /srv/msj/data on the boot disk.
+AssertPathIsMountPoint=/srv/msj
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=msj
+Group=msj
+EnvironmentFile=/etc/msj/msj.env
+EnvironmentFile=/srv/msj/secrets/app.env
+ExecStart=/opt/msj/current/venv/bin/msj migrate
+IPAddressDeny=any
+IPAddressAllow=localhost
+# ---- Sandbox (verify with: systemd-analyze security <unit>) ----
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/msj/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitCORE=0

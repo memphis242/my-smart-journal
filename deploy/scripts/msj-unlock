@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+#
+# Unlock the encrypted data volume after a reboot and start the journal.
+# Run as root, interactively, over SSH through NetBird (or on the Vultr web
+# console if NetBird is down). It asks for the LUKS passphrase.
+#
+#   msj-unlock            unlock, mount, swap on, start msj.target, check health,
+#                         start a catch-up backup
+#   msj-unlock --no-start unlock and mount only (for restores and maintenance)
+#
+# Idempotent: each step is skipped when already done.
+set -Eeuo pipefail
+MSJ_JOB=msj-unlock
+# shellcheck source=lib/common.sh
+. /usr/local/lib/msj/common.sh
+
+start=1
+case ${1:-} in
+  '') ;;
+  --no-start) start=0 ;;
+  *) msj_die "unknown argument '$1'; usage: msj-unlock [--no-start]" ;;
+esac
+
+msj_require_root
+msj_source_env "$MSJ_HOST_ENV"
+: "${MSJ_LUKS_DEVICE:?$MSJ_HOST_ENV must set MSJ_LUKS_DEVICE (for example /dev/disk/by-uuid/<luks uuid>)}"
+
+if [[ -e /dev/mapper/$MSJ_MAPPER ]]; then
+  msj_log "/dev/mapper/$MSJ_MAPPER is already open"
+else
+  [[ -e $MSJ_LUKS_DEVICE ]] || msj_die "$MSJ_LUKS_DEVICE does not exist. Is the Block Storage volume attached? Check the Vultr panel (Storage) and lsblk."
+  msj_log "opening $MSJ_LUKS_DEVICE (type the LUKS passphrase)"
+  cryptsetup open "$MSJ_LUKS_DEVICE" "$MSJ_MAPPER" \
+    || msj_die "cryptsetup open failed (wrong passphrase, or see the message above). Retry msj-unlock."
+fi
+
+if msj_is_unlocked; then
+  msj_log "$MSJ_MOUNT is already mounted"
+else
+  mount -o nodev,nosuid,noexec "/dev/mapper/$MSJ_MAPPER" "$MSJ_MOUNT"
+  msj_log "mounted $MSJ_MOUNT"
+fi
+
+if [[ -f $MSJ_SWAPFILE ]]; then
+  if swapon --show=NAME --noheadings | grep -qx "$MSJ_SWAPFILE"; then
+    msj_log "swap already on"
+  else
+    swapon "$MSJ_SWAPFILE"
+    msj_log "swap on"
+  fi
+else
+  msj_warn "no $MSJ_SWAPFILE; run bootstrap.sh volume to create it"
+fi
+
+# The app refuses a group- or world-readable key, and a data directory that is
+# not 700 msj is a sign the volume was restored or edited by hand.
+if [[ -d $MSJ_DATA_DIR ]]; then
+  owner=$(stat -c '%U:%a' "$MSJ_DATA_DIR")
+  [[ $owner == "$MSJ_USER:700" ]] || msj_warn "$MSJ_DATA_DIR is $owner, expected $MSJ_USER:700 (chown $MSJ_USER:$MSJ_USER $MSJ_DATA_DIR; chmod 700 $MSJ_DATA_DIR)"
+fi
+
+(( start )) || { msj_log "unlocked; services not started (--no-start)"; exit 0; }
+
+systemctl start msj.target
+msj_log "started msj.target; waiting for the API"
+for _ in $(seq 1 60); do
+  curl -fsS -m 2 -o /dev/null "$MSJ_SERVE_URL/api/v1/health" && break
+  sleep 1
+done
+curl -fsS -m 2 -o /dev/null "$MSJ_SERVE_URL/api/v1/health" \
+  || msj_die "msj-serve did not answer within 60s: journalctl -u msj-serve -n 50"
+
+# Timers whose run fell inside the locked window failed and reported it; a
+# fresh backup now closes that gap. Verify and the drill are left to their
+# schedule (start them by hand if the box was down across a Sunday or the 1st).
+systemctl start --no-block msj-backup.service
+msj_log "catch-up backup started (journalctl -u msj-backup -f)"
+
+# The worker needs a few seconds to load before its first heartbeat; retry
+# quietly, then run once more with reporting so the dead-man switch sees it.
+for _ in $(seq 1 12); do
+  MSJ_NO_PING=1 msj-health >/dev/null 2>&1 && break
+  sleep 5
+done
+msj-health || msj_die "unlocked and started, but msj-health reports problems (above)"
+msj_log "journal is up"

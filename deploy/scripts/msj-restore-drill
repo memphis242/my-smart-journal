@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+#
+# Monthly restore drill (msj-restore-drill.timer, 1st of the month 06:00 UTC).
+# Restores the latest snapshot into scratch space on the encrypted volume and
+# proves it is usable, without touching the live data. Reports to
+# HC_DRILL_URL. Run it by hand after any change to the backup design.
+#
+# What it asserts, each of which a restore depends on:
+#   1. journal.db passes PRAGMA integrity_check
+#   2. it has applied migrations and an issued bearer token (auth row)
+#   3. token.secret is present, 32 bytes
+#   4. every raw_audio artifact's file is present
+#   5. the secrets and host configuration came back
+#   6. the deployed release can open and migrate the restored database
+#      (msj migrate, as the service account, against the scratch copy)
+set -Eeuo pipefail
+MSJ_JOB=msj-restore-drill
+MSJ_UNIT=msj-restore-drill.service
+# shellcheck source=lib/common.sh
+. /usr/local/lib/msj/common.sh
+
+msj_require_root
+msj_ping_on_exit HC_DRILL_URL
+msj_require_unlocked
+msj_load_restic_env
+
+install -d -m 711 "$MSJ_RESTORE_DIR"
+work=$(mktemp -d -p "$MSJ_RESTORE_DIR" drill.XXXXXX)
+# 711 so the service account can reach the restored data directory (itself
+# 700 msj) for step 6, while the restored secrets stay root-only.
+chmod 711 "$work"
+cleanup() { rm -rf -- "$work"; }
+trap 'cleanup; _msj_ping_exit' EXIT
+
+restic restore latest --retry-lock 30m --tag msj --target "$work"
+
+restored_data="$work$MSJ_DATA_DIR"
+db="$work$MSJ_BACKUP_DIR/nightly/journal.db"
+[[ -f $db ]] || msj_die "the latest snapshot has no $MSJ_BACKUP_DIR/nightly/journal.db; check that msj-backup ran successfully (journalctl -u msj-backup.service)"
+
+q() { msj_as_service_user sqlite3 -readonly "$db" "$1"; }
+
+# The snapshot is restored next to, not inside, the data directory; put it
+# where the app expects it.
+install -d -m 700 -o "$MSJ_USER" -g "$MSJ_USER" "$restored_data"
+install -m 600 -o "$MSJ_USER" -g "$MSJ_USER" "$db" "$restored_data/journal.db"
+db="$restored_data/journal.db"
+
+integrity=$(q 'PRAGMA integrity_check;')
+[[ $integrity == ok ]] || msj_die "restored journal.db fails integrity_check: ${integrity:0:300}"
+
+migrations=$(q 'SELECT count(*) FROM schema_migrations;')
+auth=$(q 'SELECT count(*) FROM auth;')
+entries=$(q 'SELECT count(*) FROM entries;')
+(( migrations > 0 )) || msj_die "restored journal.db has no applied migrations; the snapshot is of an empty or wrong database"
+(( auth == 1 )) || msj_die "restored journal.db has no bearer token row (auth=$auth); a restore would need msj create-token"
+
+secret="$restored_data/token.secret"
+[[ -f $secret ]] || msj_die "token.secret is not in the snapshot; a restore would invalidate the token on every client"
+size=$(stat -c %s "$secret")
+(( size == 32 )) || msj_die "restored token.secret is $size bytes, expected 32"
+
+missing=0
+while IFS= read -r rel; do
+  [[ -z $rel ]] && continue
+  if [[ ! -f $restored_data/$rel ]]; then
+    missing=$((missing + 1))
+    (( missing <= 5 )) && msj_warn "audio file missing from snapshot: $rel"
+  fi
+done < <(q "SELECT content FROM artifacts WHERE kind='raw_audio' AND content NOT IN (SELECT path FROM file_deletions);")
+(( missing == 0 )) || msj_die "$missing audio file(s) referenced by the restored database are missing from the snapshot"
+audio=$(q "SELECT count(*) FROM artifacts WHERE kind='raw_audio';")
+
+for f in "$MSJ_SECRETS_DIR/backup.env" "$MSJ_SECRETS_DIR/msj.env" /etc/msj/config.toml /etc/msj/host.env; do
+  [[ -f $work$f ]] || msj_die "$f is not in the snapshot; a total-loss restore would have to recreate it by hand"
+done
+
+# Open the copy with the deployed code. The config is the restored one, so a
+# config the current release rejects is caught here as well.
+if [[ -x $MSJ_CURRENT/venv/bin/msj ]]; then
+  msj_app MSJ_DATA_DIR="$restored_data" MSJ_CONFIG_FILE="$work/etc/msj/config.toml" migrate \
+    || msj_die "msj migrate failed against the restored copy; the snapshot may not be usable with the deployed release (see the error above)"
+else
+  msj_warn "no deployed release at $MSJ_CURRENT; skipped the msj migrate check"
+fi
+
+msj_ok_summary="restore OK: entries=$entries audio=$audio migrations=$migrations"
+msj_log "$msj_ok_summary"

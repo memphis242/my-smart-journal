@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#
+# Certificate dead-man switch (msj-cert-check.timer, daily 07:15 UTC).
+#
+# Caddy renews the certificate itself at 30 days remaining. What this catches
+# is renewal FAILING, which is silent: the old certificate stays valid while
+# Caddy retries into a log nobody reads, and the first visible symptom is the
+# browser and the Android app refusing the server on the same day. Everything
+# that breaks renewal (a revoked or expired DNS token, a lapsed domain, Caddy
+# not running) looks healthy until then.
+#
+# So it asks what a client asks, against the live endpoint: does the served
+# certificate verify for MSJ_HOSTNAME against the public roots, and for how
+# long. Reading Caddy's files instead would miss a stopped Caddy, and would
+# accept Caddy's internal self-signed fallback, which looks fine by date.
+# Pings HC_CERT_URL; silence or /fail is the alarm.
+#
+# The 21-day floor: renewal starts at 30 days, so under 21 means it has been
+# failing for over a week, with three weeks left to fix it.
+set -Eeuo pipefail
+MSJ_JOB=msj-cert-check
+MSJ_UNIT=msj-cert-check.service
+# shellcheck source=lib/common.sh
+. /usr/local/lib/msj/common.sh
+
+readonly MIN_DAYS=21
+
+msj_ping_on_exit HC_CERT_URL
+msj_source_env "$MSJ_HOST_ENV"
+: "${MSJ_HOSTNAME:?$MSJ_HOST_ENV must set MSJ_HOSTNAME}"
+
+# Connect by name, so the public A record is exercised too: a record that no
+# longer points at this box fails here rather than only on the phone.
+handshake=$(timeout 20 openssl s_client -connect "$MSJ_HOSTNAME:443" \
+  -servername "$MSJ_HOSTNAME" -verify_hostname "$MSJ_HOSTNAME" </dev/null 2>/dev/null) \
+  || msj_die "no TLS handshake with $MSJ_HOSTNAME:443. Either the name no longer resolves to this box (getent hosts $MSJ_HOSTNAME vs ip -4 addr show wt0) or Caddy is down (systemctl status caddy)."
+
+if ! grep -q 'Verify return code: 0 (ok)' <<<"$handshake"; then
+  code=$(grep -m1 'Verify return code:' <<<"$handshake" || echo 'no verify result')
+  msj_die "$MSJ_HOSTNAME served a certificate that does not verify ($code). Caddy may have fallen back to its internal CA because issuance failed: journalctl -u caddy | grep -iE 'acme|certificate|error'"
+fi
+
+pem=$(sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' <<<"$handshake")
+[[ -n $pem ]] || msj_die "the handshake with $MSJ_HOSTNAME carried no certificate"
+not_after=$(openssl x509 -noout -enddate <<<"$pem" | cut -d= -f2-)
+days_left=$(( ($(date -d "$not_after" +%s) - $(date -u +%s)) / 86400 ))
+
+if (( days_left < MIN_DAYS )); then
+  msj_die "certificate for $MSJ_HOSTNAME expires in $days_left days (floor $MIN_DAYS): Caddy's renewal is failing. Check journalctl -u caddy | grep -iE 'acme|certificate|error'; usual causes are a revoked or expired DNS API token (/srv/msj/secrets/caddy.env) or a lapsed domain."
+fi
+
+msj_ok_summary="$MSJ_HOSTNAME verifies, $days_left days left"
+msj_log "$msj_ok_summary (expires $not_after)"

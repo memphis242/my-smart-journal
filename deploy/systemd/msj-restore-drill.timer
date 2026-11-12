@@ -1,0 +1,11 @@
+# 1st of the month 06:00 UTC. A backup nobody has restored is not yet a backup.
+[Unit]
+Description=Journal monthly restore drill timer
+
+[Timer]
+OnCalendar=*-*-01 06:00:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

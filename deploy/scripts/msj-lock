@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#
+# Stop the journal and lock the encrypted volume, in order, before a planned
+# reboot or a volume snapshot:  msj-lock && reboot
+#
+# A bare reboot also works (systemd stops everything first), but this makes
+# the order explicit and lets the worker and SQLite close cleanly first.
+set -Eeuo pipefail
+MSJ_JOB=msj-lock
+# shellcheck source=lib/common.sh
+. /usr/local/lib/msj/common.sh
+
+msj_require_root
+
+# Timers fire into a locked volume harmlessly (they refuse and report), but a
+# job already running holds files open; wait for it rather than kill it.
+for unit in msj-backup msj-backup-verify msj-restore-drill; do
+  if systemctl is-active --quiet "$unit.service"; then
+    msj_die "$unit.service is running; wait for it (journalctl -u $unit -f) and rerun msj-lock"
+  fi
+done
+
+systemctl stop msj.target caddy.service msj-serve.service msj-worker.service
+msj_log "services stopped"
+
+if swapon --show=NAME --noheadings | grep -qx "$MSJ_SWAPFILE"; then
+  swapoff "$MSJ_SWAPFILE"
+  msj_log "swap off"
+fi
+if msj_is_unlocked; then
+  umount "$MSJ_MOUNT" || msj_die "umount $MSJ_MOUNT failed; something still has files open: fuser -vm $MSJ_MOUNT"
+  msj_log "unmounted $MSJ_MOUNT"
+fi
+if [[ -e /dev/mapper/$MSJ_MAPPER ]]; then
+  cryptsetup close "$MSJ_MAPPER"
+  msj_log "closed /dev/mapper/$MSJ_MAPPER"
+fi
+msj_log "locked; reboot when ready"

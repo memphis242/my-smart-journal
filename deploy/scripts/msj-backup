@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# Nightly backup (msj-backup.timer, 03:30 UTC). Takes a consistent SQLite
+# snapshot of journal.db, then pushes it with the audio files, the bearer-token
+# HMAC key, the secrets and the host configuration to the restic repository on
+# Backblaze B2 (encrypted on this box before upload). Reports to the
+# Healthchecks.io check HC_BACKUP_URL.
+#
+# Retention, pruning and integrity checks are msj-backup-verify (weekly), so
+# nothing here rewrites the repository.
+#
+# What is deliberately not backed up:
+#   - the live journal.db, -wal and -shm (the snapshot replaces them; copying
+#     a live WAL database is how backups end up missing recent commits)
+#   - /srv/msj/caddy (Caddy reissues the certificate from the DNS token)
+#   - the swapfile, restic's cache, local snapshots and restore scratch space
+#   - the model cache and the releases (both are re-created from source)
+set -Eeuo pipefail
+MSJ_JOB=msj-backup
+MSJ_UNIT=msj-backup.service
+# shellcheck source=lib/common.sh
+. /usr/local/lib/msj/common.sh
+
+msj_require_root
+msj_ping_on_exit HC_BACKUP_URL
+msj_require_unlocked
+msj_load_restic_env
+
+readonly STAGE="$MSJ_BACKUP_DIR/nightly"
+install -d -m 710 -o root -g "$MSJ_USER" "$MSJ_BACKUP_DIR"
+install -d -m 700 -o "$MSJ_USER" -g "$MSJ_USER" "$STAGE"
+
+msj_snapshot_db "$STAGE/journal.db"
+entries=$(msj_as_service_user sqlite3 -readonly "$STAGE/journal.db" 'SELECT count(*) FROM entries;')
+
+paths=("$STAGE/journal.db" "$MSJ_SECRETS_DIR" /etc/msj)
+[[ -f $MSJ_DATA_DIR/token.secret ]] && paths+=("$MSJ_DATA_DIR/token.secret")
+[[ -d $MSJ_DATA_DIR/audio ]] && paths+=("$MSJ_DATA_DIR/audio")
+[[ -f $MSJ_DATA_DIR/token.secret ]] \
+  || msj_warn "$MSJ_DATA_DIR/token.secret is missing; the backup has no bearer-token key (run msj create-token, see RUNBOOK)"
+
+# --retry-lock waits for a weekly verify that is still running instead of
+# failing on its lock. --group-by in msj-backup-verify relies on the tag.
+restic backup --retry-lock 30m --tag msj "${paths[@]}"
+
+msj_ok_summary="snapshot uploaded: entries=$entries"
+msj_log "$msj_ok_summary -> $RESTIC_REPOSITORY"
