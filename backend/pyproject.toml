@@ -9,7 +9,19 @@ requires-python = ">=3.14"
 dependencies = ["fastapi", "uvicorn[standard]", "pydantic>=2", "pydantic-settings", "httpx", "rapidfuzz", "jsonschema", "python-multipart", "numpy"]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-xdist", "pytest-asyncio", "ruff", "mypy", "types-jsonschema"]
+dev = [
+    "pytest",
+    "pytest-xdist",
+    "pytest-asyncio",
+    "pytest-cov",
+    "hypothesis",
+    # starlette.testclient uses httpx2 when installed and warns (StarletteDeprecationWarning)
+    # once per test process when it falls back to httpx.
+    "httpx2",
+    "ruff",
+    "mypy",
+    "types-jsonschema",
+]
 semantic = ["sentence-transformers"]
 
 [project.scripts]
@@ -20,8 +32,22 @@ packages = ["src/msj"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# The cache provider would write .pytest_cache into the source tree; generated output
+# belongs in the build directory. Integration tests start real subprocesses and are
+# selected explicitly with `-m integration`, which overrides the default below.
+addopts = ["-p", "no:cacheprovider", "--strict-markers", "--strict-config", "-m", "not integration"]
+markers = [
+    "integration: process-level tests that run real `msj serve`/`msj worker` subprocesses",
+]
+xfail_strict = true
+# Every warning fails the run, including ResourceWarnings surfaced as unraisable
+# exceptions (unclosed SQLite connections, files). A dependency deprecation therefore
+# fails the dependency-update pull request that introduces it, where it is cheapest to
+# address. Add a narrowly matched "ignore:..." entry only with a stated reason.
+filterwarnings = ["error"]
 
 [tool.ruff]
 target-version = "py314"

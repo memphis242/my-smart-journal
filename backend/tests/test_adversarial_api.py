@@ -5,6 +5,7 @@ import json
 import multiprocessing
 import sqlite3
 import threading
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -273,7 +274,7 @@ def test_session_validation_is_read_only_during_a_writer(tmp_path: Path) -> None
         result.append(valid_session(store, value))
         finished.set()
 
-    with sqlite3.connect(store.db_path) as writer:
+    with closing(sqlite3.connect(store.db_path)) as writer:
         writer.execute("BEGIN IMMEDIATE")
         reader = threading.Thread(target=validate)
         reader.start()
