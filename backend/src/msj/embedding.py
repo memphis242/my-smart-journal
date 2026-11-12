@@ -445,14 +445,26 @@ class EmbeddingService:
             safe_limit = max(1, model_limit - special_tokens)
             size = min(self.settings.chunk_tokens, safe_limit)
             overlap = min(self.settings.chunk_overlap, size - 1)
-            step = size - overlap
             return [
                 tokenizer.decode(token_ids[start : start + size], skip_special_tokens=True).strip()
-                for start in range(0, len(token_ids), step)
+                for start in _chunk_starts(len(token_ids), size, overlap)
             ]
         tokens = text.split()
         if not tokens:
             return []
         size = self.settings.chunk_tokens
-        step = size - self.settings.chunk_overlap
-        return [" ".join(tokens[start : start + size]) for start in range(0, len(tokens), step)]
+        return [
+            " ".join(tokens[start : start + size])
+            for start in _chunk_starts(len(tokens), size, self.settings.chunk_overlap)
+        ]
+
+
+def _chunk_starts(count: int, size: int, overlap: int) -> range:
+    """Return window starts covering `count` tokens; the last window is the first to reach the end.
+
+    A window starting at or after `count - overlap` would only repeat tokens that the
+    previous window already covers.
+    """
+    assert count > 0
+    assert 0 <= overlap < size
+    return range(0, max(count - overlap, 1), size - overlap)

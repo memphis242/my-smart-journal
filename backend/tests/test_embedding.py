@@ -1,5 +1,6 @@
 """Behavioral checks for local embedding and semantic search."""
 
+import itertools
 import os
 import sys
 import types
@@ -362,3 +363,50 @@ def test_real_bge_model_ranks_semantically_related_entry(tmp_path: Path) -> None
     rows, _ = service.search("I fixed a slow SQL query by optimizing its index.")
     assert rows[0]["entry_id"] == relevant["id"]
     assert vector.size == 384
+
+
+@pytest.mark.parametrize("token_count", [1, 5, 6, 7, 8, 9, 13, 14])
+def test_tokenizer_chunks_cover_text_without_redundant_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, token_count: int
+) -> None:
+    # Regression: a trailing window could start inside the previous window's overlap and
+    # repeat only tokens it already covered.
+    settings = Settings(
+        data_dir=tmp_path,
+        embedding=EmbeddingSettings(
+            provider="sentence-transformers", model="test-model", chunk_tokens=6, chunk_overlap=2
+        ),
+    )
+    store = Store(settings)
+    service = EmbeddingService(store, settings)
+
+    class Tokenizer:
+        def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+            assert not add_special_tokens
+            return [int(token) for token in text.split()]
+
+        def decode(self, ids: list[int], *, skip_special_tokens: bool) -> str:
+            assert skip_special_tokens
+            return " ".join(str(token) for token in ids)
+
+        def num_special_tokens_to_add(self, *, pair: bool) -> int:
+            assert not pair
+            return 2
+
+    class LoadedModel:
+        max_seq_length = 512
+        tokenizer = Tokenizer()
+
+    module = types.ModuleType("sentence_transformers")
+    module.SentenceTransformer = lambda *_args, **_kwargs: LoadedModel()
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+
+    chunks = [
+        [int(token) for token in chunk.split()]
+        for chunk in service._chunks(" ".join(str(index) for index in range(token_count)))
+    ]
+    assert sorted({token for chunk in chunks for token in chunk}) == list(range(token_count))
+    assert all(len(chunk) <= 6 for chunk in chunks)
+    for previous, current in itertools.pairwise(chunks):
+        assert current[0] == previous[-1] - 1
+        assert current[-1] > previous[-1]

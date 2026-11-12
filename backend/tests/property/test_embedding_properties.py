@@ -61,15 +61,12 @@ def test_chunks_cover_every_token_within_size_and_overlap(
     assert stitched == tokens
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEFECT: fake-provider _chunks emits a trailing chunk fully contained in the "
-    "previous one when the remaining tokens number at most the overlap",
-)
 @given(_chunk_case())
 def test_no_chunk_is_contained_in_its_predecessor(
     store: Store, case: tuple[str, list[str], int, int]
 ) -> None:
+    # Regression: a trailing window that started within the previous window's overlap
+    # repeated only already-covered tokens (e.g. "0 0" with size 3, overlap 2).
     text, _, size, overlap = case
     chunks = [chunk.split() for chunk in _chunks(store, text, size, overlap)]
     for current in chunks[1:]:
