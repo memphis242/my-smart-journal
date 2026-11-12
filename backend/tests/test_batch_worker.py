@@ -168,7 +168,7 @@ def test_transient_renew_and_heartbeat_errors_do_not_stop_renewal(tmp_path: Path
             return {"done": 0, "failed": 0}
 
     coordinator._runner = WaitingRunner()  # type: ignore[assignment]
-    coordinator.renew = renew  # type: ignore[method-assign]
+    coordinator.renew = renew  # type: ignore[method-assign, assignment]
     coordinator.touch_worker = touch_worker  # type: ignore[method-assign]
 
     result = coordinator._execute_with_renewal("test", worker=True)

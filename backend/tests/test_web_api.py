@@ -166,6 +166,7 @@ def test_secure_cookie_expiry_and_stale_token_snapshot(tmp_path: Path) -> None:
         assert cookie.secure is True
         assert cookie.has_nonstandard_attr("HttpOnly")
         cookie_value = http.cookies.get("__Host-msj_session")
+        assert cookie_value is not None
         with http.app.state.store.connect() as db:
             session_hash = db.execute("SELECT session_hash FROM sessions").fetchone()[0]
         import hashlib

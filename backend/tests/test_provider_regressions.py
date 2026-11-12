@@ -3,12 +3,12 @@
 import asyncio
 import base64
 import json
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
 
-from msj.config import Settings, TaskRoute
+from msj.config import Settings, TaskKind, TaskRoute
 from msj.providers import InferenceProvider, ProviderError
 
 
@@ -90,7 +90,7 @@ def test_http_413_is_nonretryable_request_size_error(
         )
         with pytest.raises(ProviderError, match="request too large") as raised:
             adapter.generate(
-                kind,
+                cast(TaskKind, kind),
                 TaskRoute(provider=provider, endpoint_id="ep", model="turbo"),
                 "source",
                 audio=b"audio" if kind == "transcribe" else None,
@@ -102,7 +102,7 @@ def test_runpod_paused_error_preserves_actionable_control_plane_detail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RUNPOD_API_KEY", "secret-must-not-appear")
-    body = {
+    body: dict[str, Any] = {
         "status": 409,
         "title": "Conflict",
         "detail": "Endpoint is paused (max_workers=0). Set max_workers > 0 to accept work.",

@@ -24,6 +24,7 @@ def test_worker_conflict_rechecks_lease_and_picks_up_request(
     other = BatchCoordinator(store, Runner(store, settings))
     held = other.acquire("manual")
     assert held is not None
+    held_lease: str = held
     elapsed = [0.0]
     real_monotonic = cli.time.monotonic
     origin = real_monotonic()
@@ -44,7 +45,7 @@ def test_worker_conflict_rechecks_lease_and_picks_up_request(
         def wait(self, delay: float) -> bool:
             assert delay > 0, "A conflicted worker must wait between attempts"
             if elapsed[0] == 0:
-                other.release(held, {"done": 0, "failed": 0})
+                other.release(held_lease, {"done": 0, "failed": 0})
                 assert other.request()
             elapsed[0] += delay
             return self.is_set()
