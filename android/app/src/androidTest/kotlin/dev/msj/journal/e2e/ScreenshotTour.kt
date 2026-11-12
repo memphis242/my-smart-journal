@@ -1,6 +1,5 @@
 package dev.msj.journal.e2e
 
-import android.graphics.Bitmap
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
@@ -19,15 +18,18 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
-import java.io.File
 
 /**
  * A visual tour, not a check: every main screen in light and dark, saved as
- * PNGs to the app's external files directory (`shots/`) for review. Runs only
+ * PNGs to /data/local/tmp/msj-shots on the device for review (adb pull). Runs only
  * with the instrumentation argument `msjScreenshots=1` (scripts/e2e.sh --shots).
  */
 @RunWith(AndroidJUnit4::class)
 class ScreenshotTour {
+    private companion object {
+        const val SHOTS = "/data/local/tmp/msj-shots"
+    }
+
     private val compose = createEmptyComposeRule()
 
     @get:Rule
@@ -35,14 +37,20 @@ class ScreenshotTour {
 
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
+    /** Captures the screen as the shell user into /data/local/tmp/msj-shots (app data is cleared after each test). */
     private fun shot(name: String) {
         compose.waitForIdle()
         Thread.sleep(600)
-        val bitmap = instrumentation.uiAutomation.takeScreenshot() ?: error("takeScreenshot returned null for $name")
-        val dir = File(E2e.services.context.getExternalFilesDir(null), "shots").apply { mkdirs() }
-        File(dir, "$name.png").outputStream().use {
-            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) { "PNG encode failed for $name" }
-        }
+        shell("mkdir -p $SHOTS")
+        shell("screencap -p $SHOTS/$name.png")
+    }
+
+    private fun shell(command: String) {
+        val output = instrumentation.uiAutomation.executeShellCommand(command)
+        // Reading to the end waits for the command to finish.
+        android.os.ParcelFileDescriptor
+            .AutoCloseInputStream(output)
+            .use { it.readBytes() }
     }
 
     @Test
@@ -105,9 +113,6 @@ class ScreenshotTour {
             compose.onNodeWithTag(TestTags.SEARCH_FIELD).performImeAction()
             compose.waitForTag(TestTags.SEARCH_DONE, 60_000)
             shot("08-search-$mode")
-            instrumentation.uiAutomation.performGlobalAction(
-                android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK,
-            )
             instrumentation.uiAutomation.performGlobalAction(
                 android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK,
             )

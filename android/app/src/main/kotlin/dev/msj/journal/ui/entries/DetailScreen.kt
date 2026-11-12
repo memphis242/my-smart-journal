@@ -50,6 +50,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.msj.journal.core.api.ArtifactKind
 import dev.msj.journal.core.api.EntryDetail
 import dev.msj.journal.core.api.EntrySource
 import dev.msj.journal.core.api.EntryStatus
@@ -218,7 +219,18 @@ private fun EntryBody(
                 Prose(text)
             }
         }
-        Block(if (entry.source == EntrySource.AUDIO) "Cleaned transcript" else "Cleaned text", TestTags.DETAIL_TEXT) {
+        val cleaned =
+            ui.detail?.artifacts?.any {
+                it.kind == ArtifactKind.CLEANED && it.revision == ui.detail.revision && it.supersededBy == null
+            }
+        val noun = if (entry.source == EntrySource.AUDIO) "transcript" else "text"
+        val textLabel =
+            when (cleaned) {
+                true -> "Cleaned $noun"
+                false -> "${noun.replaceFirstChar(Char::uppercase)} (not cleaned yet)"
+                null -> noun.replaceFirstChar(Char::uppercase)
+            }
+        Block(textLabel, TestTags.DETAIL_TEXT) {
             val text = entry.text.trim()
             if (text.isEmpty()) {
                 Text(
