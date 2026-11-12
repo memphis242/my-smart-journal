@@ -17,6 +17,7 @@
 #   MSJ_VENV       backend virtualenv (default: $MSJ_BUILD_DIR/.venv)
 #   PYTHON         interpreter for --setup (default: python3.14)
 #   HYPOTHESIS_PROFILE  "dev" (default) or "ci" (more examples)
+#   MSJ_INTEGRATION_WORKERS  pytest-xdist workers for integration tests (default: CPUs, max 16)
 #
 # Nothing generated is written into the source tree except web/node_modules (gitignored).
 # Exit status: 0 when every selected gate passes, 1 when any fails, 2 on usage or setup errors.
@@ -26,7 +27,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 backend="${repo_root}/backend"
 web="${repo_root}/web"
 
-usage() { sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; }
 die() {
     echo "check.sh: $*" >&2
     exit 2
@@ -167,8 +168,11 @@ run_gate() {
                 --cov-report="xml:${build}/coverage/unit/coverage.xml"
             ;;
         integration)
+            # Each test worker runs its own serve and worker processes; stay within the CPUs.
+            local workers="${MSJ_INTEGRATION_WORKERS:-$(nproc)}"
+            ((workers > 16)) && workers=16
             cd "${backend}" &&
-                "${bin}/python" -m pytest -q -n 16 -m integration \
+                "${bin}/python" -m pytest -q -n "${workers}" -m integration \
                     --basetemp="${build}/pytest/integration" tests/integration
             ;;
         web-typecheck) cd "${web}" && pnpm typecheck ;;
