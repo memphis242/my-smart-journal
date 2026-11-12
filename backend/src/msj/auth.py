@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import secrets
 import stat
 import tempfile
@@ -14,6 +15,8 @@ from .config import Settings
 from .diagnostics import SafeMessageError
 
 _logger = logging.getLogger(__name__)
+# Digests are produced by _format_digest; anything else in storage is not comparable.
+_DIGEST = re.compile(r"hmac-sha256\$(?P<key_id>[0-9a-f]{16})\$(?P<digest>[0-9a-f]{64})")
 
 
 class TokenStore(Protocol):
@@ -153,18 +156,13 @@ def check_token_secret(store: TokenStore) -> None:
     stored = store.token_hash()
     if stored is None:
         return
-    if stored in {"reissue-required"} or stored.startswith("scrypt$"):
+    if stored == "reissue-required" or stored.startswith("scrypt$"):
         raise TokenReissueRequired("Bearer token must be re-issued: run `msj create-token`.")
-    try:
-        algorithm, key_id, expected = stored.split("$", maxsplit=2)
-    except ValueError:
-        raise TokenReissueRequired(
-            "Bearer token must be re-issued: run `msj create-token`."
-        ) from None
-    if algorithm != "hmac-sha256" or len(key_id) != 16 or len(expected) != 64:
+    match = _DIGEST.fullmatch(stored)
+    if match is None:
         raise TokenReissueRequired("Bearer token must be re-issued: run `msj create-token`.")
     actual_key_id = hashlib.sha256(_secret(store, create=False)).hexdigest()[:16]
-    if not hmac.compare_digest(key_id, actual_key_id):
+    if not hmac.compare_digest(match["key_id"], actual_key_id):
         raise TokenReissueRequired(
             f"Bearer-token key {_secret_path(store)} does not match the stored token; "
             "run `msj create-token` "
@@ -176,22 +174,24 @@ def verify_token_hash(token: str, stored: str | None, secret: bytes) -> bool:
     """Verify a token against one stored digest snapshot."""
     if stored is None:
         return False
-    if stored in {"reissue-required"} or stored.startswith("scrypt$"):
+    if stored == "reissue-required" or stored.startswith("scrypt$"):
         raise TokenReissueRequired("Bearer token must be re-issued: run `msj create-token`.")
     if stored.startswith("hmac-sha256$") and stored.count("$") == 1:
         raise TokenReissueRequired(
             "Bearer token digest has no key ID; run `msj create-token` to issue a new token."
         )
-    try:
-        algorithm, stored_key_id, expected = stored.split("$", maxsplit=2)
-        if algorithm != "hmac-sha256" or len(expected) != 64 or len(stored_key_id) != 16:
-            return False
-        _algorithm, current_key_id, actual = _format_digest(token, secret).split("$")
-    except ValueError, TypeError:
+    match = _DIGEST.fullmatch(stored)
+    if match is None:
         return False
-    if not hmac.compare_digest(stored_key_id, current_key_id):
+    try:
+        current = _DIGEST.fullmatch(_format_digest(token, secret))
+    except UnicodeEncodeError:
+        # A token with lone surrogates cannot be the issued token.
+        return False
+    assert current is not None
+    if not hmac.compare_digest(match["key_id"], current["key_id"]):
         raise TokenReissueRequired(
             "Bearer-token key does not match the stored token; run `msj create-token` "
             "to issue a new token."
         )
-    return hmac.compare_digest(actual, expected)
+    return hmac.compare_digest(current["digest"], match["digest"])

@@ -60,11 +60,7 @@ def test_malformed_ascii_digests_return_false_or_request_reissue(
     assert isinstance(result, bool)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEFECT: verify_token_hash passes non-ASCII stored key IDs/digests to "
-    "hmac.compare_digest outside its try block, raising TypeError instead of False/reissue",
-)
+# Regression: non-ASCII stored key IDs reached hmac.compare_digest, which raised TypeError.
 @given(
     _TOKEN,
     _SECRET,
