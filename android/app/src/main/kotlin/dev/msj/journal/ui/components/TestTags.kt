@@ -51,6 +51,7 @@ object TestTags {
     const val RECORDER_SAVE = "recorder.save"
     const val RECORDER_DISCARD = "recorder.discard"
     const val RECORDER_ERROR = "recorder.error"
+    const val RECORDER_TITLE = "recorder.title"
 
     const val DETAIL_SCREEN = "detail.screen"
     const val DETAIL_OLDER = "detail.older"

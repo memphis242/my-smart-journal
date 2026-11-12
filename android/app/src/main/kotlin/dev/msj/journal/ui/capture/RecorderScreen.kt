@@ -152,7 +152,12 @@ fun RecorderScreen(
                         style = Journal.type.mono,
                         color = c.ink2,
                     )
-                    JournalField(value = ui.title, onValueChange = viewModel::onTitle, label = "Title (optional)")
+                    JournalField(
+                        value = ui.title,
+                        onValueChange = viewModel::onTitle,
+                        label = "Title (optional)",
+                        modifier = Modifier.testTag(TestTags.RECORDER_TITLE),
+                    )
                     JournalField(
                         value = ui.tags,
                         onValueChange = viewModel::onTags,
