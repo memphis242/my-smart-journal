@@ -28,33 +28,46 @@ public object OutboxMachine {
     /** A server Retry-After above this is treated as this, so a bogus header cannot park a record for years. */
     public const val MAX_RETRY_AFTER_S: Long = 24L * 60 * 60
 
+    /** Interrupted attempts in a row after which a record is no longer uploaded without the user. */
+    public const val MAX_CONSECUTIVE_INTERRUPTIONS: Int = 3
+
     private const val MAX_DOUBLINGS = 20
 
     private const val HTTP_UNAUTHORIZED = 401
+    private const val HTTP_PAYLOAD_TOO_LARGE = 413
     private const val HTTP_TOO_MANY_REQUESTS = 429
     private val CLIENT_ERRORS = 400..499
+    private val SERVER_ERRORS = 500..599
 
-    /** How a failed attempt with [error] is handled; see [FailureClass]. */
+    /**
+     * How a failed `POST /entries` with [error] is handled; see [FailureClass].
+     * 413 is permanent whoever sent it (a proxy's 413 has no problem body and
+     * may arrive as MAYBE_SENT). Every 5xx is reconciled, even a journal
+     * problem response: the server can fail after committing the entry.
+     */
     public fun classify(error: ApiError): FailureClass {
         val status = error.status
         return when {
+            status == HTTP_PAYLOAD_TOO_LARGE -> FailureClass.PERMANENT
             error.delivery == Delivery.NOT_SENT -> FailureClass.RETRY
-
             error.delivery == Delivery.MAYBE_SENT -> FailureClass.RECONCILE
-
             // The server answered, but not in the promised shape: a 2xx we could not read may still have created the entry.
             error.kind != ErrorKind.HTTP -> FailureClass.RECONCILE
-
             status == HTTP_UNAUTHORIZED -> FailureClass.AUTH
-
             status == HTTP_TOO_MANY_REQUESTS -> FailureClass.RETRY
-
             status != null && status in CLIENT_ERRORS -> FailureClass.PERMANENT
-
-            // 5xx problem responses (creation is one transaction, so nothing was created) and any other status.
+            status != null && status in SERVER_ERRORS -> FailureClass.RECONCILE
+            // Any other status (a redirect): the journal server did not create anything.
             else -> FailureClass.RETRY
         }
     }
+
+    /**
+     * Whether [record] was interrupted so often in a row that it must not be
+     * uploaded again without the user (checked after its reconcile miss).
+     */
+    public fun keepsStopping(record: OutboxRecord): Boolean =
+        record.consecutiveInterruptions >= MAX_CONSECUTIVE_INTERRUPTIONS
 
     /**
      * Backoff before attempt [attempts] + 1: 30 s doubling per attempt, capped
@@ -129,17 +142,17 @@ public object OutboxMachine {
 
                 is OutboxEvent.Created -> {
                     requireState(record, event, OutboxState.UPLOADING)
-                    sent(record, event.entryId)
+                    sent(record, event.entryId).copy(consecutiveInterruptions = 0)
                 }
 
                 is OutboxEvent.Failed -> {
                     requireState(record, event, OutboxState.UPLOADING)
-                    failed(record, event.error, nowMs, jitter)
+                    failed(record, event.error, nowMs, jitter).copy(consecutiveInterruptions = 0)
                 }
 
                 is OutboxEvent.Reconciled -> {
                     requireState(record, event, OutboxState.UNCERTAIN)
-                    sent(record, event.entryId)
+                    sent(record, event.entryId).copy(consecutiveInterruptions = 0)
                 }
 
                 is OutboxEvent.ReconcileFailed -> {
@@ -157,6 +170,7 @@ public object OutboxMachine {
                         state = OutboxState.UNCERTAIN,
                         nextAttemptAtMs = nowMs + RECONCILE_DELAY_MS,
                         lastError = interruptedError(nowMs),
+                        consecutiveInterruptions = record.consecutiveInterruptions + 1,
                     )
                 }
 
@@ -171,7 +185,7 @@ public object OutboxMachine {
                     )
                     // An UNCERTAIN record stays UNCERTAIN: it may already exist on the server and is reconciled first.
                     val retryState = if (state == OutboxState.UNCERTAIN) OutboxState.UNCERTAIN else OutboxState.PENDING
-                    record.copy(state = retryState, nextAttemptAtMs = 0L)
+                    record.copy(state = retryState, nextAttemptAtMs = 0L, consecutiveInterruptions = 0)
                 }
 
                 is OutboxEvent.Unsendable -> {

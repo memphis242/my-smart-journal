@@ -27,8 +27,12 @@ class OutboxMachineTest {
                 httpError(415, code = "UNSUPPORTED_MEDIA_TYPE") to FailureClass.PERMANENT,
                 httpError(422, code = "VALIDATION_ERROR") to FailureClass.PERMANENT,
                 httpError(429, code = "RATE_LIMITED", retryAfterS = 60) to FailureClass.RETRY,
-                httpError(500, code = "INTERNAL_ERROR") to FailureClass.RETRY,
-                httpError(503, code = ClientCodes.SERVER_UNAVAILABLE) to FailureClass.RETRY,
+                // The server can fail after committing the entry, so every 5xx is reconciled.
+                httpError(500, code = "INTERNAL_ERROR") to FailureClass.RECONCILE,
+                httpError(503, code = ClientCodes.SERVER_UNAVAILABLE) to FailureClass.RECONCILE,
+                // A proxy's 413 has no problem body; it is permanent however it was delivered.
+                httpError(413, code = "HTTP_ERROR", delivery = Delivery.MAYBE_SENT) to FailureClass.PERMANENT,
+                httpError(302, code = "HTTP_ERROR") to FailureClass.RETRY,
                 httpError(502, code = ClientCodes.SERVER_UNAVAILABLE, delivery = Delivery.MAYBE_SENT) to
                     FailureClass.RECONCILE,
                 ApiError(
@@ -116,10 +120,13 @@ class OutboxMachineTest {
     fun failuresMoveByClassAndKeepTheError() {
         val uploading = textRecord(state = OutboxState.UPLOADING, attempts = 1, firstSentAtMs = now)
 
-        val retry = OutboxMachine.transition(uploading, OutboxEvent.Failed(httpError(500)), now, midJitter)
+        val retry = OutboxMachine.transition(uploading, OutboxEvent.Failed(httpError(429)), now, midJitter)
         assertEquals(OutboxState.RETRY_WAIT, retry.state)
         assertEquals(now + 30_000L, retry.nextAttemptAtMs)
-        assertEquals(500, retry.lastError?.status)
+        assertEquals(429, retry.lastError?.status)
+
+        val serverError = OutboxMachine.transition(uploading, OutboxEvent.Failed(httpError(500)), now, midJitter)
+        assertEquals(OutboxState.UNCERTAIN, serverError.state)
         assertEquals(now, retry.lastError?.atMs)
 
         val auth = OutboxMachine.transition(uploading, OutboxEvent.Failed(httpError(401)), now, midJitter)
@@ -186,6 +193,26 @@ class OutboxMachineTest {
         val next = OutboxMachine.transition(uncertain, OutboxEvent.UserRetry, now, midJitter)
         assertEquals(OutboxState.UNCERTAIN, next.state)
         assertTrue(OutboxMachine.isDue(next, now))
+    }
+
+    @Test
+    fun interruptionsInARowAreCountedAndResetByAnyOtherOutcome() {
+        var record = textRecord()
+        repeat(OutboxMachine.MAX_CONSECUTIVE_INTERRUPTIONS) {
+            assertFalse(OutboxMachine.keepsStopping(record))
+            record = OutboxMachine.transition(record, OutboxEvent.Claim, now, midJitter)
+            record = OutboxMachine.transition(record, OutboxEvent.Interrupted, now, midJitter)
+        }
+        assertEquals(OutboxMachine.MAX_CONSECUTIVE_INTERRUPTIONS, record.consecutiveInterruptions)
+        assertTrue(OutboxMachine.keepsStopping(record))
+
+        assertEquals(0, OutboxMachine.transition(record, OutboxEvent.UserRetry, now, midJitter).consecutiveInterruptions)
+        assertEquals(0, OutboxMachine.transition(record, OutboxEvent.Reconciled("e"), now, midJitter).consecutiveInterruptions)
+        val uploading = OutboxMachine.transition(record, OutboxEvent.Claim, now, midJitter)
+        assertEquals(OutboxMachine.MAX_CONSECUTIVE_INTERRUPTIONS, uploading.consecutiveInterruptions)
+        val failed = OutboxMachine.transition(uploading, OutboxEvent.Failed(httpError(429)), now, midJitter)
+        assertEquals(0, failed.consecutiveInterruptions)
+        assertEquals(0, OutboxMachine.transition(uploading, OutboxEvent.Created("e"), now, midJitter).consecutiveInterruptions)
     }
 
     @Test
