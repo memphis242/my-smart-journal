@@ -204,7 +204,9 @@ def _parse_chat(value: Any) -> Generation:
             raise SafeProviderError("LLM worker returned invalid JSON") from None
     if isinstance(value, list) and len(value) == 1:
         return _parse_chat(value[0])
-    if isinstance(value, dict) and "choices" not in value and "body" in value:
+    if not isinstance(value, dict):
+        raise SafeProviderError("LLM response lacks choices[0].message.content")
+    if "choices" not in value and "body" in value:
         return _parse_chat(value["body"])
     try:
         choice = value["choices"][0]

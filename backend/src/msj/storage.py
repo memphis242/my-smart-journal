@@ -9,7 +9,7 @@ import logging
 import os
 import sqlite3
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from importlib.resources import files
@@ -67,7 +67,7 @@ class Store:
         self.db_path = self.data_dir / "journal.db"
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
+    def connect(self) -> Generator[sqlite3.Connection]:
         connection = sqlite3.connect(self.db_path, timeout=30)
         connection.row_factory = sqlite3.Row
         try:
@@ -160,6 +160,7 @@ class Store:
                 ),
             )
             if enabled and completed:
+                assert candidate is not None
                 review_id = self._insert_session_job(
                     db,
                     dict(row),

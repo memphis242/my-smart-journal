@@ -255,6 +255,8 @@ class _PrivateErrorMiddleware:
                     started = True
                 case "http.response.body":
                     complete = not message.get("more_body", False)
+                case _:
+                    pass
             if message["type"] == "http.response.start" and (
                 scope.get("path", "") == "/api" or scope.get("path", "").startswith("/api/")
             ):
@@ -586,6 +588,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:  # noqa: C901, PLR0
                 raise APIProblem(
                     413, "Payload Too Large", "Audio exceeds the configured upload limit."
                 )
+            entry_date: str | None = None
             entry_date_value = form.get("entry_date")
             if entry_date_value is not None:
                 try:
@@ -601,7 +604,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:  # noqa: C901, PLR0
                 extension=extension,
                 title=str(form.get("title")) if form.get("title") else None,
                 tags=tags_value,
-                entry_date=entry_date if entry_date_value else None,
+                entry_date=entry_date,
             )
         finally:
             await form.close()

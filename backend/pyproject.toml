@@ -21,6 +21,7 @@ dev = [
     "ruff",
     "mypy",
     "types-jsonschema",
+    "basedpyright",
 ]
 semantic = ["sentence-transformers"]
 
@@ -154,3 +155,15 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = false
 warn_return_any = false
 disable_error_code = ["attr-defined"]
+
+[tool.basedpyright]
+# Second type checker, strict on application code (tests are covered by mypy).
+include = ["src"]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+# isinstance() narrowing of parsed JSON and provider payloads (Any) yields dict[Unknown,
+# Unknown] and list[Unknown]; flagging every such value would demand casts throughout the
+# validation code. mypy --strict still rejects implicit Any in signatures and generics.
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownMemberType = false

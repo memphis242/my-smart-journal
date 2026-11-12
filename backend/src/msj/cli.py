@@ -6,7 +6,7 @@ import os
 import signal
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,7 +76,7 @@ def _run_batch(settings: Settings, trigger: str = "manual") -> dict[str, Any]:
 
 
 @contextmanager
-def _graceful_shutdown(stop: threading.Event) -> Iterator[None]:
+def _graceful_shutdown(stop: threading.Event) -> Generator[None]:
     """Turn the first SIGTERM or SIGINT into a stop request; a second one interrupts.
 
     A stop request lets the running job finish, ends the batch before the next claim,
