@@ -6,7 +6,21 @@ build-backend = "hatchling.build"
 name = "my-smart-journal"
 version = "0.1.0"
 requires-python = ">=3.14"
-dependencies = ["fastapi", "uvicorn[standard]", "pydantic>=2", "pydantic-settings", "httpx", "rapidfuzz", "jsonschema", "python-multipart", "numpy"]
+dependencies = [
+    "fastapi",
+    # Imported directly (concurrency, datastructures, exceptions, requests, types).
+    "starlette",
+    "uvicorn[standard]",
+    "pydantic>=2",
+    # Imported directly for PydanticCustomError; pydantic pins the exact version.
+    "pydantic-core",
+    "pydantic-settings",
+    "httpx",
+    "rapidfuzz",
+    "jsonschema",
+    "python-multipart",
+    "numpy",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -22,8 +36,22 @@ dev = [
     "mypy",
     "types-jsonschema",
     "basedpyright",
+    "deptry",
+    "pip-audit",
+    # Locks dependencies (scripts/lock.sh) and checks the lock is current.
+    "uv",
 ]
-semantic = ["sentence-transformers"]
+semantic = [
+    "sentence-transformers",
+    # Listed so the lock can take it from the CPU-only PyTorch index (see [tool.uv]); the
+    # default PyPI wheel bundles multi-gigabyte CUDA libraries the VPS cannot use.
+    "torch",
+]
+
+[dependency-groups]
+# The build backend, locked so deployments can build the package offline with
+# `pip install --no-build-isolation --no-deps` (see README "Dependency lock").
+build = ["hatchling"]
 
 [project.scripts]
 msj = "msj.cli:main"
@@ -167,3 +195,25 @@ typeCheckingMode = "strict"
 reportUnknownVariableType = false
 reportUnknownArgumentType = false
 reportUnknownMemberType = false
+
+[tool.uv]
+# uv.lock pins every dependency with hashes; requirements/*.txt are exported from it.
+# The service runs on Linux only (development machine, VPS, CI).
+environments = ["sys_platform == 'linux'"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.deptry]
+# The dev extra holds tools and test libraries, not imports of the msj package.
+pep621_dev_dependency_groups = ["dev"]
+
+[tool.deptry.per_rule_ignores]
+# Used without an import: Starlette loads python-multipart to parse forms, and torch is
+# sentence-transformers' backend (listed only to pin the CPU wheel index).
+DEP002 = ["python-multipart", "torch"]
