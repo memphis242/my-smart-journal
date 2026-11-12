@@ -31,7 +31,7 @@ esac
 # Each export: output file, then the uv export selection that produces it.
 exports=(
     "requirements/deploy.txt|--no-dev --extra semantic --group build"
-    "requirements/dev.txt|--all-extras"
+    "requirements/dev.txt|--all-extras --group build"
 )
 
 export_to() {

@@ -40,6 +40,9 @@ dev = [
     "pip-audit",
     # Locks dependencies (scripts/lock.sh) and checks the lock is current.
     "uv",
+    # Lint the repository's shell scripts and GitHub Actions workflows (scripts/check.sh).
+    "shellcheck-py",
+    "actionlint-py",
 ]
 semantic = [
     "sentence-transformers",
@@ -49,9 +52,9 @@ semantic = [
 ]
 
 [dependency-groups]
-# The build backend, locked so deployments can build the package offline with
+# The build backend (and its editable-install helper), locked so the package builds offline with
 # `pip install --no-build-isolation --no-deps` (see README "Dependency lock").
-build = ["hatchling"]
+build = ["hatchling", "editables"]
 
 [project.scripts]
 msj = "msj.cli:main"

@@ -1,0 +1,30 @@
+# Weekly, grouped dependency updates. Backend updates change backend/uv.lock; the lock gate
+# then fails until `scripts/lock.sh` re-exports backend/requirements/*.txt on the branch
+# (see backend/README.md, "Dependency lock").
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /backend
+    schedule:
+      interval: weekly
+    groups:
+      backend:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    groups:
+      web:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
