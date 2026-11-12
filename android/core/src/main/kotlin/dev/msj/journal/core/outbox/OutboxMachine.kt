@@ -49,14 +49,22 @@ public object OutboxMachine {
         val status = error.status
         return when {
             status == HTTP_PAYLOAD_TOO_LARGE -> FailureClass.PERMANENT
+
             error.delivery == Delivery.NOT_SENT -> FailureClass.RETRY
+
             error.delivery == Delivery.MAYBE_SENT -> FailureClass.RECONCILE
+
             // The server answered, but not in the promised shape: a 2xx we could not read may still have created the entry.
             error.kind != ErrorKind.HTTP -> FailureClass.RECONCILE
+
             status == HTTP_UNAUTHORIZED -> FailureClass.AUTH
+
             status == HTTP_TOO_MANY_REQUESTS -> FailureClass.RETRY
+
             status != null && status in CLIENT_ERRORS -> FailureClass.PERMANENT
+
             status != null && status in SERVER_ERRORS -> FailureClass.RECONCILE
+
             // Any other status (a redirect): the journal server did not create anything.
             else -> FailureClass.RETRY
         }

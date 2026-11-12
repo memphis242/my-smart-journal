@@ -107,7 +107,9 @@ public data class OutboxRecord(
     init {
         assert(id.isNotBlank()) { "outbox record has an id" }
         assert(attempts >= 0) { "attempts are non-negative" }
-        assert(consecutiveInterruptions in 0..attempts) { "interruptions are attempts: $consecutiveInterruptions of $attempts" }
+        assert(
+            consecutiveInterruptions in 0..attempts,
+        ) { "interruptions are attempts: $consecutiveInterruptions of $attempts" }
         assert((state == OutboxState.SENT) == (serverEntryId != null)) { "only a sent record has a server entry id" }
         assert(title == null || title.isNotBlank()) { "a blank title is stored as null" }
     }

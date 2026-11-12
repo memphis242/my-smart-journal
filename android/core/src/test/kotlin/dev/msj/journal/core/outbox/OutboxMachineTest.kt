@@ -206,13 +206,22 @@ class OutboxMachineTest {
         assertEquals(OutboxMachine.MAX_CONSECUTIVE_INTERRUPTIONS, record.consecutiveInterruptions)
         assertTrue(OutboxMachine.keepsStopping(record))
 
-        assertEquals(0, OutboxMachine.transition(record, OutboxEvent.UserRetry, now, midJitter).consecutiveInterruptions)
-        assertEquals(0, OutboxMachine.transition(record, OutboxEvent.Reconciled("e"), now, midJitter).consecutiveInterruptions)
+        assertEquals(
+            0,
+            OutboxMachine.transition(record, OutboxEvent.UserRetry, now, midJitter).consecutiveInterruptions,
+        )
+        assertEquals(
+            0,
+            OutboxMachine.transition(record, OutboxEvent.Reconciled("e"), now, midJitter).consecutiveInterruptions,
+        )
         val uploading = OutboxMachine.transition(record, OutboxEvent.Claim, now, midJitter)
         assertEquals(OutboxMachine.MAX_CONSECUTIVE_INTERRUPTIONS, uploading.consecutiveInterruptions)
         val failed = OutboxMachine.transition(uploading, OutboxEvent.Failed(httpError(429)), now, midJitter)
         assertEquals(0, failed.consecutiveInterruptions)
-        assertEquals(0, OutboxMachine.transition(uploading, OutboxEvent.Created("e"), now, midJitter).consecutiveInterruptions)
+        assertEquals(
+            0,
+            OutboxMachine.transition(uploading, OutboxEvent.Created("e"), now, midJitter).consecutiveInterruptions,
+        )
     }
 
     @Test
