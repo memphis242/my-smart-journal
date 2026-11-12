@@ -1253,6 +1253,30 @@ class Store:
             (gate_id, job["entry_id"], job["revision"]),
         )
 
+    def requeue_interrupted(self, job: dict[str, Any]) -> bool:
+        """Return a claimed job to the queue, due now, without consuming its attempt."""
+        with self.connect() as db:
+            _ = db.execute("BEGIN IMMEDIATE")
+            if not self.batch_owned(db, job):
+                return False
+            result = db.execute(
+                "UPDATE jobs SET status='queued',attempts=MAX(attempts-1,0),last_error=?,"
+                "not_before=?,finished_at=NULL,lease_until=NULL,claim_token=NULL,"
+                "claim_protocol=0 WHERE id=? AND status='running' AND claim_token=?",
+                (
+                    "Interrupted by worker shutdown; requeued without using an attempt",
+                    time.time(),
+                    job["id"],
+                    job["claim_token"],
+                ),
+            )
+            requeued = result.rowcount == 1
+            if requeued and job["kind"] == "compile":
+                _ = db.execute(
+                    "UPDATE compilations SET status='queued' WHERE id=?", (job["compilation_id"],)
+                )
+            return requeued
+
     def fail_job(self, job: dict[str, Any], error: str, *, retryable: bool = True) -> bool:
         terminal = not retryable or job["attempts"] >= self.settings.max_attempts
         delay = self.settings.retry_base_s * 2 ** min(job["attempts"] - 1, 16)

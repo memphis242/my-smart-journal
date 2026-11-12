@@ -79,16 +79,18 @@ def _run_batch(settings: Settings, trigger: str = "manual") -> dict[str, Any]:
 def _graceful_shutdown(stop: threading.Event) -> Generator[None]:
     """Turn the first SIGTERM or SIGINT into a stop request; a second one interrupts.
 
-    A stop request lets the running job finish, ends the batch before the next claim,
-    releases its lease, and leaves the worker loop, so the interpreter shuts down normally
-    (joblib/loky release their semaphores instead of leaking them to the resource tracker).
+    A stop request cancels the in-flight inference request (a RunPod job is cancelled on
+    the endpoint), requeues that job without consuming an attempt, ends the batch before
+    the next claim, releases its lease, and leaves the worker loop, so the interpreter
+    shuts down normally (joblib/loky release their semaphores instead of leaking them to
+    the resource tracker). Local embedding work is not interruptible and finishes first.
     """
 
     def request_stop(signum: int, _frame: FrameType | None) -> None:
         if stop.is_set():
             raise KeyboardInterrupt
         _logger.info(
-            "%s received; finishing the current job, then exiting (send again to abort)",
+            "%s received; cancelling the current job, then exiting (send again to abort)",
             signal.Signals(signum).name,
         )
         stop.set()

@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from importlib.resources import files
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 from jsonschema import Draft202012Validator
@@ -19,18 +19,13 @@ from .providers import (
     prompt_digest,
     revision_messages,
 )
+from .shutdown import ShutdownRequested, StopSignal
 from .storage import Store
 
 if TYPE_CHECKING:
     from .embedding import EmbeddingService
 
 _logger = logging.getLogger(__name__)
-
-
-class StopSignal(Protocol):
-    """A shutdown request checked between jobs, such as a threading.Event."""
-
-    def is_set(self) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -118,7 +113,7 @@ class Runner:
         attempted: set[str] = set()
         stats = {"done": 0, "failed": 0, "discarded": 0}
         with httpx.Client() as http:
-            provider = self._provider or InferenceProvider(self.settings, http)
+            provider = self._provider or InferenceProvider(self.settings, http, stop=self._stop)
             while True:
                 if self._stop is not None and self._stop.is_set():
                     # Unclaimed jobs stay queued; the lease is released normally.
@@ -212,6 +207,16 @@ class Runner:
                         producer_route=route,
                     )
                     stats["done" if published else "discarded"] += 1
+                except ShutdownRequested:
+                    # Not a failure: the job returns to the queue with its attempt restored,
+                    # and the stop check above ends the batch, which releases the lease.
+                    requeued = self.store.requeue_interrupted(job)
+                    _logger.info(
+                        "%s job %s interrupted by worker shutdown (%s)",
+                        job["kind"],
+                        job["id"],
+                        "requeued" if requeued else "already reclaimed",
+                    )
                 except (ProviderError, OSError, KeyError) as exc:
                     match exc:
                         case SafeProviderError():

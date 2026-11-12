@@ -1,110 +1,16 @@
 """A worker SIGKILLed mid-batch is recovered by the next worker exactly once.
 
-`cleanup` is routed to an OpenAI-compatible chat-completions server running in this test
-process. It records each request and holds every response until the test releases it, so
-the worker is reliably inside a running job when it is killed.
+`cleanup` is routed to the held loopback chat server (`HeldChatServer`), so the worker is
+reliably inside a running job when it is killed.
 """
 
-import json
-import threading
-from collections.abc import Iterator
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Final
+from typing import Any
 
 import pytest
 
-from .msj_harness import STARTUP_TIMEOUT_S, MsjFactory, MsjInstance
+from .msj_harness import CLEANED, STARTUP_TIMEOUT_S, HeldChatServer, MsjFactory, MsjInstance
 
 pytestmark = pytest.mark.integration
-
-CLEANED: Final = "Cleaned by the loopback chat server: rebuilt the Atlas index."
-HOLD_TIMEOUT_S: Final = 120.0
-
-
-class _JoiningServer(ThreadingHTTPServer):
-    # Non-daemon handler threads are joined by server_close(), so no socket outlives a test.
-    daemon_threads = False
-
-
-class HeldChatServer:
-    """Loopback `/v1/chat/completions` that answers only after `release()`."""
-
-    def __init__(self) -> None:
-        self._released = threading.Event()
-        self._arrived = threading.Condition()
-        self._requests: list[dict[str, Any]] = []
-        owner = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self) -> None:
-                length = int(self.headers.get("Content-Length", "0"))
-                body = json.loads(self.rfile.read(length))
-                with owner._arrived:
-                    owner._requests.append({"path": self.path, "body": body})
-                    owner._arrived.notify_all()
-                released = owner._released.wait(HOLD_TIMEOUT_S)
-                payload = json.dumps(
-                    {
-                        "model": "fake-openai",
-                        "choices": [
-                            {
-                                "index": 0,
-                                "message": {"role": "assistant", "content": CLEANED},
-                                "finish_reason": "stop",
-                            }
-                        ],
-                    }
-                ).encode()
-                try:
-                    self.send_response(200 if released else 503)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    _ = self.wfile.write(payload)
-                except BrokenPipeError, ConnectionResetError:
-                    pass  # the killed worker's connection is gone; nothing to answer
-
-            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
-                pass
-
-        self._server: Final = _JoiningServer(("127.0.0.1", 0), Handler)
-        self._thread: Final = threading.Thread(
-            target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
-        )
-        self._thread.start()
-
-    @property
-    def base_url(self) -> str:
-        host, port = self._server.server_address[:2]
-        assert host == "127.0.0.1"
-        return f"http://127.0.0.1:{port}/v1"
-
-    def requests(self) -> list[dict[str, Any]]:
-        with self._arrived:
-            return list(self._requests)
-
-    def wait_for_requests(self, count: int, timeout: float) -> bool:
-        with self._arrived:
-            return self._arrived.wait_for(lambda: len(self._requests) >= count, timeout)
-
-    def release(self) -> None:
-        self._released.set()
-
-    def close(self) -> None:
-        self._released.set()
-        self._server.shutdown()
-        self._server.server_close()
-        self._thread.join(timeout=10)
-        assert not self._thread.is_alive()
-
-
-@pytest.fixture
-def chat_server() -> Iterator[HeldChatServer]:
-    server = HeldChatServer()
-    try:
-        yield server
-    finally:
-        server.close()
 
 
 def _cleanup_job(msj: MsjInstance, entry_id: str) -> dict[str, Any]:

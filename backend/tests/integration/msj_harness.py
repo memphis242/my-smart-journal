@@ -14,9 +14,11 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from collections.abc import Callable, Iterator, Mapping
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Final, Protocol
 
@@ -161,6 +163,17 @@ class ManagedProcess:
             except subprocess.TimeoutExpired:
                 self._popen.kill()
                 _ = self._popen.wait(timeout=STOP_TIMEOUT_S)
+
+    def terminate_and_wait(self, timeout: float) -> int:
+        """SIGTERM and return the exit code; SIGKILL and fail if it outlives `timeout`."""
+        assert self._popen.poll() is None, f"{self.name} already exited"
+        self._popen.terminate()
+        try:
+            return self._popen.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._popen.kill()
+            _ = self._popen.wait(timeout=STOP_TIMEOUT_S)
+            pytest.fail(f"{self.name} ignored SIGTERM for {timeout:g} s\n{self.logs()}")
 
     def kill_hard(self) -> None:
         """SIGKILL without any chance to clean up, then reap so the PID really is gone."""
@@ -506,3 +519,85 @@ def msj_instances(root: Path) -> Iterator[MsjFactory]:
     finally:
         for instance in reversed(instances):
             instance.close()
+
+
+# Loopback OpenAI-compatible chat server that holds responses, for mid-job process tests.
+CLEANED: Final = "Cleaned by the loopback chat server: rebuilt the Atlas index."
+HOLD_TIMEOUT_S: Final = 120.0
+
+
+class _JoiningServer(ThreadingHTTPServer):
+    # Non-daemon handler threads are joined by server_close(), so no socket outlives a test.
+    daemon_threads = False
+
+
+class HeldChatServer:
+    """Loopback `/v1/chat/completions` that answers only after `release()`."""
+
+    def __init__(self) -> None:
+        self._released = threading.Event()
+        self._arrived = threading.Condition()
+        self._requests: list[dict[str, Any]] = []
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length))
+                with owner._arrived:
+                    owner._requests.append({"path": self.path, "body": body})
+                    owner._arrived.notify_all()
+                released = owner._released.wait(HOLD_TIMEOUT_S)
+                payload = json.dumps(
+                    {
+                        "model": "fake-openai",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": CLEANED},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    }
+                ).encode()
+                try:
+                    self.send_response(200 if released else 503)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    _ = self.wfile.write(payload)
+                except BrokenPipeError, ConnectionResetError:
+                    pass  # the killed worker's connection is gone; nothing to answer
+
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+                pass
+
+        self._server: Final = _JoiningServer(("127.0.0.1", 0), Handler)
+        self._thread: Final = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
+        self._thread.start()
+
+    @property
+    def base_url(self) -> str:
+        host, port = self._server.server_address[:2]
+        assert host == "127.0.0.1"
+        return f"http://127.0.0.1:{port}/v1"
+
+    def requests(self) -> list[dict[str, Any]]:
+        with self._arrived:
+            return list(self._requests)
+
+    def wait_for_requests(self, count: int, timeout: float) -> bool:
+        with self._arrived:
+            return self._arrived.wait_for(lambda: len(self._requests) >= count, timeout)
+
+    def release(self) -> None:
+        self._released.set()
+
+    def close(self) -> None:
+        self._released.set()
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=10)
+        assert not self._thread.is_alive()

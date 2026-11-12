@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from .msj_harness import MsjFactory, MsjInstance, msj_instances
+from .msj_harness import HeldChatServer, MsjFactory, MsjInstance, msj_instances
 
 
 @pytest.fixture
@@ -23,3 +23,12 @@ def msj_factory(tmp_path: Path) -> Iterator[MsjFactory]:
 def msj(msj_factory: MsjFactory) -> MsjInstance:
     """A booted all-fake instance: migrated, token issued, server and idle worker running."""
     return msj_factory().boot()
+
+
+@pytest.fixture
+def chat_server() -> Iterator[HeldChatServer]:
+    server = HeldChatServer()
+    try:
+        yield server
+    finally:
+        server.close()
