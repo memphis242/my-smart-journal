@@ -1,0 +1,55 @@
+# The batch worker: runs the processing pipeline on schedule and on request,
+# and is the only process that calls RunPod. Pulled in by msj.target.
+[Unit]
+Description=My Smart Journal processing worker
+# The data directory is on the encrypted volume. While it is locked this
+# fails the start with a clear "Assertion failed" instead of creating an
+# unencrypted /srv/msj/data on the boot disk.
+AssertPathIsMountPoint=/srv/msj
+After=network-online.target
+Wants=network-online.target
+PartOf=msj.target
+After=msj-migrate.service
+
+[Service]
+Type=simple
+User=msj
+Group=msj
+EnvironmentFile=/etc/msj/msj.env
+EnvironmentFile=/srv/msj/secrets/app.env
+ExecStart=/opt/msj/current/venv/bin/msj worker
+Restart=on-failure
+RestartSec=5
+# On SIGTERM the worker stops claiming jobs, cancels the in-flight provider
+# call (RunPod /cancel), requeues that job without using an attempt, releases
+# the batch lease and exits 0, normally well within this timeout.
+TimeoutStopSec=30
+MemoryHigh=1280M
+MemoryMax=1536M
+# ---- Sandbox (verify with: systemd-analyze security <unit>) ----
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/msj/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitCORE=0

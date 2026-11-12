@@ -1,12 +1,13 @@
 """Behavioral coverage for ordered tiered search and deduplication."""
 
 from datetime import UTC, datetime
+from typing import Any
 
 from msj.search import reciprocal_rank_fusion, tiered_search
 
 
 def test_search_emits_four_tiers_then_done_and_deduplicates() -> None:
-    documents = [
+    documents: list[dict[str, Any]] = [
         {
             "entry_id": "exact",
             "text": "We shipped Atlas today",
@@ -59,7 +60,7 @@ def test_search_emits_four_tiers_then_done_and_deduplicates() -> None:
 
 
 def test_exact_tier_preserves_case_and_empty_tiers_still_stream() -> None:
-    documents = [
+    documents: list[dict[str, Any]] = [
         {
             "entry_id": "1",
             "text": "Plan a garden",
@@ -76,7 +77,7 @@ def test_exact_tier_preserves_case_and_empty_tiers_still_stream() -> None:
 
 
 def test_fts_is_deferred_until_the_fourth_event() -> None:
-    documents = [
+    documents: list[dict[str, Any]] = [
         {
             "entry_id": "1",
             "text": "Alpha note",
@@ -103,7 +104,7 @@ def test_fts_is_deferred_until_the_fourth_event() -> None:
 
 
 def test_semantic_tier_can_be_selected_and_deduplicates_prior_results() -> None:
-    documents = [
+    documents: list[dict[str, Any]] = [
         {
             "entry_id": "lexical",
             "text": "We shipped Atlas",
@@ -125,11 +126,7 @@ def test_semantic_tier_can_be_selected_and_deduplicates_prior_results() -> None:
             None,
         )
 
-    events = list(
-        tiered_search(
-            "Atlas", documents, [], tiers=(1, 5), semantic=semantic
-        )
-    )
+    events = list(tiered_search("Atlas", documents, [], tiers=(1, 5), semantic=semantic))
     assert calls == ["semantic"]
     assert [event.get("tier") for event in events[:-1]] == [1, 5]
     assert [item["entry_id"] for item in events[1]["results"]] == ["semantic"]

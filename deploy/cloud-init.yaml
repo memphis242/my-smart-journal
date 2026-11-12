@@ -1,0 +1,57 @@
+#cloud-config
+#
+# Vultr deploy form > Additional Features > "Enable Cloud-Init User-Data":
+# paste this file with REPLACE_WITH_ONE_OFF_SETUP_KEY replaced.
+#
+# It enrols the box in NetBird and closes the host firewall at first boot, so
+# the box is never reachable over public SSH: you first log in over NetBird.
+#
+# User-data stays readable to any process on the box (metadata service at
+# 169.254.169.254) and in the Vultr account. The only secret in it is
+# therefore a NetBird setup key made to be worthless after first use:
+# reusable OFF, usage limit 1, expiry 1 day. Revoke it in the NetBird
+# dashboard once the peer shows up (RUNBOOK step 7).
+#
+# If enrolment fails, log in on the Vultr web console as root (password on
+# the instance Overview page) and run the commands under runcmd by hand.
+
+hostname: msj-host
+preserve_hostname: false
+ssh_pwauth: false
+
+write_files:
+  - path: /etc/yum.repos.d/netbird.repo
+    permissions: "0644"
+    content: |
+      [netbird]
+      name=netbird
+      baseurl=https://pkgs.netbird.io/yum/
+      enabled=1
+      # The repository metadata is signed (repo_gpgcheck) and carries every
+      # package's checksum.
+      gpgcheck=0
+      gpgkey=https://pkgs.netbird.io/yum/repodata/repomd.xml.key
+      repo_gpgcheck=1
+  - path: /etc/ssh/sshd_config.d/10-msj.conf
+    permissions: "0600"
+    content: |
+      # Keys only. The box has no public inbound port; SSH arrives over NetBird.
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin prohibit-password
+  - path: /root/netbird-setup-key
+    permissions: "0600"
+    content: REPLACE_WITH_ONE_OFF_SETUP_KEY
+
+runcmd:
+  - [systemctl, reload, sshd]
+  - [dnf, -y, install, firewalld, netbird]
+  - [systemctl, enable, --now, firewalld]
+  # Everything inbound on the public interface is dropped; the NetBird
+  # tunnel (wt0) is trusted. NetBird dials out, so it needs no open port.
+  - [firewall-cmd, --permanent, --zone=trusted, --add-interface=wt0]
+  - [firewall-cmd, --set-default-zone=drop]
+  - [firewall-cmd, --reload]
+  - [sh, -c, "netbird service install 2>/dev/null; netbird service start 2>/dev/null; systemctl enable netbird"]
+  - [sh, -c, "netbird up --setup-key-file /root/netbird-setup-key > /root/netbird-up.log 2>&1; echo \"netbird up exit status $?\" >> /root/netbird-up.log"]
+  - [shred, -u, /root/netbird-setup-key]

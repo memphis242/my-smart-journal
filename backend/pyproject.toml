@@ -6,11 +6,55 @@ build-backend = "hatchling.build"
 name = "my-smart-journal"
 version = "0.1.0"
 requires-python = ">=3.14"
-dependencies = ["fastapi", "uvicorn[standard]", "pydantic>=2", "pydantic-settings", "httpx", "rapidfuzz", "jsonschema", "python-multipart", "numpy"]
+dependencies = [
+    "fastapi",
+    # Imported directly (concurrency, datastructures, exceptions, requests, types).
+    "starlette",
+    "uvicorn[standard]",
+    "pydantic>=2",
+    # Imported directly for PydanticCustomError; pydantic pins the exact version.
+    "pydantic-core",
+    "pydantic-settings",
+    "httpx",
+    "rapidfuzz",
+    "jsonschema",
+    "python-multipart",
+    "numpy",
+]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-xdist", "pytest-asyncio", "ruff", "mypy", "types-jsonschema"]
-semantic = ["sentence-transformers"]
+dev = [
+    "pytest",
+    "pytest-xdist",
+    "pytest-asyncio",
+    "pytest-cov",
+    "hypothesis",
+    # starlette.testclient uses httpx2 when installed and warns (StarletteDeprecationWarning)
+    # once per test process when it falls back to httpx.
+    "httpx2",
+    "ruff",
+    "mypy",
+    "types-jsonschema",
+    "basedpyright",
+    "deptry",
+    "pip-audit",
+    # Locks dependencies (scripts/lock.sh) and checks the lock is current.
+    "uv",
+    # Lint the repository's shell scripts and GitHub Actions workflows (scripts/check.sh).
+    "shellcheck-py",
+    "actionlint-py",
+]
+semantic = [
+    "sentence-transformers",
+    # Listed so the lock can take it from the CPU-only PyTorch index (see [tool.uv]); the
+    # default PyPI wheel bundles multi-gigabyte CUDA libraries the VPS cannot use.
+    "torch",
+]
+
+[dependency-groups]
+# The build backend (and its editable-install helper), locked so the package builds offline with
+# `pip install --no-build-isolation --no-deps` (see README "Dependency lock").
+build = ["hatchling", "editables"]
 
 [project.scripts]
 msj = "msj.cli:main"
@@ -20,16 +64,175 @@ packages = ["src/msj"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# The cache provider would write .pytest_cache into the source tree; generated output
+# belongs in the build directory. Integration tests start real subprocesses and are
+# selected explicitly with `-m integration`, which overrides the default below.
+addopts = ["-p", "no:cacheprovider", "--strict-markers", "--strict-config", "-m", "not integration"]
+markers = [
+    "integration: process-level tests that run real `msj serve`/`msj worker` subprocesses",
+]
+xfail_strict = true
+# Every warning fails the run, including ResourceWarnings surfaced as unraisable
+# exceptions (unclosed SQLite connections, files). A dependency deprecation therefore
+# fails the dependency-update pull request that introduces it, where it is cheapest to
+# address. Add a narrowly matched "ignore:..." entry only with a stated reason.
+filterwarnings = ["error"]
 
 [tool.ruff]
 target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import order
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "S",        # bandit security rules
+    "SIM",      # simplifications
+    "RUF",      # ruff-specific
+    "PT",       # pytest style
+    "ASYNC",    # blocking calls in async code
+    "BLE",      # blind except
+    "TRY",      # exception handling
+    "PL",       # pylint
+    "C90",      # mccabe complexity
+    "PERF",     # performance anti-patterns
+    "DTZ",      # naive datetimes
+    "RET",      # return consistency
+    "C4",       # comprehensions
+    "PIE",      # misc lints
+    "PGH",      # blanket noqa / type: ignore
+    "T20",      # print
+    "ISC",      # implicit string concatenation
+    "LOG", "G", # logging misuse and eager formatting
+    "ARG",      # unused arguments
+    "PTH",      # pathlib
+    "ERA",      # commented-out code
+    "FURB",     # refurb modernizations
+    "TID",      # banned/relative imports
+    "A",        # shadowed builtins
+    "N",        # naming
+    "SLF",      # private member access
+    "RSE",      # raise parentheses
+    "FLY",      # static f-string joins
+]
+ignore = [
+    # The formatter owns trailing commas and string-literal layout.
+    "COM812", "ISC001",
+    # Assertions are deliberate: the project asserts internal invariants in application
+    # code (they cost nothing under -O and surface broken assumptions early).
+    "S101",
+    # Error messages are written at the raise site on purpose: each one names the failed
+    # operation, the resource, and the remedy. A class per message (TRY003) or a variable
+    # per message (EM101/EM102, not selected) would scatter that guidance.
+    "TRY003",
+    # Logging deliberately omits tracebacks and exception values (they can contain journal
+    # text or credentials); handlers log safe_exception() evidence via logger.error.
+    "TRY400",
+    # Inline comparisons against protocol constants (HTTP statuses, digest lengths, tier
+    # numbers) read clearer than named constants used once.
+    "PLR2004",
+    # Deferred imports break storage <-> embedding/compilations/batch import cycles and
+    # keep the optional sentence-transformers dependency lazy.
+    "PLC0415",
+    # Keyword-only parameters are the norm in this codebase; positional sprawl is still
+    # caught by PLR0917.
+    "PLR0913",
+    # NotFound/Conflict/EntryChanged are part of the storage vocabulary used across modules;
+    # an Error suffix adds nothing.
+    "N818",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests get lower standards than application code: private access, magic values, fixture
+# arguments, synthetic tokens/passwords, subprocesses with trusted arguments, and loose
+# structure are normal there.
+"tests/**" = [
+    "ARG", "SLF001", "PLR0915", "PLR0912", "PLR0917", "C901", "TRY301", "BLE001",
+    "S105", "S106", "S108", "S311", "S603", "S607", "S608",
+    "PT018", "SIM117", "INP001", "T20", "PERF", "N802", "PLW0603", "RET",
+]
+# The CLI's output is its interface.
+"src/msj/cli.py" = ["T201"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
 
 [tool.mypy]
 python_version = "3.14"
 strict = true
+files = ["src", "tests"]
+mypy_path = "src:."
+# Several test packages have their own conftest.py; module names come from their paths.
+explicit_package_bases = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# Tests are type-checked to a lower standard than application code: untyped helpers are
+# allowed, tests monkeypatch module globals (implicit re-exports), and Starlette types
+# TestClient.app as a bare ASGI callable, so `app.state` is not visible (attr-defined).
+module = ["tests.*"]
+implicit_reexport = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+warn_return_any = false
+disable_error_code = ["attr-defined"]
+
+[tool.basedpyright]
+# Second type checker, strict on application code (tests are covered by mypy).
+include = ["src"]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+# isinstance() narrowing of parsed JSON and provider payloads (Any) yields dict[Unknown,
+# Unknown] and list[Unknown]; flagging every such value would demand casts throughout the
+# validation code. mypy --strict still rejects implicit Any in signatures and generics.
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownMemberType = false
+
+[tool.uv]
+# uv.lock pins every dependency with hashes; requirements/*.txt are exported from it.
+# The service runs on Linux only (development machine, VPS, CI).
+environments = ["sys_platform == 'linux'"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.deptry]
+# The dev extra holds tools and test libraries, not imports of the msj package.
+pep621_dev_dependency_groups = ["dev"]
+
+[tool.deptry.per_rule_ignores]
+# Used without an import: Starlette loads python-multipart to parse forms, and torch is
+# sentence-transformers' backend (listed only to pin the CPU wheel index).
+DEP002 = ["python-multipart", "torch"]
+
+[tool.coverage.run]
+branch = true
+source = ["msj"]
+# Integration tests run `msj` subprocesses; measure them too and combine the data files.
+parallel = true
+patch = ["subprocess"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# Branch coverage is about 88.7% for the default suite (unit and property tests) and 89.5%
+# with the integration suite combined. Raise the floor as coverage grows; never lower it
+# to admit a change.
+fail_under = 87
+precision = 2

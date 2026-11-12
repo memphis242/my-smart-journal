@@ -1,0 +1,11 @@
+# Sundays 05:00 UTC, clear of the nightly backup (prune rewrites the repository).
+[Unit]
+Description=Journal weekly restic retention and integrity check timer
+
+[Timer]
+OnCalendar=Sun *-*-* 05:00:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

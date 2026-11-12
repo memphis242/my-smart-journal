@@ -2,6 +2,7 @@
 
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -283,7 +284,7 @@ def test_upgrade_fences_legacy_claims_and_new_workers_resume_review(
     directory = tmp_path / "upgrade"
     directory.mkdir()
     resources = Path(__file__).parents[1] / "src/msj/resources/migrations"
-    with sqlite3.connect(directory / "journal.db") as db:
+    with closing(sqlite3.connect(directory / "journal.db")) as db, db:
         _ = db.execute("CREATE TABLE schema_migrations (version TEXT PRIMARY KEY)")
         for name in ("001_initial.sql", "002_file_deletions.sql", "003_superseded_jobs.sql"):
             db.executescript((resources / name).read_text())

@@ -205,7 +205,7 @@ def test_patch_invalidates_claim_and_versions_artifacts(tmp_path: Path) -> None:
     assert old_claim is not None
     assert store.patch_entry(entry["id"], {"text": "revised source"})["revision"] == 2
     assert store.finish_job(old_claim, "stale result", "fake", "hash") is False
-    outputs = {
+    outputs: dict[TaskKind, str] = {
         "cleanup": "revised clean",
         "review": '{"unsupported_claims": []}',
         "summarize": "revised summary",

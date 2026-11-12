@@ -19,6 +19,7 @@ from .providers import (
     prompt_digest,
     revision_messages,
 )
+from .shutdown import ShutdownRequested, StopSignal
 from .storage import Store
 
 if TYPE_CHECKING:
@@ -87,11 +88,13 @@ class Runner:
         settings: Settings,
         provider: Provider | None = None,
         embedding: EmbeddingService | None = None,
+        stop: StopSignal | None = None,
     ) -> None:
         self.store = store
         self.settings = settings
         self._provider = provider
         self._embedding: EmbeddingService | None = embedding
+        self._stop = stop
 
     def run_batch(self, *, _lease_id: str | None = None) -> dict[str, Any]:
         from .batch import BatchCoordinator
@@ -100,7 +103,7 @@ class Runner:
             return self._execute_batch(_lease_id)
         return BatchCoordinator(self.store, self).run_sync("manual")
 
-    def _execute_batch(self, lease_id: str) -> dict[str, Any]:
+    def _execute_batch(self, lease_id: str) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
         # Session follow-ups stay in the batch; new entry revisions wait for another pass.
         snapshot = {
             (job["entry_id"], job["revision"], job.get("compilation_id"))
@@ -110,8 +113,12 @@ class Runner:
         attempted: set[str] = set()
         stats = {"done": 0, "failed": 0, "discarded": 0}
         with httpx.Client() as http:
-            provider = self._provider or InferenceProvider(self.settings, http)
+            provider = self._provider or InferenceProvider(self.settings, http, stop=self._stop)
             while True:
+                if self._stop is not None and self._stop.is_set():
+                    # Unclaimed jobs stay queued; the lease is released normally.
+                    _logger.info("Batch ended early for shutdown; remaining jobs stay queued")
+                    break
                 eligible = {
                     job["id"]
                     for job in self.store.list_jobs()
@@ -139,7 +146,7 @@ class Runner:
                             continue
                         try:
                             published = self._embedding.process(job)
-                        except Exception as exc:
+                        except Exception as exc:  # noqa: BLE001 - recorded on the job; batch continues
                             diagnostic = safe_exception(exc)
                             _logger.error("Embedding job failed: %s", diagnostic)
                             from .embedding import EmbeddingFailure
@@ -165,9 +172,7 @@ class Runner:
                                 ),
                             }[failure_code]
                             message = f"{failure_code}: {guidance}; see worker logs for details"
-                            recorded = self.store.fail_job(
-                                job, message
-                            )
+                            recorded = self.store.fail_job(job, message)
                             stats["failed" if recorded else "discarded"] += 1
                             continue
                         stats["done" if published else "discarded"] += 1
@@ -202,6 +207,16 @@ class Runner:
                         producer_route=route,
                     )
                     stats["done" if published else "discarded"] += 1
+                except ShutdownRequested:
+                    # Not a failure: the job returns to the queue with its attempt restored,
+                    # and the stop check above ends the batch, which releases the lease.
+                    requeued = self.store.requeue_interrupted(job)
+                    _logger.info(
+                        "%s job %s interrupted by worker shutdown (%s)",
+                        job["kind"],
+                        job["id"],
+                        "requeued" if requeued else "already reclaimed",
+                    )
                 except (ProviderError, OSError, KeyError) as exc:
                     match exc:
                         case SafeProviderError():
@@ -221,7 +236,7 @@ class Runner:
                         retryable=exc.retryable if isinstance(exc, ProviderError) else True,
                     )
                     stats["failed" if recorded else "discarded"] += 1
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - one job's failure must not end the batch
                     _logger.error("Unexpected job exception: %s", safe_exception(exc))
                     recorded = self.store.fail_job(
                         job,

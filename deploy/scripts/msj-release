@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+#
+# Install, activate and roll back releases of the journal on the box.
+#
+#   msj-release install <msj-release-*.tar.gz> [--force]
+#   msj-release rollback [--restore-db]
+#   msj-release list
+#
+# A release tarball is built on the workstation by deploy/scripts/build-release.sh
+# and copied over NetBird. It holds the backend wheel, the built web bundle and
+# a RELEASE file. Each release gets its own directory and virtualenv under
+# /opt/msj/releases/<id>; /opt/msj/current is a symlink to the live one, so a
+# rollback is a symlink flip plus, when the schema moved, a database restore.
+#
+# Dependencies come from the release's hashed lock export
+# (requirements/deploy.txt, generated from backend/uv.lock by scripts/lock.sh),
+# installed with --require-hashes, so every box gets byte-identical packages.
+# torch is pinned to its +cpu build from the PyTorch CPU index; the install
+# still fails if any CUDA package slips in.
+set -Eeuo pipefail
+MSJ_JOB=msj-release
+# shellcheck source=lib/common.sh
+. /usr/local/lib/msj/common.sh
+
+readonly PYTHON=/usr/bin/python3.14
+readonly TORCH_CPU_INDEX=https://download.pytorch.org/whl/cpu
+readonly PRE_MIGRATE_DIR="$MSJ_BACKUP_DIR/pre-migrate"
+readonly KEEP_RELEASES=4
+readonly KEEP_PRE_MIGRATE=5
+
+usage() { msj_die "usage: msj-release install <tarball> [--force] | rollback [--restore-db] | list"; }
+
+pip_in() { "$1/venv/bin/python" -m pip --disable-pip-version-check --no-input "${@:2}"; }
+
+batch_running() {
+  local now
+  [[ -f $MSJ_DATA/journal.db ]] || return 1
+  now=$(date -u +%s)
+  [[ $(msj_db_query "SELECT count(*) FROM batch_state WHERE id=1 AND batch_id IS NOT NULL AND lease_until > $now;") != 0 ]]
+}
+
+migration_count() { msj_as_service_user sqlite3 -readonly "$1" 'SELECT count(*) FROM schema_migrations;'; }
+
+wait_healthy() {
+  local i seen age
+  for i in $(seq 1 90); do
+    if curl -fsS -m 2 -o /dev/null "$MSJ_SERVE_URL/api/v1/health" 2>/dev/null; then
+      seen=$(msj_db_query 'SELECT worker_last_seen_at FROM batch_state WHERE id=1;' 2>/dev/null || true)
+      if [[ -n $seen ]]; then
+        age=$(( $(date -u +%s) - $(date -d "$seen" +%s) ))
+        (( age <= 30 )) && return 0
+      fi
+    fi
+    (( i % 15 == 0 )) && msj_log "still waiting for the API and a fresh worker heartbeat ($i s)"
+    sleep 1
+  done
+  return 1
+}
+
+activate() { # <release dir>
+  ln -sfn "$1" "$MSJ_CURRENT.new"
+  mv -T "$MSJ_CURRENT.new" "$MSJ_CURRENT"
+}
+
+cmd_list() {
+  local current dir
+  current=$(readlink -f "$MSJ_CURRENT" 2>/dev/null || true)
+  for dir in "$MSJ_RELEASES"/*/; do
+    dir=${dir%/}
+    [[ -f $dir/RELEASE ]] || continue
+    if [[ $dir == "$current" ]]; then printf '* '; else printf '  '; fi
+    printf '%s  %s\n' "$(basename "$dir")" "$(grep -m1 '^commit=' "$dir/RELEASE" || true)"
+  done
+}
+
+cmd_install() {
+  local tarball="" force=0 arg
+  for arg in "$@"; do
+    case $arg in
+      --force) force=1 ;;
+      -*) usage ;;
+      *) tarball=$arg ;;
+    esac
+  done
+  [[ -n $tarball && -f $tarball ]] || msj_die "release tarball '${tarball:-}' not found; copy it over first (RUNBOOK 'Deploying a new version')"
+  msj_require_unlocked
+  [[ -x $PYTHON ]] || msj_die "$PYTHON is missing; run bootstrap.sh host (it installs python3.14 from AppStream)"
+
+  local incoming id dir
+  install -d -m 755 "$MSJ_RELEASES"
+  # Leftovers of an install that died while unpacking.
+  find "$MSJ_RELEASES" -mindepth 1 -maxdepth 1 -name '.incoming.*' -mmin +60 -exec rm -rf -- {} +
+  incoming=$(mktemp -d -p "$MSJ_RELEASES" .incoming.XXXXXX)
+  trap 'rm -rf -- "$incoming"' RETURN
+  tar -xzf "$tarball" -C "$incoming"
+  [[ -f $incoming/RELEASE ]] || msj_die "$tarball has no RELEASE file; build it with deploy/scripts/build-release.sh"
+  id=$(sed -n 's/^id=//p' "$incoming/RELEASE")
+  [[ $id =~ ^[0-9A-Za-z._-]+$ ]] || msj_die "RELEASE in $tarball has an invalid id '$id'"
+  local wheels=("$incoming"/wheel/*.whl)
+  (( ${#wheels[@]} == 1 )) && [[ -f ${wheels[0]} ]] || msj_die "$tarball must contain exactly one wheel under wheel/"
+  [[ -f $incoming/web/index.html ]] || msj_die "$tarball has no web/index.html; the web bundle did not build"
+  [[ -f $incoming/requirements/deploy.txt ]] || msj_die "$tarball has no requirements/deploy.txt (the hashed dependency lock); rebuild it with deploy/scripts/build-release.sh"
+
+  dir="$MSJ_RELEASES/$id"
+  if [[ -e $dir ]]; then
+    [[ $(readlink -f "$MSJ_CURRENT" 2>/dev/null) != "$dir" ]] || msj_die "release $id is already live"
+    (( force )) || msj_die "release $id is already installed at $dir; activate it with rollback, or reinstall with --force"
+    rm -rf -- "$dir"
+  fi
+
+  msj_log "building $dir"
+  mv "$incoming" "$dir"
+  trap - RETURN
+  local wheel
+  wheel="$dir/wheel/$(basename "${wheels[0]}")"
+  chmod 755 "$dir"
+  "$PYTHON" -m venv "$dir/venv"
+  pip_in "$dir" install --upgrade pip >/dev/null
+
+  # Every dependency from the hashed lock; --no-deps because the lock is the
+  # complete set, so pip never resolves anything itself. The +cpu torch build
+  # exists only on the PyTorch CPU index, so nothing on PyPI can substitute it.
+  pip_in "$dir" install --require-hashes --no-deps --extra-index-url "$TORCH_CPU_INDEX" \
+    -r "$dir/requirements/deploy.txt" \
+    || msj_die "installing the locked dependencies from $dir/requirements/deploy.txt failed (output above). A hash mismatch means a download was altered or the lock is stale: rebuild the release from a commit where scripts/lock.sh --check passes."
+  pip_in "$dir" install --no-deps --no-index "$wheel" \
+    || msj_die "installing $(basename "$wheel") failed (output above)"
+  pip_in "$dir" check \
+    || msj_die "pip check found missing or conflicting dependencies in $dir (above); the lock export does not match the wheel's requirements. Run scripts/lock.sh, commit, and rebuild the release."
+  pip_in "$dir" freeze >"$dir/requirements.freeze"
+  if grep -q -i -E '^nvidia-' "$dir/requirements.freeze"; then
+    msj_die "CUDA packages were installed into $dir (see requirements.freeze); the CPU-only torch pin did not hold. Remove $dir and investigate before deploying."
+  fi
+  "$dir/venv/bin/python" -c 'import torch, sentence_transformers, msj; assert torch.version.cuda is None, torch.version.cuda' \
+    || msj_die "the new environment fails its import check (above); nothing was changed on the live service"
+  restorecon -RF "$dir" >/dev/null 2>&1 || msj_warn "restorecon on $dir failed; check SELinux labels if the services cannot start"
+  msj_log "environment ready: $(grep -m1 -E '^torch==' "$dir/requirements.freeze")"
+
+  # The embedding model: load it offline from the cache; download it (as the
+  # service account, into /var/lib/msj/hf) only when that fails. The services
+  # themselves never go online for it (HF_HUB_OFFLINE=1).
+  if ! MSJ_APP_BIN="$dir/venv/bin/msj" msj_app embedding-download >/dev/null 2>&1; then
+    msj_log "embedding model not in the cache; downloading it once"
+    MSJ_APP_BIN="$dir/venv/bin/msj" msj_app HF_HUB_OFFLINE=0 embedding-download \
+      || msj_die "could not download the embedding model (above); check outbound HTTPS to huggingface.co and rerun install with --force"
+  fi
+
+  if batch_running; then
+    msj_log "a processing batch is running; stopping the worker cancels its in-flight RunPod job and requeues it, and the new worker picks it up"
+  fi
+
+  local previous stamp snap
+  previous=$(readlink -f "$MSJ_CURRENT" 2>/dev/null || true)
+  [[ -n $previous ]] && printf '%s\n' "$previous" >"$dir/PREVIOUS"
+
+  systemctl stop msj-worker.service msj-serve.service
+  if [[ -f $MSJ_DATA/journal.db ]]; then
+    install -d -m 710 -o root -g "$MSJ_USER" "$MSJ_BACKUP_DIR"
+    install -d -m 700 -o "$MSJ_USER" -g "$MSJ_USER" "$PRE_MIGRATE_DIR"
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    snap="$PRE_MIGRATE_DIR/$stamp-before-$id.db"
+    msj_snapshot_db "$snap"
+    printf '%s\n' "$snap" >"$dir/PRE_MIGRATE_SNAPSHOT"
+    msj_log "pre-migration snapshot: $snap"
+  fi
+
+  activate "$dir"
+  if ! systemctl start msj-migrate.service; then
+    journalctl -u msj-migrate.service -n 30 --no-pager >&2 || true
+    msj_die "msj migrate failed with release $id (log above). The new code is active but stopped. Roll back with: msj-release rollback --restore-db"
+  fi
+  systemctl start msj.target
+  if ! wait_healthy; then
+    msj_die "release $id did not become healthy in 90s (journalctl -u msj-serve -u msj-worker -n 50). Roll back with: msj-release rollback (add --restore-db if the schema changed; rollback tells you)"
+  fi
+
+  # Keep the newest releases and pre-migrate snapshots; never the live or
+  # previous release.
+  local keep=0 old
+  while IFS= read -r old; do
+    [[ $old == "$dir" || $old == "$previous" ]] && continue
+    keep=$((keep + 1))
+    (( keep >= KEEP_RELEASES )) && rm -rf -- "$old"
+  done < <(find "$MSJ_RELEASES" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-)
+  if [[ -d $PRE_MIGRATE_DIR ]]; then
+    find "$PRE_MIGRATE_DIR" -name '*.db' -printf '%T@ %p\n' | sort -rn \
+      | tail -n +$((KEEP_PRE_MIGRATE + 1)) | cut -d' ' -f2- | xargs -r rm -f --
+  fi
+
+  msj_log "release $id is live"
+}
+
+cmd_rollback() {
+  local restore=0
+  case ${1:-} in '') ;; --restore-db) restore=1 ;; *) usage ;; esac
+  msj_require_unlocked
+  local current previous snap
+  current=$(readlink -f "$MSJ_CURRENT" 2>/dev/null) || msj_die "no live release at $MSJ_CURRENT"
+  [[ -f $current/PREVIOUS ]] || msj_die "$current has no PREVIOUS release recorded; activate one by hand: ln -sfn $MSJ_RELEASES/<id> $MSJ_CURRENT"
+  previous=$(<"$current/PREVIOUS")
+  [[ -d $previous/venv ]] || msj_die "previous release $previous is gone (pruned?); reinstall it with msj-release install <its tarball>"
+  snap=$(cat "$current/PRE_MIGRATE_SNAPSHOT" 2>/dev/null || true)
+
+  if (( ! restore )) && [[ -n $snap && -f $snap ]]; then
+    local live_n snap_n
+    live_n=$(migration_count "$MSJ_DATA/journal.db")
+    snap_n=$(migration_count "$snap")
+    if [[ $live_n != "$snap_n" ]]; then
+      msj_die "release $(basename "$current") applied $((live_n - snap_n)) migration(s); the previous code may not run on the new schema. Rerun with --restore-db to restore $snap (writes since that snapshot are lost; they stay in the replaced copy under $MSJ_BACKUP_DIR/replaced-*)."
+    fi
+  fi
+
+  systemctl stop msj-worker.service msj-serve.service
+  if (( restore )); then
+    [[ -n $snap && -f $snap ]] || msj_die "no pre-migration snapshot recorded for $(basename "$current"); restore from restic instead (RUNBOOK 'Restore')"
+    local aside
+    aside="$MSJ_BACKUP_DIR/replaced-$(date -u +%Y%m%dT%H%M%SZ)"
+    install -d -m 700 -o "$MSJ_USER" -g "$MSJ_USER" "$aside"
+    # Move the WAL and shared-memory files too: a stale -wal next to a
+    # replaced journal.db would be replayed into it and corrupt it.
+    local f
+    for f in journal.db journal.db-wal journal.db-shm; do
+      [[ -e $MSJ_DATA/$f ]] && mv "$MSJ_DATA/$f" "$aside/"
+    done
+    install -m 600 -o "$MSJ_USER" -g "$MSJ_USER" "$snap" "$MSJ_DATA/journal.db"
+    msj_log "restored $snap (previous live database kept in $aside)"
+  fi
+  activate "$previous"
+  systemctl start msj-migrate.service
+  systemctl start msj.target
+  wait_healthy || msj_die "rolled back to $(basename "$previous") but it did not become healthy (journalctl -u msj-serve -u msj-worker -n 50)"
+  msj_log "rolled back to $(basename "$previous")"
+}
+
+msj_require_root
+case ${1:-} in
+  install) shift; cmd_install "$@" ;;
+  rollback) shift; cmd_rollback "$@" ;;
+  list) cmd_list ;;
+  *) usage ;;
+esac

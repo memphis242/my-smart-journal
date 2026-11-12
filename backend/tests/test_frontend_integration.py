@@ -13,10 +13,13 @@ from msj.config import TASKS, Settings, TaskRoute
 
 @pytest.mark.parametrize("tiers", ["1", "2", "3", "4", "5"])
 def test_search_results_embed_summary_entry(tmp_path: Path, tiers: str) -> None:
-    app = create_app(Settings(
-        data_dir=tmp_path, embedding={"provider": "fake", "min_score": -1},
-        tasks={kind: TaskRoute(provider="fake") for kind in TASKS},
-    ))
+    app = create_app(
+        Settings(
+            data_dir=tmp_path,
+            embedding={"provider": "fake", "min_score": -1},
+            tasks={kind: TaskRoute(provider="fake") for kind in TASKS},
+        )
+    )
     token = create_token(app.state.store)
     headers = {"Authorization": f"Bearer {token}"}
     with TestClient(app) as http:

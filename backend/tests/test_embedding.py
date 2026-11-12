@@ -1,5 +1,6 @@
 """Behavioral checks for local embedding and semantic search."""
 
+import itertools
 import os
 import sys
 import types
@@ -74,9 +75,7 @@ def test_fake_embedder_is_deterministic_and_none_is_reported(tmp_path: Path) -> 
 def test_missing_model_has_stable_unavailable_code(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    settings = Settings(
-        data_dir=tmp_path, embedding=EmbeddingSettings(provider="fake")
-    )
+    settings = Settings(data_dir=tmp_path, embedding=EmbeddingSettings(provider="fake"))
     service = EmbeddingService(Store(settings), settings)
     service._model_error = True
     service._model_retry_after = float("inf")
@@ -107,8 +106,11 @@ def test_model_load_recovers_after_bounded_backoff(
         def encode(self, texts: list[str], **_kwargs: Any) -> np.ndarray[Any, Any]:
             return np.ones((len(texts), 4), dtype=np.float32)
 
-    def load_model(_model_name: str, *, device: str, revision: str) -> LoadedModel:
+    def load_model(
+        _model_name: str, *, device: str, revision: str, local_files_only: bool
+    ) -> LoadedModel:
         assert revision == settings.embedding.revision
+        assert local_files_only, "serving must never fetch the model from the network"
         attempts.append(device)
         if len(attempts) == 1:
             raise RuntimeError("private provider value")
@@ -219,9 +221,7 @@ def test_stale_claim_cannot_publish_after_entry_revision_changes(
 
     encode = service._encode
 
-    def revise_before_publish(
-        passages: list[str], *, query: bool = False
-    ) -> Any:
+    def revise_before_publish(passages: list[str], *, query: bool = False) -> Any:
         _ = store.patch_entry(entry["id"], {"text": "The corrected entry text."})
         return encode(passages, query=query)
 
@@ -293,15 +293,11 @@ def test_reconcile_requeues_old_fingerprint_but_keeps_failed_jobs_terminal(
 
 
 def test_disabling_embeddings_supersedes_jobs_and_reenable_queues_them(tmp_path: Path) -> None:
-    enabled_settings = Settings(
-        data_dir=tmp_path, embedding=EmbeddingSettings(provider="fake")
-    )
+    enabled_settings = Settings(data_dir=tmp_path, embedding=EmbeddingSettings(provider="fake"))
     store = Store(enabled_settings)
     store.migrate()
     entry = store.create_entry(text="An entry awaiting semantic processing.")
-    disabled_settings = Settings(
-        data_dir=tmp_path, embedding=EmbeddingSettings(provider="none")
-    )
+    disabled_settings = Settings(data_dir=tmp_path, embedding=EmbeddingSettings(provider="none"))
     with store.connect() as db:
         EmbeddingService(store, disabled_settings).reconcile(db)
         disabled = db.execute(
@@ -367,3 +363,50 @@ def test_real_bge_model_ranks_semantically_related_entry(tmp_path: Path) -> None
     rows, _ = service.search("I fixed a slow SQL query by optimizing its index.")
     assert rows[0]["entry_id"] == relevant["id"]
     assert vector.size == 384
+
+
+@pytest.mark.parametrize("token_count", [1, 5, 6, 7, 8, 9, 13, 14])
+def test_tokenizer_chunks_cover_text_without_redundant_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, token_count: int
+) -> None:
+    # Regression: a trailing window could start inside the previous window's overlap and
+    # repeat only tokens it already covered.
+    settings = Settings(
+        data_dir=tmp_path,
+        embedding=EmbeddingSettings(
+            provider="sentence-transformers", model="test-model", chunk_tokens=6, chunk_overlap=2
+        ),
+    )
+    store = Store(settings)
+    service = EmbeddingService(store, settings)
+
+    class Tokenizer:
+        def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+            assert not add_special_tokens
+            return [int(token) for token in text.split()]
+
+        def decode(self, ids: list[int], *, skip_special_tokens: bool) -> str:
+            assert skip_special_tokens
+            return " ".join(str(token) for token in ids)
+
+        def num_special_tokens_to_add(self, *, pair: bool) -> int:
+            assert not pair
+            return 2
+
+    class LoadedModel:
+        max_seq_length = 512
+        tokenizer = Tokenizer()
+
+    module = types.ModuleType("sentence_transformers")
+    module.SentenceTransformer = lambda *_args, **_kwargs: LoadedModel()
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+
+    chunks = [
+        [int(token) for token in chunk.split()]
+        for chunk in service._chunks(" ".join(str(index) for index in range(token_count)))
+    ]
+    assert sorted({token for chunk in chunks for token in chunk}) == list(range(token_count))
+    assert all(len(chunk) <= 6 for chunk in chunks)
+    for previous, current in itertools.pairwise(chunks):
+        assert current[0] == previous[-1] - 1
+        assert current[-1] > previous[-1]

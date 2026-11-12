@@ -13,7 +13,7 @@ from msj.auth import create_token
 from msj.batch import BatchCoordinator
 from msj.config import TASKS, Settings, TaskKind, TaskRoute
 from msj.pipeline import Runner
-from msj.providers import Generation, InferenceProvider
+from msj.providers import Generation, InferenceProvider, Provider
 
 
 class UnexpectedFailureProvider:
@@ -66,7 +66,7 @@ def test_unexpected_job_errors_do_not_abort_batch_or_disclose_text(
             client,
             headers,
             settings,
-            UnexpectedFailureProvider(delegate, exception_type(private)),
+            UnexpectedFailureProvider(delegate, exception_type(private)),  # type: ignore[arg-type]
         )
     assert result == {"processed": 7, "failed": 1}
     jobs: list[dict[str, Any]] = client.get("/api/v1/jobs", headers=headers).json()
@@ -162,7 +162,8 @@ def test_paused_runpod_error_retries_then_remains_visible_in_job_error(
             entry = client.post("/api/v1/entries", headers=headers, json={"text": "private"}).json()
             assert _run_batch_and_wait(client, headers, settings, worker_provider)["failed"] == 1
             job = next(
-                item for item in client.get("/api/v1/jobs", headers=headers).json()
+                item
+                for item in client.get("/api/v1/jobs", headers=headers).json()
                 if item["entry_id"] == entry["id"] and item["kind"] == "cleanup"
             )
             assert job["status"] == "queued"
@@ -172,7 +173,8 @@ def test_paused_runpod_error_retries_then_remains_visible_in_job_error(
                 _ = db.execute("UPDATE jobs SET not_before=0 WHERE id=?", (job["id"],))
             assert _run_batch_and_wait(client, headers, settings, worker_provider)["failed"] == 1
             final_job = next(
-                item for item in client.get("/api/v1/jobs", headers=headers).json()
+                item
+                for item in client.get("/api/v1/jobs", headers=headers).json()
                 if item["id"] == job["id"]
             )
             assert final_job["status"] == "failed"
@@ -212,7 +214,7 @@ def _run_batch_and_wait(
     client: TestClient,
     headers: dict[str, str],
     settings: Settings,
-    provider: InferenceProvider | UnexpectedFailureProvider | None = None,
+    provider: Provider | None = None,
 ) -> dict[str, Any]:
     started = client.post("/api/v1/batches/run", headers=headers)
     assert started.status_code == 202

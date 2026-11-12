@@ -24,7 +24,7 @@ class CompilationService:
             unique_ids = list(dict.fromkeys(entry_ids))
             placeholders = ",".join("?" for _ in unique_ids)
             rows = db.execute(
-                "SELECT id,entry_date,title,tags,revision FROM entries "
+                "SELECT id,entry_date,title,tags,revision FROM entries "  # noqa: S608 - placeholders
                 f"WHERE id IN ({placeholders})",
                 unique_ids,
             ).fetchall()
@@ -110,12 +110,12 @@ class CompilationService:
                     raise NotFound(
                         f"Compilation entry {entry_id} was deleted before input snapshot creation"
                     )
-                entry = Store._read_entry(db, entry_id, False)
+                entry = Store.read_entry(db, entry_id, False)
                 fields = summary_fields(entry)
                 extraction = final_artifact(entry, "extraction")
                 try:
                     extraction_content = json.loads(extraction["content"]) if extraction else None
-                except (ValueError, TypeError, RecursionError):
+                except ValueError, TypeError, RecursionError:
                     extraction_content = None
                 source.append(
                     {
@@ -163,7 +163,7 @@ class CompilationService:
                 continue
             placeholders = ",".join("?" for _ in entry_ids)
             prerequisites = db.execute(
-                "SELECT j.id FROM jobs j JOIN entries e ON e.id=j.entry_id "
+                "SELECT j.id FROM jobs j JOIN entries e ON e.id=j.entry_id "  # noqa: S608 - placeholders
                 f"WHERE j.entry_id IN ({placeholders}) AND j.revision=e.revision "
                 "AND j.kind IN ('transcribe','cleanup','summarize','extract','review','revise') "
                 "AND j.status!='superseded'",
@@ -217,4 +217,3 @@ class CompilationService:
             "model": row["model"],
             "prompt_sha256": row["prompt_sha256"],
         }
-

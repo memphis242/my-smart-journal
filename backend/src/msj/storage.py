@@ -9,7 +9,7 @@ import logging
 import os
 import sqlite3
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from importlib.resources import files
@@ -67,7 +67,7 @@ class Store:
         self.db_path = self.data_dir / "journal.db"
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
+    def connect(self) -> Generator[sqlite3.Connection]:
         connection = sqlite3.connect(self.db_path, timeout=30)
         connection.row_factory = sqlite3.Row
         try:
@@ -160,6 +160,7 @@ class Store:
                 ),
             )
             if enabled and completed:
+                assert candidate is not None
                 review_id = self._insert_session_job(
                     db,
                     dict(row),
@@ -363,7 +364,7 @@ class Store:
     def _canonical_date(value: str) -> str:
         return date.fromisoformat(value).isoformat()
 
-    def create_entry(
+    def create_entry(  # noqa: C901, PLR0915
         self,
         *,
         text: str | None = None,
@@ -410,7 +411,8 @@ class Store:
                     _ = db.execute(
                         "INSERT OR IGNORE INTO file_deletions VALUES (?)", (str(audio_relative),)
                     )
-                    assert audio is not None and stored_file is not None
+                    assert audio is not None
+                    assert stored_file is not None
                     (self.data_dir / "audio").mkdir(exist_ok=True, mode=0o700)
                     stored_file.parent.mkdir(mode=0o700)
                     _ = stored_file.write_bytes(audio)
@@ -423,7 +425,8 @@ class Store:
                         timestamp(),
                         self._canonical_date(entry_date)
                         if entry_date is not None
-                        else date.today().isoformat(),
+                        # Clients send their own calendar day; this fallback is the server's.
+                        else date.today().isoformat(),  # noqa: DTZ011
                         title,
                         json.dumps(tags or []),
                         "audio" if audio is not None else "text",
@@ -453,7 +456,7 @@ class Store:
                     self._reserve_file_deletion(audio_relative)
                     self._release_audio_write(audio_relative)
                     failures = self._drain_deletions()
-                except Exception as cleanup_error:
+                except Exception as cleanup_error:  # noqa: BLE001 - reported as AudioCleanupPending
                     _logger.error(
                         "Audio cleanup retry failed (errno=%s)",
                         getattr(cleanup_error, "errno", None),
@@ -461,16 +464,14 @@ class Store:
                     raise AudioCleanupPending(
                         audio_relative.name, getattr(cleanup_error, "errno", None)
                     ) from original_error
-                pending = next(
-                    (item for item in failures if item[0] == str(audio_relative)), None
-                )
+                pending = next((item for item in failures if item[0] == str(audio_relative)), None)
                 if pending is not None:
                     raise AudioCleanupPending(audio_relative.name, pending[1]) from original_error
             raise
         return self.get_entry(entry_id)
 
     @staticmethod
-    def _read_entry(db: sqlite3.Connection, entry_id: str, history: bool) -> dict[str, Any]:
+    def read_entry(db: sqlite3.Connection, entry_id: str, history: bool) -> dict[str, Any]:
         entry = Store._entry(db, entry_id)
         entry["compilation_count"] = int(
             db.execute(
@@ -480,7 +481,7 @@ class Store:
             ).fetchone()[0]
         )
         rows = db.execute(
-            "SELECT * FROM artifacts WHERE entry_id=? "
+            "SELECT * FROM artifacts WHERE entry_id=? "  # noqa: S608 - fixed SQL fragments
             + ("" if history else "AND revision=? AND superseded_by IS NULL ")
             + "ORDER BY created_at,id",
             (entry_id,) if history else (entry_id, entry["revision"]),
@@ -494,7 +495,7 @@ class Store:
             if row["revision"] == entry["revision"] and row["superseded_by"] is None
         )
         job_rows = db.execute(
-            "SELECT * FROM jobs WHERE entry_id=? "
+            "SELECT * FROM jobs WHERE entry_id=? "  # noqa: S608 - fixed SQL fragments
             + ("" if history else "AND revision=? ")
             + "ORDER BY created_at,id",
             (entry_id,) if history else (entry_id, entry["revision"]),
@@ -540,7 +541,7 @@ class Store:
     def get_entry(self, entry_id: str, history: bool = False) -> dict[str, Any]:
         with self.connect() as db:
             _ = db.execute("BEGIN")
-            return self._read_entry(db, entry_id, history)
+            return self.read_entry(db, entry_id, history)
 
     def list_entries(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         with self.connect() as db:
@@ -552,16 +553,16 @@ class Store:
                     (limit, offset),
                 )
             ]
-            return [self._read_entry(db, entry_id, False) for entry_id in ids]
+            return [self.read_entry(db, entry_id, False) for entry_id in ids]
 
     def all_entries(self, *, db: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
         """Read the complete current corpus from one consistent SQLite snapshot."""
         if db is not None:
             ids = [row[0] for row in db.execute("SELECT id FROM entries ORDER BY created_at,id")]
-            return [self._read_entry(db, entry_id, False) for entry_id in ids]
-        with self.connect() as db:
-            _ = db.execute("BEGIN")
-            return self.all_entries(db=db)
+            return [self.read_entry(db, entry_id, False) for entry_id in ids]
+        with self.connect() as connection:
+            _ = connection.execute("BEGIN")
+            return self.all_entries(db=connection)
 
     def patch_entry(
         self,
@@ -592,7 +593,8 @@ class Store:
                             else changes[field]
                         )
                     )
-                    _ = db.execute(f"UPDATE entries SET {field}=? WHERE id=?", (value, entry_id))
+                    # `field` iterates a fixed tuple of column names.
+                    _ = db.execute(f"UPDATE entries SET {field}=? WHERE id=?", (value, entry_id))  # noqa: S608
             if text is not None:
                 revision = int(entry["revision"]) + 1
                 _ = db.execute("UPDATE entries SET revision=? WHERE id=?", (revision, entry_id))
@@ -689,9 +691,7 @@ class Store:
                 if reservation is not None and self._write_owner_alive(reservation):
                     continue
                 if reservation is not None:
-                    _ = db.execute(
-                        "DELETE FROM file_write_reservations WHERE path=?", (relative,)
-                    )
+                    _ = db.execute("DELETE FROM file_write_reservations WHERE path=?", (relative,))
                 referenced = db.execute(
                     "SELECT 1 FROM artifacts WHERE kind='raw_audio' AND content=? LIMIT 1",
                     (relative,),
@@ -729,7 +729,7 @@ class Store:
         with self.connect() as db:
             _ = db.execute("BEGIN")
             rows = db.execute(
-                "SELECT * FROM jobs"
+                "SELECT * FROM jobs"  # noqa: S608 - fixed SQL fragments
                 + (" WHERE status=?" if status is not None else "")
                 + " ORDER BY created_at,id",
                 () if status is None else (status,),
@@ -786,14 +786,17 @@ class Store:
             return self._job_views(db, [result])[0]
 
     @staticmethod
-    def _batch_owned(db: sqlite3.Connection, job: Mapping[str, Any]) -> bool:
+    def batch_owned(db: sqlite3.Connection, job: Mapping[str, Any]) -> bool:
         batch_id = job.get("_batch_id")
         if batch_id is None:
             return True
-        return db.execute(
-            "SELECT 1 FROM batch_state WHERE id=1 AND batch_id=? AND lease_until>?",
-            (batch_id, time.time()),
-        ).fetchone() is not None
+        return (
+            db.execute(
+                "SELECT 1 FROM batch_state WHERE id=1 AND batch_id=? AND lease_until>?",
+                (batch_id, time.time()),
+            ).fetchone()
+            is not None
+        )
 
     def claim(
         self, eligible_ids: set[str], *, batch_id: str | None = None
@@ -802,7 +805,7 @@ class Store:
             return None
         with self.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
-            if not self._batch_owned(db, {"_batch_id": batch_id}):
+            if not self.batch_owned(db, {"_batch_id": batch_id}):
                 raise Conflict("Batch lease was lost; retry the batch after checking worker health")
             now = time.time()
             # A crashed worker's lease is recovered by the next batch.
@@ -975,7 +978,7 @@ class Store:
             raise Conflict("Pinned review result is invalid")
         return tuple(claims)
 
-    def finish_job(
+    def finish_job(  # noqa: C901, PLR0912, PLR0915
         self,
         job: dict[str, Any],
         content: str,
@@ -988,7 +991,7 @@ class Store:
     ) -> bool:
         with self.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
-            if not self._batch_owned(db, job):
+            if not self.batch_owned(db, job):
                 return False
             if job["kind"] == "compile":
                 current_compile = db.execute(
@@ -1250,12 +1253,36 @@ class Store:
             (gate_id, job["entry_id"], job["revision"]),
         )
 
+    def requeue_interrupted(self, job: dict[str, Any]) -> bool:
+        """Return a claimed job to the queue, due now, without consuming its attempt."""
+        with self.connect() as db:
+            _ = db.execute("BEGIN IMMEDIATE")
+            if not self.batch_owned(db, job):
+                return False
+            result = db.execute(
+                "UPDATE jobs SET status='queued',attempts=MAX(attempts-1,0),last_error=?,"
+                "not_before=?,finished_at=NULL,lease_until=NULL,claim_token=NULL,"
+                "claim_protocol=0 WHERE id=? AND status='running' AND claim_token=?",
+                (
+                    "Interrupted by worker shutdown; requeued without using an attempt",
+                    time.time(),
+                    job["id"],
+                    job["claim_token"],
+                ),
+            )
+            requeued = result.rowcount == 1
+            if requeued and job["kind"] == "compile":
+                _ = db.execute(
+                    "UPDATE compilations SET status='queued' WHERE id=?", (job["compilation_id"],)
+                )
+            return requeued
+
     def fail_job(self, job: dict[str, Any], error: str, *, retryable: bool = True) -> bool:
         terminal = not retryable or job["attempts"] >= self.settings.max_attempts
         delay = self.settings.retry_base_s * 2 ** min(job["attempts"] - 1, 16)
         with self.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
-            if not self._batch_owned(db, job):
+            if not self.batch_owned(db, job):
                 return False
             result = db.execute(
                 "UPDATE jobs SET status=?,last_error=?,not_before=?,finished_at=?,lease_until=NULL,"
@@ -1278,7 +1305,7 @@ class Store:
 
     @staticmethod
     def _refresh_search(db: sqlite3.Connection, entry_id: str) -> None:
-        entry = Store._read_entry(db, entry_id, False)
+        entry = Store.read_entry(db, entry_id, False)
         _ = db.execute("DELETE FROM search_index WHERE entry_id=?", (entry_id,))
         _ = db.execute(
             "INSERT INTO search_index VALUES (?,?,?,?,?)",

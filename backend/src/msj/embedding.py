@@ -52,7 +52,7 @@ class EmbeddingService:
         )
         return hashlib.sha256(material.encode()).hexdigest()
 
-    def reconcile(self, db: sqlite3.Connection, entry_ids: set[str] | None = None) -> None:
+    def reconcile(self, db: sqlite3.Connection, entry_ids: set[str] | None = None) -> None:  # noqa: C901
         """Queue or refresh embedding work for every current revision that needs it."""
         if entry_ids is not None and not entry_ids:
             return
@@ -64,7 +64,7 @@ class EmbeddingService:
                 else ""
             )
             _ = db.execute(
-                "UPDATE jobs SET status='superseded',"
+                "UPDATE jobs SET status='superseded',"  # noqa: S608 - placeholders only
                 "last_error='Embeddings disabled by configuration',"
                 "finished_at=?,lease_until=NULL,claim_token=NULL,claim_protocol=0 "
                 "WHERE kind='embed' AND status IN ('queued','running') "
@@ -79,7 +79,7 @@ class EmbeddingService:
         else:
             placeholders = ",".join("?" for _ in entry_ids)
             entries = db.execute(
-                f"SELECT id,revision FROM entries WHERE id IN ({placeholders}) ORDER BY id",
+                f"SELECT id,revision FROM entries WHERE id IN ({placeholders}) ORDER BY id",  # noqa: S608
                 tuple(sorted(entry_ids)),
             ).fetchall()
         for entry in entries:
@@ -170,7 +170,7 @@ class EmbeddingService:
         vectors = self._encode(passages)
         with self.store.connect() as db:
             _ = db.execute("BEGIN IMMEDIATE")
-            if not self.store._batch_owned(db, job):
+            if not self.store.batch_owned(db, job):
                 return False
             current = db.execute(
                 "SELECT 1 FROM entries e JOIN jobs j ON j.entry_id=e.id "
@@ -207,7 +207,7 @@ class EmbeddingService:
             assert updated.rowcount == 1
         return True
 
-    def search(
+    def search(  # noqa: C901, PLR0912, PLR0915
         self,
         query: str,
         allowed_ids: set[str] | None = None,
@@ -225,7 +225,7 @@ class EmbeddingService:
             }
         try:
             query_vector = self._encode([query], query=True)[0]
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any model failure becomes an unavailable reason
             diagnostic = safe_exception(exc)
             _logger.error("Embedding query failed: %s", diagnostic)
             dependency_error: BaseException = exc
@@ -288,12 +288,13 @@ class EmbeddingService:
                 placeholders = ",".join("?" for _ in entry_ids)
                 total = int(
                     connection.execute(
-                        f"SELECT COUNT(*) FROM entries WHERE id IN ({placeholders})", entry_ids
+                        f"SELECT COUNT(*) FROM entries WHERE id IN ({placeholders})",  # noqa: S608
+                        entry_ids,
                     ).fetchone()[0]
                 )
                 embedded = int(
                     connection.execute(
-                        "SELECT COUNT(DISTINCT entry_id) FROM embeddings x JOIN entries e "
+                        "SELECT COUNT(DISTINCT entry_id) FROM embeddings x JOIN entries e "  # noqa: S608 - placeholders
                         "ON e.id=x.entry_id WHERE x.revision=e.revision "
                         f"AND x.model_fingerprint=? AND x.entry_id IN ({placeholders})",
                         (self.fingerprint, *entry_ids),
@@ -347,10 +348,13 @@ class EmbeddingService:
                 else:
                     from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found,unused-ignore]
 
+                    # Load only from the local cache that `msj embedding-download` fills, so
+                    # serving never depends on, or calls out to, the Hugging Face Hub.
                     self._model = SentenceTransformer(
                         self.settings.model,
                         device=self.settings.device,
                         revision=self.settings.revision,
+                        local_files_only=True,
                     )
             except Exception as exc:
                 self._model_error = True
@@ -366,7 +370,13 @@ class EmbeddingService:
                 delay_s = min(30.0 * 2 ** min(self._model_failures - 1, 4), 300.0)
                 self._model_retry_after = now + delay_s
                 diagnostic = safe_exception(exc)
-                _logger.error("Embedding model load failed: %s", diagnostic)
+                _logger.error(
+                    "Embedding model %s@%s failed to load from the local cache: %s; if it was "
+                    "never downloaded on this host, run `msj embedding-download`",
+                    self.settings.model,
+                    self.settings.revision,
+                    diagnostic,
+                )
                 raise EmbeddingFailure(self._model_failure_code) from exc
             return self._model
 
@@ -378,14 +388,25 @@ class EmbeddingService:
             else:
                 if query and "bge" in self.settings.model.casefold():
                     texts = [_QUERY_PREFIX + text for text in passages]
-                    values = model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
+                    values = model.encode(
+                        texts,
+                        normalize_embeddings=True,
+                        convert_to_numpy=True,
+                        show_progress_bar=False,
+                    )
                 elif query and callable(getattr(model, "encode_query", None)):
                     values = model.encode_query(
-                        passages, normalize_embeddings=True, convert_to_numpy=True
+                        passages,
+                        normalize_embeddings=True,
+                        convert_to_numpy=True,
+                        show_progress_bar=False,
                     )
                 else:
                     values = model.encode(
-                        passages, normalize_embeddings=True, convert_to_numpy=True
+                        passages,
+                        normalize_embeddings=True,
+                        convert_to_numpy=True,
+                        show_progress_bar=False,
                     )
                 vectors = np.asarray(values, dtype=np.float32)
             if vectors.ndim != 2 or vectors.shape[0] != len(passages) or vectors.shape[1] < 1:
@@ -425,14 +446,26 @@ class EmbeddingService:
             safe_limit = max(1, model_limit - special_tokens)
             size = min(self.settings.chunk_tokens, safe_limit)
             overlap = min(self.settings.chunk_overlap, size - 1)
-            step = size - overlap
             return [
                 tokenizer.decode(token_ids[start : start + size], skip_special_tokens=True).strip()
-                for start in range(0, len(token_ids), step)
+                for start in _chunk_starts(len(token_ids), size, overlap)
             ]
         tokens = text.split()
         if not tokens:
             return []
         size = self.settings.chunk_tokens
-        step = size - self.settings.chunk_overlap
-        return [" ".join(tokens[start : start + size]) for start in range(0, len(tokens), step)]
+        return [
+            " ".join(tokens[start : start + size])
+            for start in _chunk_starts(len(tokens), size, self.settings.chunk_overlap)
+        ]
+
+
+def _chunk_starts(count: int, size: int, overlap: int) -> range:
+    """Return window starts covering `count` tokens; the last window is the first to reach the end.
+
+    A window starting at or after `count - overlap` would only repeat tokens that the
+    previous window already covers.
+    """
+    assert count > 0
+    assert 0 <= overlap < size
+    return range(0, max(count - overlap, 1), size - overlap)

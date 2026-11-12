@@ -111,7 +111,7 @@ def filter_entries(
     filtered: list[dict[str, Any]] = []
     for entry in entries:
         entry_date = str(entry["entry_date"])
-        if lower is not None and entry_date < lower or upper is not None and entry_date > upper:
+        if (lower is not None and entry_date < lower) or (upper is not None and entry_date > upper):
             continue
         facets = (entry.get("tags", []), entry.get("projects", []), entry.get("skills", []))
         if any(
@@ -138,13 +138,13 @@ def facet_values(entries: Iterable[Mapping[str, Any]]) -> dict[str, list[dict[st
     }
     spellings: dict[str, dict[str, Counter[str]]] = {key: {} for key in counts}
     for entry in entries:
-        for field in counts:
+        for field, field_counts in counts.items():
             values = entry.get(field, [])
             grouped: dict[str, set[str]] = {}
-            for raw in set(str(value) for value in values):
+            for raw in {str(value) for value in values}:
                 grouped.setdefault(raw.casefold(), set()).add(raw)
             for folded, variants in grouped.items():
-                counts[field][folded] += 1
+                field_counts[folded] += 1
                 spellings_for_value = spellings[field].setdefault(folded, Counter())
                 for raw in variants:
                     spellings_for_value[raw] += 1

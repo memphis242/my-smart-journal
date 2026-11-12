@@ -19,7 +19,7 @@ def _process_start(pid: int) -> str | None:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
         fields = stat[stat.rfind(")") + 2 :].split()
         return fields[19]
-    except (OSError, IndexError):
+    except OSError, IndexError:
         return None
 
 
@@ -47,7 +47,7 @@ class OwnerIdentity:
         try:
             process_id = int(pid)
             os.kill(process_id, 0)
-        except (ProcessLookupError, ValueError):
+        except ProcessLookupError, ValueError:
             return False
         except PermissionError:
             return True

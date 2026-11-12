@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+#
+# Weekly restic maintenance (msj-backup-verify.timer, Sunday 05:00 UTC):
+# apply retention, prune what it releases, and verify the repository. Reports
+# to HC_VERIFY_URL.
+#
+# Kept apart from the nightly job because prune is the one restic operation
+# that rewrites the repository; running it weekly limits how often it can be
+# interrupted by a reboot or a network drop.
+#
+# The data check reads a different quarter of the pack files each week
+# (by ISO week number), so every byte is read back at least once every four
+# weeks while each run downloads a quarter of the repository. B2 egress stays
+# small even once the audio files add up.
+set -Eeuo pipefail
+MSJ_JOB=msj-backup-verify
+MSJ_UNIT=msj-backup-verify.service
+# shellcheck source=lib/common.sh
+. /usr/local/lib/msj/common.sh
+
+# Every night for two weeks, weekly for two months, monthly for a year. A
+# snapshot kept by any one rule is kept.
+readonly KEEP_DAILY=14 KEEP_WEEKLY=8 KEEP_MONTHLY=12
+
+msj_require_root
+msj_ping_on_exit HC_VERIFY_URL
+msj_require_unlocked
+msj_load_restic_env
+
+# --group-by host,tags puts every nightly snapshot of this host in one group.
+# A replacement box must keep the hostname msj-host or its snapshots form a
+# second group (RUNBOOK "Restore after a total loss").
+restic forget --retry-lock 30m --prune --tag msj --group-by host,tags \
+  --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" --keep-monthly "$KEEP_MONTHLY"
+
+week=$((10#$(date -u +%V)))
+subset="$(( week % 4 + 1 ))/4"
+restic check --retry-lock 30m --read-data-subset="$subset"
+
+msj_ok_summary="forget/prune done; check read subset $subset"
+msj_log "$msj_ok_summary"

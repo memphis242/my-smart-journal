@@ -1,7 +1,9 @@
 """Deterministic, streaming tiers for private journal search."""
 
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
+from itertools import accumulate
 from time import monotonic
 from typing import Any
 
@@ -13,17 +15,32 @@ def _corpus(document: Mapping[str, Any]) -> str:
     return " ".join(str(document.get(field) or "") for field in fields)
 
 
+def _match_span(corpus: str, query: str, *, case_sensitive: bool) -> tuple[int, int] | None:
+    """Return the [start, end) indices of the first match of query in corpus, if any."""
+    if case_sensitive:
+        position = corpus.find(query)
+        return (position, position + len(query)) if position >= 0 else None
+    # Case folding can change length ("ß" -> "ss"), so positions found in the folded text
+    # are mapped back through each character's folded length. Folding is per character,
+    # so the joined pieces equal corpus.casefold().
+    pieces = [character.casefold() for character in corpus]
+    offsets = list(accumulate((len(piece) for piece in pieces), initial=0))
+    needle = query.casefold()
+    position = "".join(pieces).find(needle)
+    if position < 0:
+        return None
+    return bisect_right(offsets, position) - 1, bisect_left(offsets, position + len(needle))
+
+
 def _snippet(document: Mapping[str, Any], query: str, *, case_sensitive: bool) -> str:
     corpus = _corpus(document).strip()
     if not corpus:
         return ""
-    haystack = corpus if case_sensitive else corpus.casefold()
-    needle = query if case_sensitive else query.casefold()
-    position = haystack.find(needle)
-    if position < 0:
-        position = 0
-    start = max(0, position - 80)
-    end = min(len(corpus), position + len(query) + 120)
+    span = _match_span(corpus, query, case_sensitive=case_sensitive)
+    match_start, match_end = span if span is not None else (0, len(query))
+    assert 0 <= match_start <= match_end
+    start = max(0, match_start - 80)
+    end = min(len(corpus), match_end + 120)
     return ("…" if start else "") + corpus[start:end] + ("…" if end < len(corpus) else "")
 
 
@@ -31,7 +48,7 @@ def _recency(created_at: Any, now: datetime) -> float:
     if not isinstance(created_at, str):
         return 0.0
     try:
-        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(created_at)
     except ValueError:
         return 0.0
     if parsed.tzinfo is None:
@@ -40,16 +57,15 @@ def _recency(created_at: Any, now: datetime) -> float:
     return 1.0 / (1.0 + age_days / 30.0)
 
 
-def tiered_search(
+def tiered_search(  # noqa: C901, PLR0912, PLR0915
     query: str,
     documents: Sequence[Mapping[str, Any]],
     fts_results: Sequence[Mapping[str, Any]] | Callable[[], Sequence[Mapping[str, Any]]],
     *,
     fuzzy_threshold: float = 80.0,
     tiers: tuple[int, ...] = (1, 2, 3, 4, 5),
-    semantic: Callable[
-        [], tuple[Sequence[Mapping[str, Any]], Mapping[str, str] | None]
-    ] | None = None,
+    semantic: Callable[[], tuple[Sequence[Mapping[str, Any]], Mapping[str, str] | None]]
+    | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield one event per completed tier, followed by a completion event."""
     normalized = query.strip()

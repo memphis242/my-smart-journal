@@ -68,9 +68,10 @@ def test_entry_deletion_removes_compilation_source_and_cancels_job(tmp_path: Pat
     compilation = CompilationService(store).create([entry["id"]], "Interview", "November")
     store.delete_entry(entry["id"])
     with store.connect() as db:
-        assert db.execute(
-            "SELECT 1 FROM compilations WHERE id=?", (compilation["id"],)
-        ).fetchone() is None
+        assert (
+            db.execute("SELECT 1 FROM compilations WHERE id=?", (compilation["id"],)).fetchone()
+            is None
+        )
     assert all(job["kind"] != "compile" for job in store.list_jobs())
 
 
