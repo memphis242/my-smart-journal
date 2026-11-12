@@ -5,4 +5,5 @@
     <string name="shortcut_record_long">Record a voice entry</string>
     <string name="shortcut_write_short">Write</string>
     <string name="shortcut_write_long">Write a text entry</string>
+    <string name="share_label">Journal entry</string>
 </resources>

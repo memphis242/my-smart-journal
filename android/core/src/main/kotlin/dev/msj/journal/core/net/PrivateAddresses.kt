@@ -35,7 +35,9 @@ public object PrivateAddresses {
         assert(bytes.size == 16) { "IPv6 address has 16 bytes" }
         val first = bytes[0].toInt() and 0xFF
         val second = bytes[1].toInt() and 0xFF
-        val mapped = bytes.copyOfRange(0, 10).all { it.toInt() == 0 } && (bytes[10].toInt() and 0xFF) == 0xFF && (bytes[11].toInt() and 0xFF) == 0xFF
+        val mapped =
+            bytes.copyOfRange(0, 10).all { it.toInt() == 0 } && (bytes[10].toInt() and 0xFF) == 0xFF &&
+                (bytes[11].toInt() and 0xFF) == 0xFF
         return when {
             mapped -> isPrivateV4(bytes.copyOfRange(12, 16))
             first and 0xFE == 0xFC -> true

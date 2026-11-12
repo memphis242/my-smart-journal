@@ -87,8 +87,11 @@ class SessionManager(
     private fun restore(): State {
         val base = prefs.serverBase ?: return State.SignedOut(lastServer = null, problem = null)
         return when (val loaded = vault.load()) {
-            TokenVault.Loaded.Absent -> State.SignedOut(lastServer = base, problem = null)
-            is TokenVault.Loaded.Unreadable ->
+            TokenVault.Loaded.Absent -> {
+                State.SignedOut(lastServer = base, problem = null)
+            }
+
+            is TokenVault.Loaded.Unreadable -> {
                 State.SignedOut(
                     lastServer = base,
                     problem =
@@ -99,11 +102,23 @@ class SessionManager(
                             details = emptyList(),
                         ),
                 )
-            is TokenVault.Loaded.Present ->
+            }
+
+            is TokenVault.Loaded.Present -> {
                 when (val parsed = factory.parse(base)) {
-                    is ParsedServer.Valid -> State.SignedIn(parsed.base, parsed.host, factory.create(parsed.base, loaded.token))
-                    is ParsedServer.Invalid -> State.SignedOut(lastServer = base, problem = UserError.of(parsed.error))
+                    is ParsedServer.Valid -> {
+                        State.SignedIn(
+                            parsed.base,
+                            parsed.host,
+                            factory.create(parsed.base, loaded.token),
+                        )
+                    }
+
+                    is ParsedServer.Invalid -> {
+                        State.SignedOut(lastServer = base, problem = UserError.of(parsed.error))
+                    }
                 }
+            }
         }
     }
 }

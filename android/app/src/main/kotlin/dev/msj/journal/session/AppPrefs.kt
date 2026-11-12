@@ -17,7 +17,9 @@ class AppPrefs(
     private val prefs: SharedPreferences = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
     var themeMode: ThemeMode
-        get() = prefs.getString(KEY_THEME, null)?.let { stored -> ThemeMode.entries.firstOrNull { it.name == stored } } ?: ThemeMode.SYSTEM
+        get() =
+            prefs.getString(KEY_THEME, null)?.let { stored -> ThemeMode.entries.firstOrNull { it.name == stored } }
+                ?: ThemeMode.SYSTEM
         set(value) = prefs.edit { putString(KEY_THEME, value.name) }
 
     /** The normalized server base address, for example `https://journal.example.com`. */
@@ -37,7 +39,12 @@ class AppPrefs(
 
     /** Forgets the server; keeps the theme, which is a property of the phone, not of the account. */
     fun clearSession() {
-        val committed = prefs.edit().remove(KEY_SERVER).remove(KEY_SERVER_PRIVATE).commit()
+        val committed =
+            prefs
+                .edit()
+                .remove(KEY_SERVER)
+                .remove(KEY_SERVER_PRIVATE)
+                .commit()
         check(committed) { "Clearing the saved server address failed: SharedPreferences.commit() returned false" }
     }
 

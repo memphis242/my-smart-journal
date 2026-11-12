@@ -26,6 +26,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -73,14 +74,24 @@ fun RecorderScreen(
 
     LaunchedEffect(Unit) {
         if (ui.phase is RecorderPhase.Ready) {
-            val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            val granted =
+                ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                    PackageManager.PERMISSION_GRANTED
             if (granted) viewModel.onPermissionResult(true) else permission.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
-    LaunchedEffect(ui.phase) { if (ui.phase is RecorderPhase.Saved) onClose(true) }
+    val latestOnClose by rememberUpdatedState(onClose)
+    LaunchedEffect(ui.phase) { if (ui.phase is RecorderPhase.Saved) latestOnClose(true) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) viewModel.onBackground() }
+        val observer =
+            LifecycleEventObserver { _, event ->
+                if (event ==
+                    Lifecycle.Event.ON_STOP
+                ) {
+                    viewModel.onBackground()
+                }
+            }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
@@ -107,13 +118,20 @@ fun RecorderScreen(
                 RecorderPhase.Ready, RecorderPhase.Saved -> {
                     Timer(0L)
                     if (ui.permissionDenied) {
-                        InlineAction("Ask for the microphone again", onClick = { permission.launch(Manifest.permission.RECORD_AUDIO) })
+                        InlineAction(
+                            "Ask for the microphone again",
+                            onClick = { permission.launch(Manifest.permission.RECORD_AUDIO) },
+                        )
                     }
                 }
+
                 is RecorderPhase.Recording -> {
                     Timer(phase.elapsedMs)
                     LevelMeter(phase.levels)
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s2)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Space.s2),
+                    ) {
                         StatusMarker(if (phase.paused) MarkerKind.ATTENTION else MarkerKind.PROGRESS, label = null)
                         Text(
                             when {
@@ -126,6 +144,7 @@ fun RecorderScreen(
                         )
                     }
                 }
+
                 is RecorderPhase.Review -> {
                     Timer(phase.durationMs)
                     Text(
@@ -171,6 +190,7 @@ fun RecorderScreen(
                         modifier = Modifier.weight(1f).testTag(TestTags.RECORDER_STOP),
                     )
                 }
+
                 is RecorderPhase.Review -> {
                     SecondaryButton(
                         text = "Discard",
@@ -185,14 +205,19 @@ fun RecorderScreen(
                         modifier = Modifier.weight(1f).testTag(TestTags.RECORDER_SAVE),
                     )
                 }
-                RecorderPhase.Ready ->
+
+                RecorderPhase.Ready -> {
                     PrimaryButton(
                         text = "Start recording",
                         onClick = { permission.launch(Manifest.permission.RECORD_AUDIO) },
                         icon = JournalIcons.Mic,
                         modifier = Modifier.weight(1f).testTag(TestTags.RECORDER_START),
                     )
-                RecorderPhase.Saved -> Spacer(Modifier.height(Space.control))
+                }
+
+                RecorderPhase.Saved -> {
+                    Spacer(Modifier.height(Space.control))
+                }
             }
         }
     }

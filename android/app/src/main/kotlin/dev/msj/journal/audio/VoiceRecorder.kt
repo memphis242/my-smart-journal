@@ -145,7 +145,11 @@ class VoiceRecorder(
         } catch (error: RuntimeException) {
             // MediaRecorder.stop() throws when no valid audio was captured.
             discardFile(file)
-            throw RecorderException("RECORDING_TOO_SHORT", "The recording has no usable audio; record for at least a second.", error)
+            throw RecorderException(
+                "RECORDING_TOO_SHORT",
+                "The recording has no usable audio; record for at least a second.",
+                error,
+            )
         } finally {
             active.release()
             reset()
@@ -182,7 +186,10 @@ class VoiceRecorder(
 
     private fun discardFile(file: File) {
         if (file.exists() && !file.delete()) {
-            throw RecorderException("RECORDING_DISCARD_FAILED", "The partial recording ${file.name} could not be deleted.")
+            throw RecorderException(
+                "RECORDING_DISCARD_FAILED",
+                "The partial recording ${file.name} could not be deleted.",
+            )
         }
     }
 

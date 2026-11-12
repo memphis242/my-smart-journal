@@ -51,7 +51,13 @@ fun formatDateTime(timestamp: String): String = local(timestamp)?.format(DATE_TI
 fun shortDate(isoDate: String): String = if (isoDate.length == 10) isoDate.substring(5) else isoDate
 
 /** The first line of [text], trimmed. */
-fun firstLine(text: String): String = text.trim().lineSequence().firstOrNull()?.trim().orEmpty()
+fun firstLine(text: String): String =
+    text
+        .trim()
+        .lineSequence()
+        .firstOrNull()
+        ?.trim()
+        .orEmpty()
 
 /** The headline a row shows, as on the web: the title, else the summary, else the first line of the text. */
 fun headline(entry: EntrySummary): String {

@@ -135,7 +135,18 @@ class SignInViewModel(
         step: CheckStep?,
         error: UserError,
     ) = mutableUi.update {
-        it.copy(busy = false, error = error, steps = if (step == null) it.steps else it.steps + (step to StepState.FAILED))
+        it.copy(
+            busy = false,
+            error = error,
+            steps =
+                if (step ==
+                    null
+                ) {
+                    it.steps
+                } else {
+                    it.steps + (step to StepState.FAILED)
+                },
+        )
     }
 
     private suspend fun run(
@@ -165,13 +176,19 @@ class SignInViewModel(
             }
         setStep(CheckStep.ADDRESS, StepState.PASSED)
 
-        var serverIsPrivate = false
+        val serverIsPrivate: Boolean
         if (!permissionJustGranted) {
             setStep(CheckStep.LOCAL_NETWORK, StepState.RUNNING)
             serverIsPrivate = LocalNetworkAccess.applies && LocalNetworkAccess.hostIsPrivate(server.host)
             when {
-                !serverIsPrivate -> setStep(CheckStep.LOCAL_NETWORK, StepState.SKIPPED)
-                localNetworkGranted() -> setStep(CheckStep.LOCAL_NETWORK, StepState.PASSED)
+                !serverIsPrivate -> {
+                    setStep(CheckStep.LOCAL_NETWORK, StepState.SKIPPED)
+                }
+
+                localNetworkGranted() -> {
+                    setStep(CheckStep.LOCAL_NETWORK, StepState.PASSED)
+                }
+
                 else -> {
                     resumeAfterPermission = save
                     mutableUi.update { it.copy(needsLocalNetwork = true) }

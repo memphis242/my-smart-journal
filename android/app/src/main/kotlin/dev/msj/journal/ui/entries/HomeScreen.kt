@@ -27,6 +27,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -98,10 +99,20 @@ fun HomeScreen(
                 title = "Journal",
                 subtitle = host,
                 actions = {
-                    IconAction(JournalIcons.Search, "Search entries", onSearch, modifier = Modifier.testTag(TestTags.SEARCH_OPEN))
+                    IconAction(
+                        JournalIcons.Search,
+                        "Search entries",
+                        onSearch,
+                        modifier = Modifier.testTag(TestTags.SEARCH_OPEN),
+                    )
                     themeSwitch()
                     Box {
-                        IconAction(JournalIcons.More, "More", { menuOpen = true }, modifier = Modifier.testTag(TestTags.MENU))
+                        IconAction(
+                            JournalIcons.More,
+                            "More",
+                            { menuOpen = true },
+                            modifier = Modifier.testTag(TestTags.MENU),
+                        )
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                             DropdownMenuItem(
                                 text = { Text("Unsent uploads", style = Journal.type.ui) },
@@ -141,12 +152,18 @@ fun HomeScreen(
                     error =
                         UserError(
                             code = "LOCAL_NETWORK_PERMISSION",
-                            message = "Local network access is off, so Android blocks the connection to the journal server.",
+                            message =
+                                "Local network access is off, so Android blocks the connection to the journal server.",
                             hint = "The server has a private-network address. Allow local network access to reach it.",
                             details = emptyList(),
                         ),
                     tone = NoticeTone.WARNING,
-                    modifier = Modifier.padding(horizontal = Space.gutter, vertical = Space.s2).testTag(TestTags.LOCAL_NETWORK_NOTICE),
+                    modifier =
+                        Modifier
+                            .padding(
+                                horizontal = Space.gutter,
+                                vertical = Space.s2,
+                            ).testTag(TestTags.LOCAL_NETWORK_NOTICE),
                 ) { InlineAction("Allow", onClick = onAllowLocalNetwork) }
             }
             PullToRefreshBox(
@@ -188,9 +205,14 @@ private fun EntryList(
 ) {
     val c = Journal.colors
     val state = rememberLazyListState()
+    val latestLoadMore by rememberUpdatedState(onLoadMore)
     LaunchedEffect(state, list.entries.size) {
-        snapshotFlow { state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }.collect { last ->
-            if (last >= list.entries.size - LOAD_AHEAD) onLoadMore()
+        snapshotFlow {
+            state.layoutInfo.visibleItemsInfo
+                .lastOrNull()
+                ?.index ?: 0
+        }.collect { last ->
+            if (last >= list.entries.size - LOAD_AHEAD) latestLoadMore()
         }
     }
     LazyColumn(Modifier.fillMaxSize().testTag(TestTags.ENTRY_LIST), state = state) {
@@ -198,7 +220,11 @@ private fun EntryList(
             item(key = "error") {
                 ErrorNotice(error, modifier = Modifier.padding(Space.gutter).testTag(TestTags.ENTRIES_ERROR)) {
                     if (error.code in SIGN_IN_AGAIN_CODES) {
-                        InlineAction("Sign in again", onClick = onSignInAgain, modifier = Modifier.testTag(TestTags.SIGN_IN_AGAIN))
+                        InlineAction(
+                            "Sign in again",
+                            onClick = onSignInAgain,
+                            modifier = Modifier.testTag(TestTags.SIGN_IN_AGAIN),
+                        )
                     } else {
                         InlineAction("Try again", onClick = onRetry)
                     }
@@ -224,7 +250,11 @@ private fun EntryList(
         if (list.entries.isNotEmpty()) {
             item(key = "footer") {
                 Text(
-                    if (list.complete) "${list.total} ${if (list.total == 1) "entry" else "entries"}" else "${list.entries.size} of ${list.total} loaded",
+                    if (list.complete) {
+                        "${list.total} ${if (list.total == 1) "entry" else "entries"}"
+                    } else {
+                        "${list.entries.size} of ${list.total} loaded"
+                    },
                     style = Journal.type.monoSmall,
                     color = c.ink3,
                     modifier = Modifier.fillMaxWidth().padding(Space.gutter),
@@ -254,7 +284,11 @@ private fun QueueBand(
                     Text("Queue unavailable", style = Journal.type.uiSmall, color = c.ink2)
                     Text(queue.error.code, style = Journal.type.monoSmall, color = c.stFailed)
                 }
-                snapshot == null -> Text("Queue", style = Journal.type.uiSmall, color = c.ink3)
+
+                snapshot == null -> {
+                    Text("Queue", style = Journal.type.uiSmall, color = c.ink3)
+                }
+
                 else -> {
                     QueueCount("queued", snapshot.counts.queued, MarkerKind.QUEUED)
                     QueueCount("running", snapshot.counts.running, MarkerKind.PROGRESS)
@@ -307,29 +341,38 @@ private fun QueueNotices(
     onDismiss: () -> Unit,
     onSignInAgain: () -> Unit,
 ) {
-    val padded = Modifier.padding(horizontal = Space.gutter, vertical = Space.s2)
-    val runError = queue.runError
-    when {
-        runError != null ->
-            ErrorNotice(runError, modifier = padded.testTag(TestTags.QUEUE_ERROR)) {
-                if (runError.code in SIGN_IN_AGAIN_CODES) InlineAction("Sign in again", onClick = onSignInAgain)
-                InlineAction("Dismiss", onClick = onDismiss)
+    Column(Modifier.fillMaxWidth()) {
+        val padded = Modifier.padding(horizontal = Space.gutter, vertical = Space.s2)
+        val runError = queue.runError
+        when {
+            runError != null -> {
+                ErrorNotice(runError, modifier = padded.testTag(TestTags.QUEUE_ERROR)) {
+                    if (runError.code in SIGN_IN_AGAIN_CODES) InlineAction("Sign in again", onClick = onSignInAgain)
+                    InlineAction("Dismiss", onClick = onDismiss)
+                }
             }
-        queue.requestedWithStaleWorker ->
+
+            queue.requestedWithStaleWorker -> {
+                ErrorNotice(
+                    UserError(
+                        code = "WORKER_NOT_RUNNING",
+                        message = "The batch is requested, but no worker is running to pick it up.",
+                        hint = Hints.forCode("WORKER_NOT_RUNNING", null),
+                        details = emptyList(),
+                    ),
+                    tone = NoticeTone.WARNING,
+                    modifier = padded.testTag(TestTags.QUEUE_ERROR),
+                ) { InlineAction("Dismiss", onClick = onDismiss) }
+            }
+        }
+        val lastBatch = queue.snapshot?.let(QueueLogic::lastBatchError)
+        if (lastBatch != null && runError == null) {
             ErrorNotice(
-                UserError(
-                    code = "WORKER_NOT_RUNNING",
-                    message = "The batch is requested, but no worker is running to pick it up.",
-                    hint = Hints.forCode("WORKER_NOT_RUNNING", null),
-                    details = emptyList(),
-                ),
+                UserError.of(lastBatch),
                 tone = NoticeTone.WARNING,
-                modifier = padded.testTag(TestTags.QUEUE_ERROR),
-            ) { InlineAction("Dismiss", onClick = onDismiss) }
-    }
-    val lastBatch = queue.snapshot?.let(QueueLogic::lastBatchError)
-    if (lastBatch != null && runError == null) {
-        ErrorNotice(UserError.of(lastBatch), tone = NoticeTone.WARNING, modifier = padded.testTag(TestTags.QUEUE_LAST_BATCH_ERROR))
+                modifier = padded.testTag(TestTags.QUEUE_LAST_BATCH_ERROR),
+            )
+        }
     }
 }
 
@@ -348,7 +391,16 @@ private fun UnsentBand(
         StatusMarker(if (unsent.rejected > 0) MarkerKind.FAILED else MarkerKind.BLOCKED, label = null)
         Text(
             buildString {
-                append(unsent.total).append(if (unsent.total == 1) " entry" else " entries").append(" waiting to upload")
+                append(unsent.total)
+                    .append(
+                        if (unsent.total ==
+                            1
+                        ) {
+                            " entry"
+                        } else {
+                            " entries"
+                        },
+                    ).append(" waiting to upload")
                 if (unsent.rejected > 0) append(", ").append(unsent.rejected).append(" rejected")
             },
             style = Journal.type.uiSmall,

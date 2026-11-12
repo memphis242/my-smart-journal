@@ -78,7 +78,7 @@ fun JournalDatePicker(
                 "Use date",
                 onClick = {
                     val millis = state.selectedDateMillis
-                    if (millis != null) onPick(isoDate(Instant.ofEpochMilli(millis).atOffset(ZoneOffset.UTC).toLocalDate()))
+                    if (millis != null) onPick(utcMillisToIsoDate(millis))
                     onDismiss()
                 },
             )
@@ -89,3 +89,7 @@ fun JournalDatePicker(
         DatePicker(state = state, showModeToggle = true)
     }
 }
+
+/** The date pickers report midnight UTC of the picked day. */
+private fun utcMillisToIsoDate(millis: Long): String =
+    isoDate(Instant.ofEpochMilli(millis).atOffset(ZoneOffset.UTC).toLocalDate())

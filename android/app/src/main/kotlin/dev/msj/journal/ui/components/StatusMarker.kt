@@ -105,8 +105,11 @@ fun StatusMarker(
         val center = Offset(6f * unit, 6f * unit)
         val radius = 4.25f * unit
         when (kind) {
-            MarkerKind.QUEUED, MarkerKind.MUTED -> drawCircle(color, radius, center, style = stroke)
-            MarkerKind.BLOCKED ->
+            MarkerKind.QUEUED, MarkerKind.MUTED -> {
+                drawCircle(color, radius, center, style = stroke)
+            }
+
+            MarkerKind.BLOCKED -> {
                 drawCircle(
                     color,
                     radius,
@@ -117,6 +120,8 @@ fun StatusMarker(
                             pathEffect = PathEffect.dashPathEffect(floatArrayOf(2.2f * unit, 1.9f * unit)),
                         ),
                 )
+            }
+
             MarkerKind.PROGRESS -> {
                 drawCircle(color, radius, center, style = stroke)
                 drawArc(
@@ -128,10 +133,12 @@ fun StatusMarker(
                     size = Size(radius * 2, radius * 2),
                 )
             }
+
             MarkerKind.DONE -> {
                 drawCircle(color, radius, center)
                 drawCircle(color, radius, center, style = stroke)
             }
+
             MarkerKind.ATTENTION -> {
                 val path =
                     Path().apply {
@@ -142,9 +149,22 @@ fun StatusMarker(
                     }
                 drawPath(path, color, style = stroke)
             }
+
             MarkerKind.FAILED -> {
-                drawLine(color, Offset(2.4f * unit, 2.4f * unit), Offset(9.6f * unit, 9.6f * unit), 1.8f * unit, StrokeCap.Round)
-                drawLine(color, Offset(9.6f * unit, 2.4f * unit), Offset(2.4f * unit, 9.6f * unit), 1.8f * unit, StrokeCap.Round)
+                drawLine(
+                    color,
+                    Offset(2.4f * unit, 2.4f * unit),
+                    Offset(9.6f * unit, 9.6f * unit),
+                    1.8f * unit,
+                    StrokeCap.Round,
+                )
+                drawLine(
+                    color,
+                    Offset(9.6f * unit, 2.4f * unit),
+                    Offset(2.4f * unit, 9.6f * unit),
+                    1.8f * unit,
+                    StrokeCap.Round,
+                )
             }
         }
     }

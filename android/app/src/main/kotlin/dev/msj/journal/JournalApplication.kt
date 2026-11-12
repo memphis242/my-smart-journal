@@ -7,27 +7,58 @@ import dev.msj.journal.outbox.OutboxDependencies
 import dev.msj.journal.outbox.OutboxFiles
 import dev.msj.journal.outbox.OutboxHost
 import dev.msj.journal.outbox.OutboxWorkerFactory
+import dev.msj.journal.outbox.RoomOutboxRepository
 import dev.msj.journal.outbox.WorkManagerOutboxScheduler
-import dev.msj.journal.session.ApiSource
+import dev.msj.journal.session.AppPrefs
+import dev.msj.journal.session.HttpConnectionFactory
+import dev.msj.journal.session.SessionManager
+import dev.msj.journal.session.TokenVault
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import java.io.File
 
+/**
+ * Builds the process's services once. WorkManager is initialized on demand
+ * with [workManagerConfiguration] (its default initializer is removed in the
+ * manifest), so the outbox workers get the same session and database as the UI,
+ * also when the process starts only to run an upload.
+ */
 class JournalApplication :
     Application(),
+    AppServicesHost,
     OutboxHost,
     Configuration.Provider {
-    // --- Outbox wiring -------------------------------------------------------
-    // WorkManager is initialized on demand with this configuration (its default
-    // initializer is removed in AndroidManifest.xml), so the outbox workers get
-    // their dependencies from OutboxWorkerFactory.
-    // The ApiSource is a signed-out placeholder until the session layer provides one.
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val clock: () -> Long = System::currentTimeMillis
+
+    private val prefs: AppPrefs by lazy { AppPrefs(this) }
+
+    private val connections: HttpConnectionFactory by lazy {
+        HttpConnectionFactory(if (BuildConfig.DEBUG) HttpConnectionFactory.DEBUG_CLEARTEXT_HOSTS else emptySet())
+    }
+
+    private val session: SessionManager by lazy { SessionManager(prefs, TokenVault(this), connections, appScope) }
+
     override val outboxDependencies: OutboxDependencies by lazy {
-        val clock: () -> Long = System::currentTimeMillis
         OutboxDependencies(
-            apiSource = ApiSource { null },
+            apiSource = session,
             database = OutboxDatabase.open(this),
             files = OutboxFiles(File(noBackupFilesDir, "outbox")),
             clock = clock,
             scheduler = WorkManagerOutboxScheduler(this, clock),
+        )
+    }
+
+    override val services: AppServices by lazy {
+        val deps = outboxDependencies
+        AppServices(
+            context = this,
+            prefs = prefs,
+            session = session,
+            outbox = RoomOutboxRepository(deps.database, deps.files, deps.scheduler, deps.clock),
+            connections = connections,
+            clock = clock,
         )
     }
 
@@ -37,5 +68,4 @@ class JournalApplication :
                 .Builder()
                 .setWorkerFactory(OutboxWorkerFactory { outboxDependencies })
                 .build()
-    // --- End of outbox wiring ------------------------------------------------
 }

@@ -66,7 +66,13 @@ fun EntryRow(
             StatusMarker(markerFor(entry.status), label = labelFor(entry.status))
             Text(entry.entryDate, style = Journal.type.mono, color = c.ink2, maxLines = 1)
         }
-        Box(Modifier.width(Space.hairline).heightIn(min = Space.rowHeight).fillMaxHeight().background(c.margin))
+        Box(
+            Modifier
+                .width(Space.hairline)
+                .heightIn(min = Space.rowHeight)
+                .fillMaxHeight()
+                .background(c.margin),
+        )
         Column(Modifier.weight(1f).padding(horizontal = Space.s3, vertical = Space.s2)) {
             Text(
                 headline(entry).ifEmpty { "(no text yet)" },

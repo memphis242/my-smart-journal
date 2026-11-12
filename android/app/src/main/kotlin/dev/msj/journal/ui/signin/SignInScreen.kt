@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -32,11 +33,12 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.msj.journal.session.LocalNetworkAccess
+import dev.msj.journal.ui.UserError
 import dev.msj.journal.ui.components.ErrorNotice
+import dev.msj.journal.ui.components.IconAction
 import dev.msj.journal.ui.components.InlineAction
 import dev.msj.journal.ui.components.JournalField
 import dev.msj.journal.ui.components.JournalIcons
-import dev.msj.journal.ui.components.IconAction
 import dev.msj.journal.ui.components.MarkerKind
 import dev.msj.journal.ui.components.NoticeTone
 import dev.msj.journal.ui.components.PrimaryButton
@@ -48,7 +50,6 @@ import dev.msj.journal.ui.components.TopBar
 import dev.msj.journal.ui.components.stateName
 import dev.msj.journal.ui.theme.Journal
 import dev.msj.journal.ui.theme.Space
-import dev.msj.journal.ui.UserError
 
 @Composable
 fun SignInScreen(
@@ -65,7 +66,8 @@ fun SignInScreen(
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             viewModel.onLocalNetworkResult(granted)
         }
-    LaunchedEffect(ui.done) { if (ui.done) onDone() }
+    val latestOnDone by rememberUpdatedState(onDone)
+    LaunchedEffect(ui.done) { if (ui.done) latestOnDone() }
     val c = Journal.colors
 
     Column(modifier.fillMaxSize().testTag(TestTags.SIGN_IN_SCREEN)) {
@@ -117,8 +119,11 @@ fun SignInScreen(
                     error =
                         UserError(
                             code = "LOCAL_NETWORK_PERMISSION",
-                            message = "The server has a private-network address. Android needs your permission to connect to it.",
-                            hint = "Allow access to devices on the local network (Nearby devices). The app connects only to your journal server.",
+                            message =
+                                "The server has a private-network address. Android needs your permission to connect to it.",
+                            hint =
+                                "Allow access to devices on the local network (Nearby devices). " +
+                                    "The app connects only to your journal server.",
                             details = emptyList(),
                         ),
                     tone = NoticeTone.WARNING,

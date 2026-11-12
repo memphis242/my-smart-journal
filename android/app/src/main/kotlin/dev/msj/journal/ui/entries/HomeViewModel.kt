@@ -86,8 +86,15 @@ class HomeViewModel(
 
     val unsent: StateFlow<UnsentSummary> =
         services.outbox.unsent
-            .map { records: List<OutboxRecord> -> UnsentSummary(records.size, records.count { it.state == OutboxState.FAILED }) }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UnsentSummary(0, 0))
+            .map { records: List<OutboxRecord> ->
+                UnsentSummary(
+                    records.size,
+                    records.count {
+                        it.state ==
+                            OutboxState.FAILED
+                    },
+                )
+            }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UnsentSummary(0, 0))
 
     private val mutableMessages = MutableSharedFlow<String>(extraBufferCapacity = 4)
 
@@ -128,7 +135,14 @@ class HomeViewModel(
                 val api = services.session.current() ?: return@launch
                 try {
                     val page = api.listEntries(state.filters, SortOrder.NEWEST_FIRST, PAGE, 0)
-                    mutableList.update { it.copy(entries = page.items, total = page.total, loaded = true, loading = false) }
+                    mutableList.update {
+                        it.copy(
+                            entries = page.items,
+                            total = page.total,
+                            loaded = true,
+                            loading = false,
+                        )
+                    }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: ApiException) {

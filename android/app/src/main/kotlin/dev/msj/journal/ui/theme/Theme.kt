@@ -1,5 +1,7 @@
 package dev.msj.journal.ui.theme
 
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -22,8 +24,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import dev.msj.journal.R
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 
 private fun plexSans(weight: Int): Font =
     Font(
@@ -122,8 +122,20 @@ private val BaseTypes =
                 lineHeight = 27.sp,
                 lineHeightStyle = Trim,
             ),
-        proseTitle = TextStyle(fontFamily = SourceSerif, fontWeight = FontWeight(600), fontSize = 22.sp, lineHeight = 28.sp),
-        rowText = TextStyle(fontFamily = SourceSerif, fontWeight = FontWeight(400), fontSize = 16.sp, lineHeight = 22.sp),
+        proseTitle =
+            TextStyle(
+                fontFamily = SourceSerif,
+                fontWeight = FontWeight(600),
+                fontSize = 22.sp,
+                lineHeight = 28.sp,
+            ),
+        rowText =
+            TextStyle(
+                fontFamily = SourceSerif,
+                fontWeight = FontWeight(400),
+                fontSize = 16.sp,
+                lineHeight = 22.sp,
+            ),
     )
 
 val LocalJournalType = staticCompositionLocalOf { BaseTypes }

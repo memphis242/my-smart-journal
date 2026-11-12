@@ -6,11 +6,11 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
 import dev.msj.journal.core.net.PrivateAddresses
-import java.net.InetAddress
-import java.net.UnknownHostException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.net.InetAddress
+import java.net.UnknownHostException
 
 /**
  * Android 17 (API 37) blocks connections to local-network addresses for apps

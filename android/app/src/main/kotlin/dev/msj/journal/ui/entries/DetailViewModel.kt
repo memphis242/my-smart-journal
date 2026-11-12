@@ -44,9 +44,11 @@ class DetailViewModel(
 ) : ViewModel() {
     private val mutableUi = MutableStateFlow(DetailUi(id = startId))
     val ui: StateFlow<DetailUi> = mutableUi.asStateFlow()
-    private val cache = object : LinkedHashMap<String, EntryDetail>(MAX_CACHED, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, EntryDetail>): Boolean = size > MAX_CACHED
-    }
+    private val cache =
+        object : LinkedHashMap<String, EntryDetail>(MAX_CACHED, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, EntryDetail>): Boolean =
+                size > MAX_CACHED
+        }
     private var detailJob: Job? = null
     private var neighborsJob: Job? = null
     private val serverNeighbors = HashMap<String, Pair<String?, String?>>()
@@ -100,13 +102,29 @@ class DetailViewModel(
                 try {
                     val detail = api.getEntry(id)
                     cache[id] = detail
-                    mutableUi.update { if (it.id == id) it.copy(detail = detail, loading = false, error = null) else it }
+                    mutableUi.update {
+                        if (it.id ==
+                            id
+                        ) {
+                            it.copy(detail = detail, loading = false, error = null)
+                        } else {
+                            it
+                        }
+                    }
                     prefetchNeighbors()
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: ApiException) {
                     // A cached copy stays on screen when a refresh fails; the notice says the refresh failed.
-                    mutableUi.update { if (it.id == id) it.copy(loading = false, error = UserError.of(error.error)) else it }
+                    mutableUi.update {
+                        if (it.id ==
+                            id
+                        ) {
+                            it.copy(loading = false, error = UserError.of(error.error))
+                        } else {
+                            it
+                        }
+                    }
                     if (!refresh) return@launch
                 }
             }
@@ -136,7 +154,15 @@ class DetailViewModel(
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: ApiException) {
-                    mutableUi.update { if (it.id == id) it.copy(neighborsLoading = false, neighborsError = UserError.of(error.error)) else it }
+                    mutableUi.update {
+                        if (it.id ==
+                            id
+                        ) {
+                            it.copy(neighborsLoading = false, neighborsError = UserError.of(error.error))
+                        } else {
+                            it
+                        }
+                    }
                 }
             }
     }

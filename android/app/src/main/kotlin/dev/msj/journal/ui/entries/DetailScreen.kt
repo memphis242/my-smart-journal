@@ -72,8 +72,8 @@ import dev.msj.journal.ui.format.entryPlainText
 import dev.msj.journal.ui.format.formatTime
 import dev.msj.journal.ui.theme.Journal
 import dev.msj.journal.ui.theme.Space
-import kotlin.math.abs
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 @Composable
 fun DetailScreen(
@@ -96,7 +96,9 @@ fun DetailScreen(
                 title = summary?.entryDate ?: "Entry",
                 subtitle =
                     summary?.let { entry ->
-                        "${formatTime(entry.createdAt)}  ${if (entry.source == EntrySource.AUDIO) "Voice" else "Written"}"
+                        "${formatTime(
+                            entry.createdAt,
+                        )}  ${if (entry.source == EntrySource.AUDIO) "Voice" else "Written"}"
                     },
                 navigation = { IconAction(JournalIcons.Back, "Back to the list", onBack) },
                 actions = {
@@ -106,7 +108,11 @@ fun DetailScreen(
                         onClick = {
                             val entry = summary ?: return@IconAction
                             copyToClipboard(context, entryPlainText(entry))
-                            scope.launch { snackbar.showSnackbar("Copied ${entry.entryDate}${entry.title?.let { "  $it" } ?: ""}") }
+                            scope.launch {
+                                snackbar.showSnackbar(
+                                    "Copied ${entry.entryDate}${entry.title?.let { "  $it" } ?: ""}",
+                                )
+                            }
                         },
                         enabled = summary != null,
                         modifier = Modifier.testTag(TestTags.DETAIL_COPY),
@@ -129,7 +135,8 @@ fun DetailScreen(
                     if (sign == 0) {
                         fadeIn() togetherWith fadeOut()
                     } else {
-                        slideInHorizontally { width -> width * sign } togetherWith slideOutHorizontally { width -> -width * sign }
+                        slideInHorizontally { width -> width * sign } togetherWith
+                            slideOutHorizontally { width -> -width * sign }
                     }
                 },
                 modifier =
@@ -187,7 +194,11 @@ private fun EntryBody(
             }
         }
         if (entry == null) {
-            Text(if (ui.loading) "Loading the entry" else "The entry could not be shown.", style = Journal.type.ui, color = c.ink3)
+            Text(
+                if (ui.loading) "Loading the entry" else "The entry could not be shown.",
+                style = Journal.type.ui,
+                color = c.ink3,
+            )
             return@Column
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s2)) {
@@ -209,7 +220,15 @@ private fun EntryBody(
         }
         Block(if (entry.source == EntrySource.AUDIO) "Cleaned transcript" else "Cleaned text", TestTags.DETAIL_TEXT) {
             val text = entry.text.trim()
-            if (text.isEmpty()) Text(pendingNote(entry.status, "text"), style = Journal.type.ui, color = c.ink3) else Prose(text)
+            if (text.isEmpty()) {
+                Text(
+                    pendingNote(entry.status, "text"),
+                    style = Journal.type.ui,
+                    color = c.ink3,
+                )
+            } else {
+                Prose(text)
+            }
         }
         RawBlock(ui.detail, entry, rawOpen) { rawOpen = !rawOpen }
         ui.neighborsError?.let { ErrorNotice(it) }
@@ -257,9 +276,21 @@ private fun RawBlock(
             val raw = detail?.rawText()?.trim().orEmpty()
             Box(Modifier.testTag(TestTags.DETAIL_RAW)) {
                 when {
-                    detail == null -> Text("Loading", style = Journal.type.ui, color = c.ink3)
-                    raw.isEmpty() -> Text(pendingNote(entry.status, "transcript"), style = Journal.type.ui, color = c.ink3)
-                    else -> Prose(raw, muted = true)
+                    detail == null -> {
+                        Text("Loading", style = Journal.type.ui, color = c.ink3)
+                    }
+
+                    raw.isEmpty() -> {
+                        Text(
+                            pendingNote(entry.status, "transcript"),
+                            style = Journal.type.ui,
+                            color = c.ink3,
+                        )
+                    }
+
+                    else -> {
+                        Prose(raw, muted = true)
+                    }
                 }
             }
         }
@@ -269,11 +300,17 @@ private fun RawBlock(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun Facets(entry: EntrySummary) {
-    val groups = listOf("Tags" to entry.tags, "Projects" to entry.projects, "Skills" to entry.skills).filter { it.second.isNotEmpty() }
+    val groups =
+        listOf("Tags" to entry.tags, "Projects" to entry.projects, "Skills" to entry.skills).filter {
+            it.second.isNotEmpty()
+        }
     groups.forEach { (label, values) ->
         Column(verticalArrangement = Arrangement.spacedBy(Space.s1)) {
             SectionLabel(label)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.s1), verticalArrangement = Arrangement.spacedBy(Space.s1)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(Space.s1),
+                verticalArrangement = Arrangement.spacedBy(Space.s1),
+            ) {
                 values.forEach { TagChip(it) }
             }
         }
@@ -300,9 +337,17 @@ private fun pendingNote(
     what: String,
 ): String =
     when (status) {
-        EntryStatus.QUEUED, EntryStatus.PROCESSING -> "No $what yet; it appears after the server processes the entry. Run the batch to process it now."
-        EntryStatus.FAILED -> "No $what: processing failed. The queue on the list page shows the error."
-        EntryStatus.NEEDS_ATTENTION, EntryStatus.DONE -> "No $what for this entry."
+        EntryStatus.QUEUED, EntryStatus.PROCESSING -> {
+            "No $what yet; it appears after the server processes the entry. Run the batch to process it now."
+        }
+
+        EntryStatus.FAILED -> {
+            "No $what: processing failed. The queue on the list page shows the error."
+        }
+
+        EntryStatus.NEEDS_ATTENTION, EntryStatus.DONE -> {
+            "No $what for this entry."
+        }
     }
 
 /** Older at the left edge, newer at the right edge, as on the web. */

@@ -191,9 +191,14 @@ internal class OutboxUploader(
         )
     }
 
-    /** STOP when [error] means every other record would fail the same way now (no route to the server, or a rejected token). */
+    /**
+     * STOP when [error] means every other record would fail the same way now: no route to the
+     * server, a rejected token, or the server's rate limit (429).
+     */
     private fun stopIfEveryRecordWouldFail(error: ApiError): Next =
-        if (error.delivery == Delivery.NOT_SENT || OutboxMachine.classify(error) == FailureClass.AUTH) {
+        if (error.delivery == Delivery.NOT_SENT || OutboxMachine.classify(error) == FailureClass.AUTH ||
+            error.status == 429
+        ) {
             stoppedBy = error
             Next.STOP
         } else {

@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -40,6 +41,7 @@ import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -51,7 +53,6 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.text.KeyboardOptions
 import dev.msj.journal.ui.theme.Journal
 import dev.msj.journal.ui.theme.JournalShapes
 import dev.msj.journal.ui.theme.Space
@@ -234,7 +235,13 @@ fun TopBar(
         androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
             Text(title, style = Journal.type.barTitle, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (subtitle != null) {
-                Text(subtitle, style = Journal.type.monoSmall, color = c.ink3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    subtitle,
+                    style = Journal.type.monoSmall,
+                    color = c.ink3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.End, content = actions)
@@ -323,13 +330,14 @@ fun <T> SegmentedChoice(
                 Modifier
                     .weight(1f)
                     .heightIn(min = 40.dp)
-                    .selectable(selected = isSelected, role = Role.Tab, onClick = { onSelect(option) })
+                    .clip(JournalShapes.control)
                     .background(if (isSelected) c.accentTint else c.surface, JournalShapes.control)
                     .border(
                         width = if (isSelected) 1.5.dp else Space.hairline,
                         color = if (isSelected) c.accent else c.fieldBorder,
                         shape = JournalShapes.control,
-                    ).then(if (tag(option).isEmpty()) Modifier else Modifier.testTag(tag(option))),
+                    ).selectable(selected = isSelected, role = Role.Tab, onClick = { onSelect(option) })
+                    .then(if (tag(option).isEmpty()) Modifier else Modifier.testTag(tag(option))),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(

@@ -7,8 +7,6 @@ import dev.msj.journal.AppServices
 import dev.msj.journal.audio.VoiceRecorder
 import dev.msj.journal.core.dates.isoDate
 import dev.msj.journal.ui.UserError
-import java.io.File
-import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -18,6 +16,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
+import java.util.UUID
 
 sealed interface RecorderPhase {
     /** Waiting for the microphone permission (or for the user to start). */
@@ -94,7 +94,9 @@ class RecorderViewModel(
                         UserError(
                             code = "MICROPHONE_PERMISSION_DENIED",
                             message = "Recording needs access to the microphone.",
-                            hint = "Allow it when asked, or in Settings > Apps > Journal > Permissions > Microphone. Writing an entry works without it.",
+                            hint =
+                                "Allow it when asked, or in Settings > Apps > Journal > Permissions > Microphone. " +
+                                    "Writing an entry works without it.",
                             details = emptyList(),
                         ),
                 )
@@ -106,7 +108,15 @@ class RecorderViewModel(
         if (recorder.isActive || mutableUi.value.phase !is RecorderPhase.Ready) return
         if (!recordingDir.isDirectory && !recordingDir.mkdirs()) {
             mutableUi.update {
-                it.copy(error = UserError("RECORDING_STORAGE_FAILED", "The app could not create its recordings folder.", "Free some storage space, then try again.", emptyList()))
+                it.copy(
+                    error =
+                        UserError(
+                            "RECORDING_STORAGE_FAILED",
+                            "The app could not create its recordings folder.",
+                            "Free some storage space, then try again.",
+                            emptyList(),
+                        ),
+                )
             }
             return
         }
@@ -120,7 +130,12 @@ class RecorderViewModel(
             fail(error)
             return
         }
-        mutableUi.update { it.copy(phase = RecorderPhase.Recording(0L, emptyList(), paused = false, pausedByBackground = false), error = null) }
+        mutableUi.update {
+            it.copy(
+                phase = RecorderPhase.Recording(0L, emptyList(), paused = false, pausedByBackground = false),
+                error = null,
+            )
+        }
         ticker =
             viewModelScope.launch {
                 while (isActive) {
@@ -195,7 +210,12 @@ class RecorderViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                mutableUi.update { it.copy(saving = false, error = UserError.unexpected("Save the recording on this phone", error)) }
+                mutableUi.update {
+                    it.copy(
+                        saving = false,
+                        error = UserError.unexpected("Save the recording on this phone", error),
+                    )
+                }
             }
         }
     }
@@ -210,7 +230,15 @@ class RecorderViewModel(
         }
         if (file.exists() && !file.delete()) {
             mutableUi.update {
-                it.copy(error = UserError("RECORDING_DISCARD_FAILED", "The recording ${file.name} could not be deleted.", "Clear the app's cache in Settings > Apps > Journal > Storage.", emptyList()))
+                it.copy(
+                    error =
+                        UserError(
+                            "RECORDING_DISCARD_FAILED",
+                            "The recording ${file.name} could not be deleted.",
+                            "Clear the app's cache in Settings > Apps > Journal > Storage.",
+                            emptyList(),
+                        ),
+                )
             }
         }
         handle.remove<Long>(KEY_DURATION)
@@ -225,7 +253,13 @@ class RecorderViewModel(
                         code = error.code,
                         message = error.message ?: "Recording failed.",
                         hint = "Close other apps that use the microphone, then record again.",
-                        details = listOfNotNull(error.cause?.let { cause -> dev.msj.journal.core.api.DetailLine("Cause", "${cause.javaClass.name}: ${cause.message}") }),
+                        details =
+                            listOfNotNull(
+                                error.cause?.let { cause ->
+                                    dev.msj.journal.core.api
+                                        .DetailLine("Cause", "${cause.javaClass.name}: ${cause.message}")
+                                },
+                            ),
                     ),
             )
         }

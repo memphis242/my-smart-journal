@@ -7,13 +7,13 @@ import dev.msj.journal.AppServices
 import dev.msj.journal.core.dates.isoDate
 import dev.msj.journal.core.dates.parseIsoDate
 import dev.msj.journal.ui.UserError
-import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 data class ComposerUi(
     val text: String = "",
@@ -80,7 +80,12 @@ class ComposerViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                mutableUi.update { it.copy(saving = false, error = UserError.unexpected("Save the entry on this phone", error)) }
+                mutableUi.update {
+                    it.copy(
+                        saving = false,
+                        error = UserError.unexpected("Save the entry on this phone", error),
+                    )
+                }
             }
         }
     }

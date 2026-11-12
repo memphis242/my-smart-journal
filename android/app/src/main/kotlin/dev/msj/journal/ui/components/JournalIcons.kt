@@ -51,7 +51,13 @@ object JournalIcons {
     val Text: ImageVector = icon("text", "M4.5 5.5h11M4.5 9h11M4.5 12.5h11M4.5 16h6")
     val Trash: ImageVector = icon("trash", "M4.5 6h11M8 6V4.25h4V6", "m6 6 .75 10h6.5L14 6")
     val Upload: ImageVector = icon("upload", "M10 13V4M6.25 7.75 10 4l3.75 3.75M4 16.25h12")
-    val Outbox: ImageVector = icon("outbox", "M3.5 11.5V15.5h13v-4", "M3.5 11.5h3.75l1 1.75h3.5l1-1.75h3.75", "M10 9.5V3.5M7.5 6 10 3.5 12.5 6")
+    val Outbox: ImageVector =
+        icon(
+            "outbox",
+            "M3.5 11.5V15.5h13v-4",
+            "M3.5 11.5h3.75l1 1.75h3.5l1-1.75h3.75",
+            "M10 9.5V3.5M7.5 6 10 3.5 12.5 6",
+        )
     val Settings: ImageVector =
         icon("settings", "M4 6h12M4 14h12", circle(7.5f, 6f, 1.75f), circle(12.5f, 14f, 1.75f))
 
@@ -68,7 +74,7 @@ object JournalIcons {
         h: Float,
         r: Float,
     ): String =
-        "M${x + r} ${y}h${w - 2 * r}a$r $r 0 0 1 $r ${r}v${h - 2 * r}a$r $r 0 0 1 ${-r} ${r}" +
+        "M${x + r} ${y}h${w - 2 * r}a$r $r 0 0 1 $r ${r}v${h - 2 * r}a$r $r 0 0 1 ${-r} $r" +
             "h${-(w - 2 * r)}a$r $r 0 0 1 ${-r} ${-r}v${-(h - 2 * r)}a$r $r 0 0 1 $r ${-r}z"
 
     private fun icon(

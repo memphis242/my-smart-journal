@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,14 +54,20 @@ fun ComposerScreen(
     var pickDate by rememberSaveable { mutableStateOf(false) }
     val close = { if (ui.dirty) confirmDiscard = true else onClose(false) }
     BackHandler(onBack = close)
-    LaunchedEffect(ui.saved) { if (ui.saved) onClose(true) }
+    val latestOnClose by rememberUpdatedState(onClose)
+    LaunchedEffect(ui.saved) { if (ui.saved) latestOnClose(true) }
     val c = Journal.colors
 
     Column(modifier.fillMaxSize().testTag(TestTags.COMPOSER_SCREEN)) {
         TopBar(
             title = "New entry",
             navigation = {
-                IconAction(JournalIcons.Close, "Close without saving", close, modifier = Modifier.testTag(TestTags.COMPOSER_CLOSE))
+                IconAction(
+                    JournalIcons.Close,
+                    "Close without saving",
+                    close,
+                    modifier = Modifier.testTag(TestTags.COMPOSER_CLOSE),
+                )
             },
             actions = {
                 PrimaryButton(
@@ -102,7 +109,10 @@ fun ComposerScreen(
                 supporting = "Separate tags with commas.",
                 modifier = Modifier.testTag(TestTags.COMPOSER_TAGS),
             )
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Space.s3)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Space.s3),
+            ) {
                 Column(Modifier.weight(1f)) {
                     SectionLabel("Journal date")
                     Text(ui.date, style = Journal.type.mono, color = c.ink, modifier = Modifier.padding(top = 2.dp))

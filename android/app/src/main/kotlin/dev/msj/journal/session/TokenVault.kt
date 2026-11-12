@@ -101,7 +101,10 @@ class TokenVault(
     /** Deletes the stored token and its key. */
     fun wipe() {
         if (file.exists() && !file.delete()) {
-            throw TokenVaultException("Delete the stored access token", IOException("delete returned false for ${file.name}"))
+            throw TokenVaultException(
+                "Delete the stored access token",
+                IOException("delete returned false for ${file.name}"),
+            )
         }
         deleteKey()
     }

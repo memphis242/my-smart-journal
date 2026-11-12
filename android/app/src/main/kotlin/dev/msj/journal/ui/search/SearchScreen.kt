@@ -93,27 +93,67 @@ class SearchViewModel(
         val query = mutableUi.value.query.trim()
         if (query.isEmpty()) return
         job?.cancel()
-        mutableUi.update { it.copy(submitted = query, tiers = emptyList(), running = true, done = false, error = null, elapsedMs = null) }
+        mutableUi.update {
+            it.copy(
+                submitted = query,
+                tiers = emptyList(),
+                running = true,
+                done = false,
+                error = null,
+                elapsedMs = null,
+            )
+        }
         job =
             viewModelScope.launch {
                 val api = services.session.current() ?: return@launch
                 try {
                     api.search(query, EntryFilters.NONE, TIERS).collect { event ->
                         when (event) {
-                            is SearchEvent.Tier ->
-                                mutableUi.update { it.copy(tiers = it.tiers + TierResult(event.tier, event.results, event.unavailable)) }
+                            is SearchEvent.Tier -> {
+                                mutableUi.update {
+                                    it.copy(
+                                        tiers =
+                                            it.tiers + TierResult(event.tier, event.results, event.unavailable),
+                                    )
+                                }
+                            }
+
                             is SearchEvent.Done -> {
                                 val failure =
                                     event.error?.let { streamError ->
-                                        val code = streamError.code?.takeIf { dev.msj.journal.core.api.ApiError.CODE_PATTERN.matches(it) } ?: "SEARCH_FAILED"
+                                        val code =
+                                            streamError.code?.takeIf {
+                                                dev.msj.journal.core.api.ApiError.CODE_PATTERN
+                                                    .matches(
+                                                        it,
+                                                    )
+                                            }
+                                                ?: "SEARCH_FAILED"
                                         UserError(
                                             code = code,
                                             message = "Search failed on the server: ${streamError.detail}",
-                                            hint = Hints.forCode(code, null) ?: "Search again; if it repeats, check the service log.",
-                                            details = listOfNotNull(streamError.status?.let { dev.msj.journal.core.api.DetailLine("Status", it.toString()) }),
+                                            hint =
+                                                Hints.forCode(code, null)
+                                                    ?: "Search again; if it repeats, check the service log.",
+                                            details =
+                                                listOfNotNull(
+                                                    streamError.status?.let {
+                                                        dev.msj.journal.core.api.DetailLine(
+                                                            "Status",
+                                                            it.toString(),
+                                                        )
+                                                    },
+                                                ),
                                         )
                                     }
-                                mutableUi.update { it.copy(done = true, running = false, elapsedMs = event.elapsedMs, error = failure) }
+                                mutableUi.update {
+                                    it.copy(
+                                        done = true,
+                                        running = false,
+                                        elapsedMs = event.elapsedMs,
+                                        error = failure,
+                                    )
+                                }
                             }
                         }
                     }
@@ -204,7 +244,12 @@ fun SearchScreen(
                 if (tier.hits.isNotEmpty() || tier.unavailable != null) {
                     item(key = "tier-${tier.tier}") {
                         Row(
-                            Modifier.fillMaxWidth().padding(start = Space.gutter, end = Space.gutter, top = Space.s4, bottom = Space.s2),
+                            Modifier.fillMaxWidth().padding(
+                                start = Space.gutter,
+                                end = Space.gutter,
+                                top = Space.s4,
+                                bottom = Space.s2,
+                            ),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             SectionLabel(tierLabel(tier.tier), Modifier.weight(1f))
@@ -233,7 +278,12 @@ fun SearchScreen(
                             entry = entry,
                             snippet = hit.snippet,
                             tag = TestTags.SEARCH_RESULT_PREFIX + hit.entryId,
-                            onOpen = { onOpenEntry(hit.entryId, NavContext.chronological(ui.hits.mapNotNull { it.entry })) },
+                            onOpen = {
+                                onOpenEntry(
+                                    hit.entryId,
+                                    NavContext.chronological(ui.hits.mapNotNull { it.entry }),
+                                )
+                            },
                         )
                     }
                 }
@@ -266,9 +316,22 @@ private fun Status(ui: SearchUi) {
         )
         Text(
             when {
-                ui.done -> "$total ${if (total == 1) "entry" else "entries"} for \"$submitted\" in ${ui.elapsedMs?.let { "%.0f ms".format(it) } ?: "?"}"
-                ui.running -> "Searching: ${ui.tiers.size} of 5 tiers, $total ${if (total == 1) "entry" else "entries"} so far"
-                else -> "$total ${if (total == 1) "entry" else "entries"} for \"$submitted\" (stopped)"
+                ui.done -> {
+                    "$total ${if (total == 1) "entry" else "entries"} for \"$submitted\" in ${ui.elapsedMs?.let {
+                        "%.0f ms"
+                            .format(
+                                it,
+                            )
+                    } ?: "?"}"
+                }
+
+                ui.running -> {
+                    "Searching: ${ui.tiers.size} of 5 tiers, $total ${if (total == 1) "entry" else "entries"} so far"
+                }
+
+                else -> {
+                    "$total ${if (total == 1) "entry" else "entries"} for \"$submitted\" (stopped)"
+                }
             },
             style = Journal.type.monoSmall,
             color = c.ink2,

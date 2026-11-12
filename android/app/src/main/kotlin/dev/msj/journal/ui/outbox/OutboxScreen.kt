@@ -1,6 +1,7 @@
 package dev.msj.journal.ui.outbox
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -50,16 +51,16 @@ import dev.msj.journal.ui.format.firstLine
 import dev.msj.journal.ui.format.formatDuration
 import dev.msj.journal.ui.theme.Journal
 import dev.msj.journal.ui.theme.Space
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 class OutboxViewModel(
     private val services: AppServices,
@@ -115,20 +116,30 @@ fun OutboxScreen(
         )
         error?.let { ErrorNotice(it, tone = NoticeTone.WARNING, modifier = Modifier.padding(Space.gutter)) }
         when {
-            list == null -> Unit
-            list.isEmpty() ->
+            list == null -> {
+                Box(Modifier.weight(1f))
+            }
+
+            list.isEmpty() -> {
                 Text(
                     "Nothing is waiting. New entries are listed here until the server has them.",
                     style = Journal.type.ui,
                     color = c.ink3,
                     modifier = Modifier.padding(Space.gutter).testTag(TestTags.OUTBOX_EMPTY),
                 )
-            else ->
+            }
+
+            else -> {
                 LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
                     items(list, key = { it.id }) { record ->
-                        OutboxRow(record, onRetry = { viewModel.retry(record.id) }, onDiscard = { discarding = record.id })
+                        OutboxRow(
+                            record,
+                            onRetry = { viewModel.retry(record.id) },
+                            onDiscard = { discarding = record.id },
+                        )
                     }
                 }
+            }
         }
         Text(
             "Entries are kept on this phone until the server confirms them. Uploads retry on their own when the server is reachable.",
@@ -195,7 +206,19 @@ private fun OutboxRow(
                 append(labelFor(record.state))
                 append("  ·  saved ")
                 append(Instant.ofEpochMilli(record.createdAtMs).atZone(ZoneId.systemDefault()).format(CAPTURED))
-                if (record.attempts > 0) append("  ·  ").append(record.attempts).append(if (record.attempts == 1) " attempt" else " attempts")
+                if (record.attempts >
+                    0
+                ) {
+                    append("  ·  ").append(record.attempts).append(
+                        if (record.attempts ==
+                            1
+                        ) {
+                            " attempt"
+                        } else {
+                            " attempts"
+                        },
+                    )
+                }
             },
             style = Journal.type.monoSmall,
             color = c.ink3,
