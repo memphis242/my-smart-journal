@@ -27,6 +27,10 @@ object TestTags {
 
     const val QUEUE_STRIP = "queue.strip"
     const val QUEUE_STALE = "queue.stale"
+    const val QUEUE_COUNT_PREFIX = "queue.count."
+    const val QUEUE_LAST_BATCH_ERROR = "queue.last-batch-error"
+    const val LOCAL_NETWORK_NOTICE = "local-network.notice"
+    const val SIGN_IN_AGAIN = "signin.again"
     const val QUEUE_RUN_NOW = "queue.run-now"
     const val QUEUE_ERROR = "queue.error"
 

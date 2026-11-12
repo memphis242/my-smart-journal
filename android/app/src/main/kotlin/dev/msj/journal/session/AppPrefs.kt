@@ -30,6 +30,11 @@ class AppPrefs(
         get() = prefs.getBoolean(KEY_SERVER_PRIVATE, false)
         set(value) = prefs.edit { putBoolean(KEY_SERVER_PRIVATE, value) }
 
+    /** The date range the entry list shows (a RangeKey name). */
+    var range: String?
+        get() = prefs.getString(KEY_RANGE, null)
+        set(value) = prefs.edit { if (value == null) remove(KEY_RANGE) else putString(KEY_RANGE, value) }
+
     /** Forgets the server; keeps the theme, which is a property of the phone, not of the account. */
     fun clearSession() {
         val committed = prefs.edit().remove(KEY_SERVER).remove(KEY_SERVER_PRIVATE).commit()
@@ -41,5 +46,6 @@ class AppPrefs(
         const val KEY_THEME = "theme_mode"
         const val KEY_SERVER = "server_base"
         const val KEY_SERVER_PRIVATE = "server_private"
+        const val KEY_RANGE = "range"
     }
 }
