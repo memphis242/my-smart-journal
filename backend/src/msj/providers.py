@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -73,6 +73,24 @@ class Provider(Protocol):
 
 
 _MODEL_NAME = re.compile(r"[A-Za-z0-9._:/@+-]{1,128}")
+
+
+def _log_runpod_finish(
+    kind: TaskKind, job_id: str, status: str, state: Mapping[str, Any], started: float
+) -> None:
+    """Log one line per finished RunPod job with RunPod's queue and execution times."""
+    assert job_id
+    delay = state.get("delayTime")
+    execution = state.get("executionTime")
+    _logger.info(
+        "RunPod %s job %s %s after %.1f s (queue %s ms, execution %s ms)",
+        kind,
+        job_id,
+        status,
+        time.monotonic() - started,
+        delay if isinstance(delay, int) else "?",
+        execution if isinstance(execution, int) else "?",
+    )
 
 
 def ensure_model(generation: Generation, route: TaskRoute) -> Generation:
@@ -402,6 +420,7 @@ class InferenceProvider:
         job_id = state.get("id")
         if not isinstance(job_id, str) or not job_id:
             raise SafeProviderError("RunPod submission returned no job ID")
+        _logger.info("RunPod %s job %s submitted to endpoint %s", kind, job_id, route.endpoint_id)
         status_url = f"{endpoint}/status/{quote(job_id, safe='')}"
         pending = True
         interval = self._settings.poll_initial_s
@@ -430,6 +449,7 @@ class InferenceProvider:
                     raise SafeProviderError("RunPod returned a missing or non-string job status")
                 if status == "COMPLETED":
                     pending = False
+                    _log_runpod_finish(kind, job_id, status, state, started)
                     if "output" not in state:
                         raise SafeProviderError("Completed RunPod job has no output")
                     if kind == "transcribe":
@@ -439,7 +459,11 @@ class InferenceProvider:
                     return generation
                 if status in {"FAILED", "TIMED_OUT", "CANCELLED"}:
                     pending = False
-                    raise SafeProviderError(f"RunPod job ended with status {status}")
+                    _log_runpod_finish(kind, job_id, status, state, started)
+                    raise SafeProviderError(
+                        f"RunPod job {job_id} on endpoint {route.endpoint_id} ended with status "
+                        f"{status}; open the job in the RunPod console for the worker's error"
+                    )
                 if time.monotonic() >= deadline:
                     pending = False
                     cancel()

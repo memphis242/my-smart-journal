@@ -47,9 +47,8 @@ def tiered_search(
     *,
     fuzzy_threshold: float = 80.0,
     tiers: tuple[int, ...] = (1, 2, 3, 4, 5),
-    semantic: Callable[
-        [], tuple[Sequence[Mapping[str, Any]], Mapping[str, str] | None]
-    ] | None = None,
+    semantic: Callable[[], tuple[Sequence[Mapping[str, Any]], Mapping[str, str] | None]]
+    | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield one event per completed tier, followed by a completion event."""
     normalized = query.strip()

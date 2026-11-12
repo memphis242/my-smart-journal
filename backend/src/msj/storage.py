@@ -461,9 +461,7 @@ class Store:
                     raise AudioCleanupPending(
                         audio_relative.name, getattr(cleanup_error, "errno", None)
                     ) from original_error
-                pending = next(
-                    (item for item in failures if item[0] == str(audio_relative)), None
-                )
+                pending = next((item for item in failures if item[0] == str(audio_relative)), None)
                 if pending is not None:
                     raise AudioCleanupPending(audio_relative.name, pending[1]) from original_error
             raise
@@ -689,9 +687,7 @@ class Store:
                 if reservation is not None and self._write_owner_alive(reservation):
                     continue
                 if reservation is not None:
-                    _ = db.execute(
-                        "DELETE FROM file_write_reservations WHERE path=?", (relative,)
-                    )
+                    _ = db.execute("DELETE FROM file_write_reservations WHERE path=?", (relative,))
                 referenced = db.execute(
                     "SELECT 1 FROM artifacts WHERE kind='raw_audio' AND content=? LIMIT 1",
                     (relative,),
@@ -790,10 +786,13 @@ class Store:
         batch_id = job.get("_batch_id")
         if batch_id is None:
             return True
-        return db.execute(
-            "SELECT 1 FROM batch_state WHERE id=1 AND batch_id=? AND lease_until>?",
-            (batch_id, time.time()),
-        ).fetchone() is not None
+        return (
+            db.execute(
+                "SELECT 1 FROM batch_state WHERE id=1 AND batch_id=? AND lease_until>?",
+                (batch_id, time.time()),
+            ).fetchone()
+            is not None
+        )
 
     def claim(
         self, eligible_ids: set[str], *, batch_id: str | None = None

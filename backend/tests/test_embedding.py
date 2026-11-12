@@ -74,9 +74,7 @@ def test_fake_embedder_is_deterministic_and_none_is_reported(tmp_path: Path) -> 
 def test_missing_model_has_stable_unavailable_code(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    settings = Settings(
-        data_dir=tmp_path, embedding=EmbeddingSettings(provider="fake")
-    )
+    settings = Settings(data_dir=tmp_path, embedding=EmbeddingSettings(provider="fake"))
     service = EmbeddingService(Store(settings), settings)
     service._model_error = True
     service._model_retry_after = float("inf")
@@ -107,8 +105,11 @@ def test_model_load_recovers_after_bounded_backoff(
         def encode(self, texts: list[str], **_kwargs: Any) -> np.ndarray[Any, Any]:
             return np.ones((len(texts), 4), dtype=np.float32)
 
-    def load_model(_model_name: str, *, device: str, revision: str) -> LoadedModel:
+    def load_model(
+        _model_name: str, *, device: str, revision: str, local_files_only: bool
+    ) -> LoadedModel:
         assert revision == settings.embedding.revision
+        assert local_files_only, "serving must never fetch the model from the network"
         attempts.append(device)
         if len(attempts) == 1:
             raise RuntimeError("private provider value")
@@ -219,9 +220,7 @@ def test_stale_claim_cannot_publish_after_entry_revision_changes(
 
     encode = service._encode
 
-    def revise_before_publish(
-        passages: list[str], *, query: bool = False
-    ) -> Any:
+    def revise_before_publish(passages: list[str], *, query: bool = False) -> Any:
         _ = store.patch_entry(entry["id"], {"text": "The corrected entry text."})
         return encode(passages, query=query)
 
@@ -293,15 +292,11 @@ def test_reconcile_requeues_old_fingerprint_but_keeps_failed_jobs_terminal(
 
 
 def test_disabling_embeddings_supersedes_jobs_and_reenable_queues_them(tmp_path: Path) -> None:
-    enabled_settings = Settings(
-        data_dir=tmp_path, embedding=EmbeddingSettings(provider="fake")
-    )
+    enabled_settings = Settings(data_dir=tmp_path, embedding=EmbeddingSettings(provider="fake"))
     store = Store(enabled_settings)
     store.migrate()
     entry = store.create_entry(text="An entry awaiting semantic processing.")
-    disabled_settings = Settings(
-        data_dir=tmp_path, embedding=EmbeddingSettings(provider="none")
-    )
+    disabled_settings = Settings(data_dir=tmp_path, embedding=EmbeddingSettings(provider="none"))
     with store.connect() as db:
         EmbeddingService(store, disabled_settings).reconcile(db)
         disabled = db.execute(

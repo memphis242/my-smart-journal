@@ -115,7 +115,7 @@ class CompilationService:
                 extraction = final_artifact(entry, "extraction")
                 try:
                     extraction_content = json.loads(extraction["content"]) if extraction else None
-                except (ValueError, TypeError, RecursionError):
+                except ValueError, TypeError, RecursionError:
                     extraction_content = None
                 source.append(
                     {
@@ -217,4 +217,3 @@ class CompilationService:
             "model": row["model"],
             "prompt_sha256": row["prompt_sha256"],
         }
-

@@ -82,9 +82,7 @@ def test_legacy_hash_returns_stable_reissue_code_from_both_routes(tmp_path: Path
         store = client.app.state.store
         token = create_token(store)
         store.set_token_hash("reissue-required")
-        auth_response = client.get(
-            "/api/v1/queue", headers={"Authorization": f"Bearer {token}"}
-        )
+        auth_response = client.get("/api/v1/queue", headers={"Authorization": f"Bearer {token}"})
         login_response = client.post("/api/v1/session", json={"token": token})
         for response in (auth_response, login_response):
             assert response.status_code == 401
@@ -117,7 +115,9 @@ def test_unsafe_token_secret_mode_returns_actionable_internal_error(tmp_path: Pa
 
 @pytest.mark.parametrize("key_state", ["mismatched", "missing", "legacy"])
 def test_unusable_token_key_has_actionable_code_and_key_path_log(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, key_state: str,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    key_state: str,
 ) -> None:
     with _client(tmp_path) as client:
         store = client.app.state.store
@@ -142,7 +142,8 @@ def test_unusable_token_key_has_actionable_code_and_key_path_log(
 
 
 def test_queue_missing_batch_state_has_actionable_safe_error(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     with _client(tmp_path) as client:
         store = client.app.state.store
@@ -156,9 +157,7 @@ def test_queue_missing_batch_state_has_actionable_safe_error(
         assert "msj migrate" in caplog.text
 
 
-def test_serve_passes_explicit_forwarded_ip_trust_setting(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_serve_passes_explicit_forwarded_ip_trust_setting(tmp_path: Path, monkeypatch) -> None:
     settings = Settings(data_dir=tmp_path, forwarded_allow_ips="127.0.0.1,::1")
     captured: dict[str, object] = {}
     monkeypatch.setattr(cli, "load_settings", lambda: settings)

@@ -125,11 +125,7 @@ def test_semantic_tier_can_be_selected_and_deduplicates_prior_results() -> None:
             None,
         )
 
-    events = list(
-        tiered_search(
-            "Atlas", documents, [], tiers=(1, 5), semantic=semantic
-        )
-    )
+    events = list(tiered_search("Atlas", documents, [], tiers=(1, 5), semantic=semantic))
     assert calls == ["semantic"]
     assert [event.get("tier") for event in events[:-1]] == [1, 5]
     assert [item["entry_id"] for item in events[1]["results"]] == ["semantic"]

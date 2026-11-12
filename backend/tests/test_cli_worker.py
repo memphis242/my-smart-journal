@@ -15,7 +15,8 @@ from msj.storage import Store
 
 
 def test_worker_conflict_rechecks_lease_and_picks_up_request(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings(data_dir=tmp_path, worker_tick_s=0.25, embedding={"provider": "none"})
     store = Store(settings)
@@ -60,7 +61,8 @@ def test_worker_conflict_rechecks_lease_and_picks_up_request(
 
 
 def test_worker_publishes_schedule_instead_of_tick(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings(data_dir=tmp_path, worker_tick_s=0.25, embedding={"provider": "none"})
     store = Store(settings)
@@ -96,11 +98,15 @@ def test_worker_publishes_schedule_instead_of_tick(
 @pytest.mark.parametrize("command", ["worker", "run-batch"])
 @pytest.mark.parametrize("key_state", ["legacy", "missing", "mismatched"])
 def test_processing_allows_token_reissue(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
-    command: str, key_state: str,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    key_state: str,
 ) -> None:
     settings = Settings(
-        data_dir=tmp_path, embedding={"provider": "none"},
+        data_dir=tmp_path,
+        embedding={"provider": "none"},
         tasks={kind: TaskRoute(provider="fake") for kind in TASKS},
     )
     store = Store(settings)
@@ -141,10 +147,14 @@ def test_processing_allows_token_reissue(
 
 @pytest.mark.parametrize("interval_s", [0.1, 60.0])
 def test_worker_publishes_earlier_schedule_or_conflict_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interval_s: float,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interval_s: float,
 ) -> None:
     settings = Settings(
-        data_dir=tmp_path, worker_tick_s=0.25, batch_interval_s=interval_s,
+        data_dir=tmp_path,
+        worker_tick_s=0.25,
+        batch_interval_s=interval_s,
         embedding={"provider": "none"},
     )
     store = Store(settings)

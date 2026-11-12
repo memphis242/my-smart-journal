@@ -762,10 +762,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 for event in events:
                     if "results" in event:
-                        event = event | {"results": [
-                            result | {"entry": summaries[result["entry_id"]]}
-                            for result in event["results"]
-                        ]}
+                        event = event | {
+                            "results": [
+                                result | {"entry": summaries[result["entry_id"]]}
+                                for result in event["results"]
+                            ]
+                        }
                     yield (
                         json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
                     ).encode()

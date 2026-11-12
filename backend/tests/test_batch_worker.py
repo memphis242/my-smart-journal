@@ -179,7 +179,9 @@ def test_transient_renew_and_heartbeat_errors_do_not_stop_renewal(tmp_path: Path
 
 @pytest.mark.parametrize("expire", [False, True])
 def test_heartbeat_shutdown_waits_for_inflight_renewal(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, expire: bool,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    expire: bool,
 ) -> None:
     coordinator = _coordinator(tmp_path)
     coordinator._store.settings = coordinator._store.settings.model_copy(
@@ -241,4 +243,3 @@ def test_failed_batch_is_visible_with_stable_error_code(tmp_path: Path) -> None:
     batch = coordinator.status()["batch"]
     assert batch["last_error"]["code"] == "BATCH_FAILED"
     assert "private provider message" not in batch["last_error"]["detail"]
-

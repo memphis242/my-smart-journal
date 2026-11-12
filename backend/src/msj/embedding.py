@@ -347,10 +347,13 @@ class EmbeddingService:
                 else:
                     from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found,unused-ignore]
 
+                    # Load only from the local cache that `msj embedding-download` fills, so
+                    # serving never depends on, or calls out to, the Hugging Face Hub.
                     self._model = SentenceTransformer(
                         self.settings.model,
                         device=self.settings.device,
                         revision=self.settings.revision,
+                        local_files_only=True,
                     )
             except Exception as exc:
                 self._model_error = True
@@ -366,7 +369,13 @@ class EmbeddingService:
                 delay_s = min(30.0 * 2 ** min(self._model_failures - 1, 4), 300.0)
                 self._model_retry_after = now + delay_s
                 diagnostic = safe_exception(exc)
-                _logger.error("Embedding model load failed: %s", diagnostic)
+                _logger.error(
+                    "Embedding model %s@%s failed to load from the local cache: %s; if it was "
+                    "never downloaded on this host, run `msj embedding-download`",
+                    self.settings.model,
+                    self.settings.revision,
+                    diagnostic,
+                )
                 raise EmbeddingFailure(self._model_failure_code) from exc
             return self._model
 
@@ -378,14 +387,25 @@ class EmbeddingService:
             else:
                 if query and "bge" in self.settings.model.casefold():
                     texts = [_QUERY_PREFIX + text for text in passages]
-                    values = model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
+                    values = model.encode(
+                        texts,
+                        normalize_embeddings=True,
+                        convert_to_numpy=True,
+                        show_progress_bar=False,
+                    )
                 elif query and callable(getattr(model, "encode_query", None)):
                     values = model.encode_query(
-                        passages, normalize_embeddings=True, convert_to_numpy=True
+                        passages,
+                        normalize_embeddings=True,
+                        convert_to_numpy=True,
+                        show_progress_bar=False,
                     )
                 else:
                     values = model.encode(
-                        passages, normalize_embeddings=True, convert_to_numpy=True
+                        passages,
+                        normalize_embeddings=True,
+                        convert_to_numpy=True,
+                        show_progress_bar=False,
                     )
                 vectors = np.asarray(values, dtype=np.float32)
             if vectors.ndim != 2 or vectors.shape[0] != len(passages) or vectors.shape[1] < 1:

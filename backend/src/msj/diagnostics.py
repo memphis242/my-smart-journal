@@ -16,6 +16,7 @@ class SafeMessageError(Exception):
         super().__init__(message)
         self.message = message
 
+
 # Only schema-owned names may reach diagnostic logs; arbitrary mapping keys are private.
 _FIELDS = frozenset(
     """

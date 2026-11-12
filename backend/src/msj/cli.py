@@ -148,8 +148,21 @@ def _worker(settings: Settings) -> None:
         _ = wake.wait(delay)
 
 
+def _quiet_service_logs() -> None:
+    """Keep service logs to one line per event: no per-request HTTP or progress-bar output."""
+    # Progress bars from huggingface_hub, transformers and sentence-transformers are for
+    # terminals; in a service log they are noise. setdefault keeps an operator's override.
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TQDM_DISABLE", "1")
+    # httpx logs every RunPod status poll at INFO; providers log one line per job instead.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command in {"serve", "worker"}:
+        _quiet_service_logs()
     settings: Settings | None = None
     try:
         settings = load_settings()

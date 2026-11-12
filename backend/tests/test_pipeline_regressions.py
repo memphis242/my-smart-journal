@@ -162,7 +162,8 @@ def test_paused_runpod_error_retries_then_remains_visible_in_job_error(
             entry = client.post("/api/v1/entries", headers=headers, json={"text": "private"}).json()
             assert _run_batch_and_wait(client, headers, settings, worker_provider)["failed"] == 1
             job = next(
-                item for item in client.get("/api/v1/jobs", headers=headers).json()
+                item
+                for item in client.get("/api/v1/jobs", headers=headers).json()
                 if item["entry_id"] == entry["id"] and item["kind"] == "cleanup"
             )
             assert job["status"] == "queued"
@@ -172,7 +173,8 @@ def test_paused_runpod_error_retries_then_remains_visible_in_job_error(
                 _ = db.execute("UPDATE jobs SET not_before=0 WHERE id=?", (job["id"],))
             assert _run_batch_and_wait(client, headers, settings, worker_provider)["failed"] == 1
             final_job = next(
-                item for item in client.get("/api/v1/jobs", headers=headers).json()
+                item
+                for item in client.get("/api/v1/jobs", headers=headers).json()
                 if item["id"] == job["id"]
             )
             assert final_job["status"] == "failed"

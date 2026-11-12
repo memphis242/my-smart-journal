@@ -165,9 +165,7 @@ class Runner:
                                 ),
                             }[failure_code]
                             message = f"{failure_code}: {guidance}; see worker logs for details"
-                            recorded = self.store.fail_job(
-                                job, message
-                            )
+                            recorded = self.store.fail_job(job, message)
                             stats["failed" if recorded else "discarded"] += 1
                             continue
                         stats["done" if published else "discarded"] += 1
