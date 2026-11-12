@@ -45,9 +45,9 @@ def _assert_acceptable(response: Any) -> None:
 @settings(max_examples=25)
 @given(
     st.lists(
-        st.text(st.characters(exclude_characters="\x00"), min_size=1, max_size=40).filter(
-            lambda s: bool(s.strip()) and "\n" not in s
-        ),
+        st.text(
+            st.characters(codec="utf-8", exclude_characters="\x00"), min_size=1, max_size=40
+        ).filter(lambda s: bool(s.strip()) and "\n" not in s),
         min_size=1,
         max_size=4,
     ),
