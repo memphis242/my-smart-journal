@@ -4,7 +4,6 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -146,18 +145,22 @@ def test_snippet_contains_match_for_length_stable_casefold(
     assert query.casefold() in result["snippet"].casefold()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEFECT: search._snippet finds the match in the casefolded corpus but slices the "
-    "original corpus, so length-changing casefolds (e.g. 'ß' -> 'ss') shift the snippet "
-    "away from the match",
+@given(
+    st.integers(min_value=0, max_value=250),
+    st.sampled_from(["ß", "ﬃ", "İ", "ŉ", "a"]),
+    st.sampled_from(["needle", "NEEDLE", "Straße", "STRASSE"]),
 )
-@given(st.integers(min_value=90, max_value=250))
-def test_snippet_contains_match_after_length_changing_casefolds(count: int) -> None:
-    document = {"entry_id": "e", "text": "ß" * count + " needle"}
-    events = [e for e in tiered_search("needle", [document], [], tiers=(2,)) if "tier" in e]
+def test_snippet_contains_match_after_length_changing_casefolds(
+    count: int, filler: str, shown: str
+) -> None:
+    # Regression: the match was located in the casefolded corpus but the snippet was cut
+    # from the original at that index, so fillers whose casefold is longer pushed the
+    # snippet window past the match.
+    query = shown.swapcase()
+    document = {"entry_id": "e", "text": filler * count + " " + shown + " " + filler * count}
+    events = [e for e in tiered_search(query, [document], [], tiers=(2,)) if "tier" in e]
     (result,) = events[0]["results"]
-    assert "needle" in result["snippet"].casefold()
+    assert query.casefold() in result["snippet"].casefold()
 
 
 _ids = st.sampled_from([f"id{i}" for i in range(8)])
