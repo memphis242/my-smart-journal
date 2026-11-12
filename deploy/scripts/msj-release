@@ -133,7 +133,7 @@ cmd_install() {
   pip_in "$dir" install --index-url "$TORCH_CPU_INDEX" "$torch_pin"
   grep -q -E '^torch==' "$constraints" || pip_in "$dir" freeze | grep -m1 -E '^torch==' >>"$constraints"
 
-  pip_in "$dir" install --extra-index-url "$TORCH_CPU_INDEX" -c "$constraints" "$wheel[semantic]" \
+  pip_in "$dir" install --extra-index-url "$TORCH_CPU_INDEX" -c "$constraints" "${wheel}[semantic]" \
     || msj_die "pip install of $(basename "$wheel") failed (output above). If pip reports a conflict with the pinned versions, the new code needs newer packages: rerun with --refresh-deps --force."
   pip_in "$dir" freeze >"$dir/requirements.freeze"
   if grep -q -i -E '^nvidia-' "$dir/requirements.freeze"; then
