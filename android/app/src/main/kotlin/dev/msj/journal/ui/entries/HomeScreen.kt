@@ -262,6 +262,12 @@ private fun EntryList(
             if (last >= list.entries.size - LOAD_AHEAD) latestLoadMore()
         }
     }
+    // A new newest entry is inserted above the row the list keeps anchored; when the reader was at
+    // the top, follow it so the new entry is in view instead of just above the screen.
+    val newestId = list.entries.firstOrNull()?.id
+    LaunchedEffect(newestId) {
+        if (newestId != null && state.firstVisibleItemIndex <= 1) state.animateScrollToItem(0)
+    }
     LazyColumn(Modifier.fillMaxSize().testTag(TestTags.ENTRY_LIST), state = state) {
         list.error?.let { error ->
             item(key = "error") {
@@ -292,6 +298,7 @@ private fun EntryList(
             EntryRow(
                 entry = entry,
                 onOpen = { onOpenEntry(entry.id, NavContext.fromList(list.entries, list.filters, list.complete)) },
+                modifier = Modifier.animateItem(),
             )
         }
         if (list.entries.isNotEmpty()) {

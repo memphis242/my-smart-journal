@@ -79,7 +79,7 @@ scripts/check.sh
 - a strict release build with Kotlin `allWarningsAsErrors`;
 - compiling the instrumented-test APK.
 
-Debug builds keep Kotlin warnings as warnings. Kotlin `assert()` is compiled with `-Xassertions=jvm`, so assertions run in debug builds and tests and cost nothing in release, where R8 removes them.
+Debug builds keep Kotlin warnings as warnings. Kotlin `assert()` is compiled with `-Xassertions=jvm`, so assertions run in debug builds and tests and cost nothing in release, where R8 removes them. `ShortcutAndBuildTest` confirms on the emulator that the debug build enforces them, because D8 enables assertions for debuggable builds.
 
 ## Journeys on an emulator against the real backend
 
@@ -166,7 +166,10 @@ First run:
 2. Open Journal, enter the server address and the token from `msj create-token`, and tap Test connection, then Sign in.
 3. If the server's address is private, allow local network access when Android asks (Nearby devices).
 
-The launcher icon has Record and Write shortcuts (long-press it). Other apps can share text into a new entry through the share sheet ("Journal entry").
+The launcher icon has Record and Write shortcuts (long-press it).
+
+- **Shortcuts:** the app publishes them at run time for its own package (debug and release differ). They open the app through a non-exported activity alias, so only the launcher can start a recording this way; an intent from another app to the main activity is ignored.
+- **Sharing:** other apps can share text into a new entry through the share sheet ("Journal entry"). Each share opens its own composer. Shared text is cut at 50,000 characters and kept in memory, not in navigation arguments or saved state.
 
 ## Verified on the emulator, and what needs the phone
 
@@ -188,8 +191,11 @@ Needs the physical phone:
 - **Duplicate uploads (API gap):** `POST /entries` has no idempotency key. The client prevents duplicates itself:
   - one outbox record per capture, keyed by a client UUID, so a second tap of Save adds nothing;
   - one uploader at a time;
-  - before resending, it reconciles any upload whose outcome is unknown against the server's entries for that date (text equal, or audio SHA-256 equal).
+  - before resending, it reconciles any upload whose outcome is unknown, and any 5xx answer, against the server's entries for that date (text equal, or audio SHA-256 equal).
 
-  A server-side `Idempotency-Key` would make this exact.
+  A server-side `Idempotency-Key` header would make this exact and save the reconcile request.
 - **Edited entries:** an entry edited on another device before the phone reconciles a lost response no longer shows its first-revision artifact, and could be uploaded twice. See `Reconciler`.
-- **Process death while recording:** it loses the recording in progress. A stopped recording that has not been saved yet survives.
+- **Server binding:** outbox records are not bound to the server they were captured for. Signing in to a different server with entries still unsent uploads them there.
+- **Upload time limit:** WorkManager stops an ordinary upload after about 10 minutes. A recording that cannot finish uploading in that time (for example about an hour of audio on a weak uplink) stops three times in a row. It is then marked `UPLOAD_KEEPS_STOPPING` with a hint to retry on a faster network. Uploads run as ordinary background work, not as a foreground service.
+- **Offline wakeups:** while the server is unreachable, entries that have never been tried get a wakeup every 15 seconds until each has failed once. After that, they wait with exponential backoff (up to 30 minutes).
+- **Process death while recording:** it loses the recording in progress. A stopped recording that has not been saved yet survives, because it waits in app-private storage that is not evicted.
