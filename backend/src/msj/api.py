@@ -71,6 +71,35 @@ def _valid_query(query: str) -> bool:
     )
 
 
+def _json(data: bytes | str) -> Any:
+    """Parse a JSON request value whose strings are all valid Unicode text.
+
+    JSON escapes can encode lone surrogates (for example "\\ud800"), which decode into
+    Python strings that neither SQLite nor the UTF-8 response encoder accept. Such input
+    raises UnicodeEncodeError, a ValueError, so callers report it like any invalid JSON.
+    """
+    value = json.loads(data)
+    pending = [value]
+    while pending:
+        match pending.pop():
+            case str() as text:
+                _require_text(text)
+            case dict() as mapping:
+                for key, child in mapping.items():
+                    _require_text(key)
+                    pending.append(child)
+            case list() as items:
+                pending.extend(items)
+            case _:
+                pass
+    return value
+
+
+def _require_text(value: str) -> None:
+    if not value.isascii():
+        _ = value.encode("utf-8")
+
+
 def _validate_date_bounds(from_date: str | None, to_date: str | None) -> None:
     for value in (from_date, to_date):
         if value is None:
@@ -426,7 +455,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 headers={"Retry-After": str(retry)},
             )
         try:
-            payload = json.loads(await _body(request, 4096))
+            payload = _json(await _body(request, 4096))
             token = payload.get("token") if isinstance(payload, dict) else None
         except ValueError, AttributeError, RecursionError:
             token = None
@@ -490,7 +519,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         body = await _body(request, max_request_bytes)
         if content_type == "application/json":
             try:
-                payload = EntryCreate.model_validate(json.loads(body))
+                payload = EntryCreate.model_validate(_json(body))
             except ValueError, RecursionError:
                 raise APIProblem(
                     422, "Validation Error", "Provide non-empty text and valid entry fields."
@@ -541,7 +570,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     413, "Payload Too Large", "Audio exceeds the configured upload limit."
                 )
             try:
-                tags_value = json.loads(str(form.get("tags", "[]")))
+                tags_value = _json(str(form.get("tags", "[]")))
             except ValueError, RecursionError:
                 raise APIProblem(
                     422, "Validation Error", "Multipart tags must be a JSON array."
@@ -666,7 +695,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.patch("/api/v1/entries/{entry_id}", dependencies=[Depends(authorized)])
     async def patch_entry(entry_id: str, request: Request) -> dict[str, Any]:
         try:
-            changes = json.loads(await _body(request, actual_settings.upload_limit_bytes + 16_384))
+            changes = _json(await _body(request, actual_settings.upload_limit_bytes + 16_384))
         except ValueError, RecursionError:
             raise APIProblem(400, "Bad Request", "Body must be valid JSON.") from None
         try:
@@ -845,7 +874,7 @@ def _install_additional_routes(
     @app.post("/api/v1/retrieve", dependencies=[Depends(authorized)])
     async def retrieve(request: Request) -> dict[str, Any]:
         try:
-            payload = json.loads(await _body(request, 65_536))
+            payload = _json(await _body(request, 65_536))
             query, k, filters = (
                 payload["query"],
                 payload.get("k", 20),
@@ -890,7 +919,7 @@ def _install_additional_routes(
     @app.post("/api/v1/export", dependencies=[Depends(authorized)])
     async def export_entries(request: Request) -> Response:
         try:
-            payload = json.loads(await _body(request, 65_536))
+            payload = _json(await _body(request, 65_536))
             ids, format_name = payload["entry_ids"], payload["format"]
             include, order = payload.get("include", {}), payload.get("order", "desc")
             if (
@@ -968,7 +997,7 @@ def _install_additional_routes(
     @app.post("/api/v1/compilations", status_code=202, dependencies=[Depends(authorized)])
     async def create_compilation(request: Request) -> dict[str, Any]:
         try:
-            payload = json.loads(await _body(request, 65_536))
+            payload = _json(await _body(request, 65_536))
             ids, purpose, period = payload["entry_ids"], payload["purpose"], payload["period"]
             if (
                 not isinstance(ids, list)

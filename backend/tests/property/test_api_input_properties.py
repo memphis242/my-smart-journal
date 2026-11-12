@@ -3,7 +3,6 @@
 import json
 from typing import Any
 
-import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -175,13 +174,9 @@ def test_lone_surrogates_in_validated_fields_are_client_errors(
     _send_surrogate(api, field, value)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEFECT: JSON escapes for lone surrogates (\\ud800) reach SQLite binding "
-    "(storage.py create_entry:418 title/tags, patch_entry via _artifact:297, fts_search:1321 "
-    "for retrieve/search queries, compilations insert) and the 404 JSON encoder (export ids), "
-    "yielding 500 instead of a 4xx problem",
-)
+# Regression: lone-surrogate escapes reached SQLite binding and the JSON response encoder
+# (title, tags, retrieve query, compilation purpose/period, PATCH text/title, echoed export
+# ids) and produced 500 instead of a 4xx problem.
 @settings(max_examples=25)
 @given(
     _LONE_SURROGATE_TEXT,
@@ -193,3 +188,15 @@ def test_lone_surrogates_in_stored_or_echoed_fields_are_client_errors(
     api: Any, value: str, field: str
 ) -> None:
     _send_surrogate(api, field, value)
+
+
+def test_lone_surrogate_in_multipart_tags_is_a_client_error(api: Any) -> None:
+    # Regression: the multipart `tags` field is JSON text and took the same path to SQLite.
+    response = api.client.post(
+        "/api/v1/entries",
+        headers=api.headers,
+        data={"tags": '["\\ud800"]'},
+        files={"file": ("clip.wav", b"RIFF0000WAVEfmt ", "audio/wav")},
+    )
+    assert response.status_code == 422
+    _assert_acceptable(response)
