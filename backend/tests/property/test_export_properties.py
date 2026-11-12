@@ -81,7 +81,9 @@ def _ordered(entries: list[dict[str, Any]], order: str) -> list[dict[str, Any]]:
 def test_json_export_round_trips_included_fields_in_order(
     entries: list[dict[str, Any]], include: dict[str, bool], order: str
 ) -> None:
-    content, media_type, extension = render(entries, format="json", include=include, order=order)
+    content, media_type, extension = render(
+        entries, output_format="json", include=include, order=order
+    )
     assert (media_type, extension) == ("application/json", "json")
     expected = []
     for entry in _ordered(entries, order):
@@ -103,7 +105,9 @@ def _model_header(entry: dict[str, Any], include: dict[str, bool]) -> str:
 def test_text_export_has_headers_separators_and_no_markdown_markers(
     entries: list[dict[str, Any]], include: dict[str, bool], order: str
 ) -> None:
-    content, media_type, extension = render(entries, format="text", include=include, order=order)
+    content, media_type, extension = render(
+        entries, output_format="text", include=include, order=order
+    )
     assert (media_type, extension) == ("text/plain; charset=utf-8", "txt")
     output = content.decode()
     assert output.count(_TEXT_SEPARATOR) == max(0, len(entries) - 1)
@@ -126,7 +130,7 @@ def test_markdown_export_contains_included_texts_and_consistent_separators(
     entries: list[dict[str, Any]], include: dict[str, bool], order: str
 ) -> None:
     content, media_type, extension = render(
-        entries, format="markdown", include=include, order=order
+        entries, output_format="markdown", include=include, order=order
     )
     assert (media_type, extension) == ("text/markdown", "md")
     output = content.decode()
@@ -147,7 +151,7 @@ def test_markdown_export_contains_included_texts_and_consistent_separators(
 def test_every_format_renders_arbitrary_entries_to_bytes(
     entries: list[dict[str, Any]], fmt: str, include: dict[str, bool]
 ) -> None:
-    content, _, _ = render(entries, format=fmt, include=include, order="desc")
+    content, _, _ = render(entries, output_format=fmt, include=include, order="desc")
     assert isinstance(content, bytes)
 
 

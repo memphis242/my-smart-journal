@@ -72,7 +72,6 @@ def _secret(store: TokenStore, *, create: bool) -> bytes:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-            return value
         except FileExistsError:
             return _read_secret(path)
         except OSError as exc:
@@ -80,6 +79,8 @@ def _secret(store: TokenStore, *, create: bool) -> bytes:
                 f"Cannot create or read bearer-token key {path} (errno {exc.errno}); "
                 "check data-directory ownership and key permissions, then run `msj create-token`."
             ) from exc
+        else:
+            return value
         finally:
             if temporary_path is not None:
                 try:

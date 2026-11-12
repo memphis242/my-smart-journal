@@ -75,7 +75,8 @@ def test_limiter_never_admits_more_than_limit_failures_per_window(
             assert retry >= 1
     for times in admitted.values():
         for moment in times:
-            inside = [t for t in times if moment - window < t <= moment]
+            # Same expression as the limiter: `moment - window < t` can round differently.
+            inside = [t for t in times if t <= moment and moment - t < window]
             assert len(inside) <= limit
 
 

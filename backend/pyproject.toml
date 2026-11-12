@@ -54,8 +54,103 @@ target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import order
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "S",        # bandit security rules
+    "SIM",      # simplifications
+    "RUF",      # ruff-specific
+    "PT",       # pytest style
+    "ASYNC",    # blocking calls in async code
+    "BLE",      # blind except
+    "TRY",      # exception handling
+    "PL",       # pylint
+    "C90",      # mccabe complexity
+    "PERF",     # performance anti-patterns
+    "DTZ",      # naive datetimes
+    "RET",      # return consistency
+    "C4",       # comprehensions
+    "PIE",      # misc lints
+    "PGH",      # blanket noqa / type: ignore
+    "T20",      # print
+    "ISC",      # implicit string concatenation
+    "LOG", "G", # logging misuse and eager formatting
+    "ARG",      # unused arguments
+    "PTH",      # pathlib
+    "ERA",      # commented-out code
+    "FURB",     # refurb modernizations
+    "TID",      # banned/relative imports
+    "A",        # shadowed builtins
+    "N",        # naming
+    "SLF",      # private member access
+    "RSE",      # raise parentheses
+    "FLY",      # static f-string joins
+]
+ignore = [
+    # The formatter owns trailing commas and string-literal layout.
+    "COM812", "ISC001",
+    # Assertions are deliberate: the project asserts internal invariants in application
+    # code (they cost nothing under -O and surface broken assumptions early).
+    "S101",
+    # Error messages are written at the raise site on purpose: each one names the failed
+    # operation, the resource, and the remedy. A class per message (TRY003) or a variable
+    # per message (EM101/EM102, not selected) would scatter that guidance.
+    "TRY003",
+    # Logging deliberately omits tracebacks and exception values (they can contain journal
+    # text or credentials); handlers log safe_exception() evidence via logger.error.
+    "TRY400",
+    # Inline comparisons against protocol constants (HTTP statuses, digest lengths, tier
+    # numbers) read clearer than named constants used once.
+    "PLR2004",
+    # Deferred imports break storage <-> embedding/compilations/batch import cycles and
+    # keep the optional sentence-transformers dependency lazy.
+    "PLC0415",
+    # Keyword-only parameters are the norm in this codebase; positional sprawl is still
+    # caught by PLR0917.
+    "PLR0913",
+    # NotFound/Conflict/EntryChanged are part of the storage vocabulary used across modules;
+    # an Error suffix adds nothing.
+    "N818",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests get lower standards than application code: private access, magic values, fixture
+# arguments, synthetic tokens/passwords, subprocesses with trusted arguments, and loose
+# structure are normal there.
+"tests/**" = [
+    "ARG", "SLF001", "PLR0915", "PLR0912", "PLR0917", "C901", "TRY301", "BLE001",
+    "S105", "S106", "S108", "S311", "S603", "S607", "S608",
+    "PT018", "SIM117", "INP001", "T20", "PERF", "N802", "PLW0603", "RET",
+]
+# The CLI's output is its interface.
+"src/msj/cli.py" = ["T201"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
 
 [tool.mypy]
 python_version = "3.14"
 strict = true
+files = ["src", "tests"]
+mypy_path = "src:."
+# Several test packages have their own conftest.py; module names come from their paths.
+explicit_package_bases = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# Tests are type-checked to a lower standard than application code: untyped helpers are
+# allowed, tests monkeypatch module globals (implicit re-exports), and Starlette types
+# TestClient.app as a bare ASGI callable, so `app.state` is not visible (attr-defined).
+module = ["tests.*"]
+implicit_reexport = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+warn_return_any = false
+disable_error_code = ["attr-defined"]

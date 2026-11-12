@@ -266,7 +266,7 @@ class _PrivateErrorMiddleware:
 
         try:
             await self.app(scope, receive, track_send)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - last-resort handler keeps exception values private
             _log_request_failure(scope, exc)
             if not started:
                 response = _problem(
@@ -279,7 +279,7 @@ class _PrivateErrorMiddleware:
                 await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:  # noqa: C901, PLR0915
     from .config import load_settings
 
     actual_settings = settings or load_settings()
@@ -513,7 +513,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(status_code=204)
 
     @app.post("/api/v1/entries", status_code=201, dependencies=[Depends(authorized)])
-    async def create_entry(request: Request) -> dict[str, Any]:
+    async def create_entry(request: Request) -> dict[str, Any]:  # noqa: C901, PLR0912
         content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
         max_request_bytes = actual_settings.upload_limit_bytes + 16_384
         body = await _body(request, max_request_bytes)
@@ -607,7 +607,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await form.close()
 
     @app.get("/api/v1/entries", dependencies=[Depends(authorized)])
-    def list_entries(
+    def list_entries(  # noqa: PLR0917
         from_date: Annotated[str | None, Query(alias="from")] = None,
         to_date: Annotated[str | None, Query(alias="to")] = None,
         tag: Annotated[list[str] | None, Query()] = None,
@@ -653,7 +653,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return entry | summary_fields(entry)
 
     @app.get("/api/v1/entries/{entry_id}/neighbors", dependencies=[Depends(authorized)])
-    def entry_neighbors(
+    def entry_neighbors(  # noqa: PLR0917
         entry_id: str,
         from_date: Annotated[str | None, Query(alias="from")] = None,
         to_date: Annotated[str | None, Query(alias="to")] = None,
@@ -731,7 +731,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return store.retry_job(job_id)
 
     @app.get("/api/v1/search", dependencies=[Depends(authorized)])
-    async def search(
+    async def search(  # noqa: PLR0917
         q: str,
         from_date: Annotated[str | None, Query(alias="from")] = None,
         to_date: Annotated[str | None, Query(alias="to")] = None,
@@ -754,7 +754,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or len(set(selected)) != len(selected)
                 or any(value not in range(1, 6) for value in selected)
             ):
-                raise ValueError
+                raise ValueError  # noqa: TRY301 - joins the shared invalid-request path below
         except ValueError, RecursionError:
             raise APIProblem(
                 422,
@@ -790,17 +790,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def stream() -> Iterator[bytes]:
             try:
                 for event in events:
-                    if "results" in event:
-                        event = event | {
+                    enriched = (
+                        event
+                        | {
                             "results": [
                                 result | {"entry": summaries[result["entry_id"]]}
                                 for result in event["results"]
                             ]
                         }
+                        if "results" in event
+                        else event
+                    )
                     yield (
-                        json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+                        json.dumps(enriched, ensure_ascii=False, separators=(",", ":")) + "\n"
                     ).encode()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - a started stream ends with an error event
                 _log_request_failure({"method": "GET", "route": "/api/v1/search"}, exc)
                 yield (
                     json.dumps(
@@ -868,7 +872,7 @@ def _retrieve_sync(
     return {"items": items, "unavailable": unavailable}
 
 
-def _install_additional_routes(
+def _install_additional_routes(  # noqa: C901, PLR0915
     app: FastAPI, store: Store, settings: Settings, authorized: Any
 ) -> None:
     @app.post("/api/v1/retrieve", dependencies=[Depends(authorized)])
@@ -887,7 +891,7 @@ def _install_additional_routes(
                 or type(k) is not int
                 or not 1 <= k <= 100
             ):
-                raise ValueError
+                raise ValueError  # noqa: TRY301 - joins the shared invalid-request path below
         except ValueError, TypeError, KeyError, AttributeError, RecursionError:
             raise APIProblem(
                 422,
@@ -934,7 +938,7 @@ def _install_additional_routes(
                 )
                 or order not in {"asc", "desc"}
             ):
-                raise ValueError
+                raise ValueError  # noqa: TRY301 - joins the shared invalid-request path below
         except ValueError, TypeError, KeyError, RecursionError:
             raise APIProblem(
                 422,
@@ -954,13 +958,14 @@ def _install_additional_routes(
         def render_selected() -> tuple[bytes, str, str]:
             return render(
                 [export_item(by_id[entry_id]) for entry_id in dict.fromkeys(ids)],
-                format=format_name,
+                output_format=format_name,
                 include=include,
                 order=order,
             )
 
         content, media_type, extension = await run_in_threadpool(render_selected)
-        filename = f"journal-export-{date.today().isoformat()}.{extension}"
+        # The server's calendar day names the file; it is a label, not a timestamp.
+        filename = f"journal-export-{date.today().isoformat()}.{extension}"  # noqa: DTZ011
         return Response(
             content=content,
             media_type=media_type,
@@ -1009,7 +1014,7 @@ def _install_additional_routes(
                 or not isinstance(period, str)
                 or not period.strip()
             ):
-                raise ValueError
+                raise ValueError  # noqa: TRY301 - joins the shared invalid-request path below
         except ValueError, TypeError, KeyError, RecursionError:
             raise APIProblem(
                 422,

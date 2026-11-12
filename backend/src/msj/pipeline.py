@@ -108,7 +108,7 @@ class Runner:
             return self._execute_batch(_lease_id)
         return BatchCoordinator(self.store, self).run_sync("manual")
 
-    def _execute_batch(self, lease_id: str) -> dict[str, Any]:
+    def _execute_batch(self, lease_id: str) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
         # Session follow-ups stay in the batch; new entry revisions wait for another pass.
         snapshot = {
             (job["entry_id"], job["revision"], job.get("compilation_id"))
@@ -151,7 +151,7 @@ class Runner:
                             continue
                         try:
                             published = self._embedding.process(job)
-                        except Exception as exc:
+                        except Exception as exc:  # noqa: BLE001 - recorded on the job; batch continues
                             diagnostic = safe_exception(exc)
                             _logger.error("Embedding job failed: %s", diagnostic)
                             from .embedding import EmbeddingFailure
@@ -231,7 +231,7 @@ class Runner:
                         retryable=exc.retryable if isinstance(exc, ProviderError) else True,
                     )
                     stats["failed" if recorded else "discarded"] += 1
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - one job's failure must not end the batch
                     _logger.error("Unexpected job exception: %s", safe_exception(exc))
                     recorded = self.store.fail_job(
                         job,

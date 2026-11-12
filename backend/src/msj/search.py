@@ -48,7 +48,7 @@ def _recency(created_at: Any, now: datetime) -> float:
     if not isinstance(created_at, str):
         return 0.0
     try:
-        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(created_at)
     except ValueError:
         return 0.0
     if parsed.tzinfo is None:
@@ -57,7 +57,7 @@ def _recency(created_at: Any, now: datetime) -> float:
     return 1.0 / (1.0 + age_days / 30.0)
 
 
-def tiered_search(
+def tiered_search(  # noqa: C901, PLR0912, PLR0915
     query: str,
     documents: Sequence[Mapping[str, Any]],
     fts_results: Sequence[Mapping[str, Any]] | Callable[[], Sequence[Mapping[str, Any]]],

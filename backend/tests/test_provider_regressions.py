@@ -71,7 +71,7 @@ def test_runpod_payload_cap_matches_exact_encoded_request_body(
 
 
 @pytest.mark.parametrize(
-    "provider,kind", [("runpod", "cleanup"), ("openai", "cleanup"), ("openai", "transcribe")]
+    ("provider", "kind"), [("runpod", "cleanup"), ("openai", "cleanup"), ("openai", "transcribe")]
 )
 def test_http_413_is_nonretryable_request_size_error(
     provider: str,

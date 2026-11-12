@@ -315,9 +315,9 @@ class InferenceProvider:
         return ensure_model(generation, route)
 
     @staticmethod
-    def _fake(
+    def _fake(  # noqa: PLR0917
         kind: TaskKind,
-        route: TaskRoute,
+        route: TaskRoute,  # noqa: ARG004 - same signature as the other provider adapters
         source: str,
         candidate: str | None,
         audio: bytes | None,
@@ -364,7 +364,7 @@ class InferenceProvider:
                 )
         return Generation(text, "fake")
 
-    def _runpod(
+    def _runpod(  # noqa: C901, PLR0912, PLR0915, PLR0917
         self,
         kind: TaskKind,
         route: TaskRoute,
@@ -543,7 +543,7 @@ class InferenceProvider:
             )
         return Generation(text, model)
 
-    def _openai(
+    def _openai(  # noqa: PLR0917
         self,
         kind: TaskKind,
         route: TaskRoute,
@@ -562,7 +562,7 @@ class InferenceProvider:
                 f"{self._settings.provider_timeout_s:g} seconds"
             ) from None
 
-    async def _openai_request(
+    async def _openai_request(  # noqa: C901, PLR0917
         self,
         kind: TaskKind,
         route: TaskRoute,

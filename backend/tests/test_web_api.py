@@ -210,12 +210,12 @@ def test_export_includes_nested_extraction_without_markdown_in_text() -> None:
         "text": True,
         "extraction": True,
     }
-    text_body, _, _ = render([item], format="text", include=flags, order="desc")
+    text_body, _, _ = render([item], output_format="text", include=flags, order="desc")
     rendered = text_body.decode()
     assert "description: Improved startup" in rendered
     assert "12 s to 4 s" in rendered
     assert "#" not in rendered and "- " not in rendered
-    json_body, _, _ = render([item], format="json", include=flags, order="desc")
+    json_body, _, _ = render([item], output_format="json", include=flags, order="desc")
     assert '"metrics": [' in json_body.decode()
 
 

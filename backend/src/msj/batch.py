@@ -58,9 +58,13 @@ class BatchRequestCoordinator:
                 raise BatchStateUnavailable(
                     "Batch state is unavailable; run `msj migrate` and restart"
                 )
-            if row["batch_id"] is not None and row["lease_until"] is not None:
-                if float(row["lease_until"]) > now and OwnerIdentity.alive(row):
-                    return False
+            if (
+                row["batch_id"] is not None
+                and row["lease_until"] is not None
+                and float(row["lease_until"]) > now
+                and OwnerIdentity.alive(row)
+            ):
+                return False
             _ = db.execute(
                 "UPDATE batch_state SET request_pending=1,request_created_at=COALESCE("
                 "request_created_at,?),worker_next_run_at=? WHERE id=1",
@@ -222,7 +226,7 @@ class BatchCoordinator(BatchRequestCoordinator):
                     None,
                     error={"code": error_code, "detail": _safe_detail(failure)},
                 )
-            except Exception as release_exc:
+            except Exception as release_exc:  # noqa: BLE001 - the original failure is re-raised
                 _logger.error(
                     "Failed batch error could not be persisted during lease release: %s",
                     safe_exception(release_exc),
@@ -244,7 +248,7 @@ class BatchCoordinator(BatchRequestCoordinator):
                 if worker:
                     try:
                         self.touch_worker()
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 - a missed heartbeat must not stop work
                         _logger.warning("Worker heartbeat update failed: %s", safe_exception(exc))
                 try:
                     self.renew(batch_id)
@@ -252,7 +256,7 @@ class BatchCoordinator(BatchRequestCoordinator):
                     lease_lost.set()
                     _logger.error("Batch lease renewal failed code=BATCH_LEASE_LOST")
                     return
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - renewal retries until the lease is lost
                     failure = safe_exception(exc)
                     _logger.warning("Transient batch lease renewal failure: %s", failure)
 
@@ -320,13 +324,13 @@ def queue_status(store: Store) -> dict[str, Any]:
         status_counts = {
             str(row["status"]): int(row["count"])
             for row in db.execute(
-                "SELECT j.status,COUNT(*) AS count FROM jobs j LEFT JOIN entries e "
+                "SELECT j.status,COUNT(*) AS count FROM jobs j LEFT JOIN entries e "  # noqa: S608 - fixed SQL fragment
                 f"ON e.id=j.entry_id WHERE {current} GROUP BY j.status"
             )
         }
         blocked = int(
             db.execute(
-                "WITH RECURSIVE ancestors(job_id,ancestor_id) AS ("
+                "WITH RECURSIVE ancestors(job_id,ancestor_id) AS ("  # noqa: S608 - fixed SQL fragment
                 "SELECT job_id,depends_on FROM job_dependencies UNION "
                 "SELECT a.job_id,d.depends_on FROM ancestors a "
                 "JOIN job_dependencies d ON d.job_id=a.ancestor_id) "
@@ -410,7 +414,7 @@ def worker_stale(last_seen_at: str | None, tick_s: float) -> bool:
     assert tick_s > 0
     if last_seen_at is None:
         return True
-    seen = datetime.fromisoformat(last_seen_at.replace("Z", "+00:00"))
+    seen = datetime.fromisoformat(last_seen_at)
     return (datetime.now(UTC) - seen).total_seconds() > max(10.0, tick_s * 3)
 
 
