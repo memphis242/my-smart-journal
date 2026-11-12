@@ -1,6 +1,6 @@
-import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -100,6 +100,12 @@ kotlin {
         extraWarnings.set(true)
         // Kotlin assert() compiles to JVM assertions: enabled in debuggable builds, removed by R8 in release.
         freeCompilerArgs.add("-Xassertions=jvm")
+        // Room's generated Kotlin (KSP) trips these two style diagnostics of extraWarnings, and
+        // allWarningsAsErrors cannot be scoped to hand-written sources, so they are off module-wide.
+        freeCompilerArgs.addAll(
+            "-Xwarning-level=REDUNDANT_VISIBILITY_MODIFIER:disabled",
+            "-Xwarning-level=CAN_BE_VAL:disabled",
+        )
     }
 }
 
