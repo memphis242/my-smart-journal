@@ -26,7 +26,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -158,13 +158,11 @@ class HomeViewModel(
     init {
         refresh()
         viewModelScope.launch {
-            var previous: Int? = null
-            services.outbox.unsent.map { it.size }.distinctUntilChanged().collect { count ->
-                // An upload finished: its entry is on the server now.
-                val before = previous
-                if (before != null && count < before) refresh()
-                previous = count
-            }
+            // An upload finished: its entry is on the server now. The last-sent time changes on every
+            // upload, even one that finished before the unsent list could show it.
+            services.outbox.lastSentAtMs
+                .drop(1)
+                .collect { refresh() }
         }
     }
 
