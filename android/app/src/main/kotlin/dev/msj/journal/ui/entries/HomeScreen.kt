@@ -89,7 +89,10 @@ fun HomeScreen(
     val unsent by viewModel.unsent.collectAsStateWithLifecycle()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle) {
-        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { viewModel.pollQueue() }
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.onVisible()
+            viewModel.pollQueue()
+        }
     }
     LaunchedEffect(viewModel) { viewModel.messages.collect { snackbar.showSnackbar(it) } }
     var menuOpen by rememberSaveable { mutableStateOf(false) }

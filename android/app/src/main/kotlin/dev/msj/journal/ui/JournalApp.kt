@@ -126,7 +126,7 @@ fun JournalApp(
             if (session is SessionManager.State.SignedOut &&
                 nav.currentDestination?.hasRoute(SignInRoute::class) != true
             ) {
-                nav.navigate(SignInRoute()) { popUpTo(0) { inclusive = true } }
+                nav.navigate(SignInRoute()) { popUpTo(nav.graph.id) { inclusive = true } }
             }
         }
         val pending by launches.collectAsStateWithLifecycle()
@@ -167,7 +167,7 @@ fun JournalApp(
                         if (route.again) {
                             nav.popBackStack()
                         } else {
-                            nav.navigate(HomeRoute) { popUpTo(0) { inclusive = true } }
+                            nav.navigate(HomeRoute) { popUpTo(nav.graph.id) { inclusive = true } }
                         }
                     },
                     onBack = if (route.again) ({ nav.popBackStack() }) else null,

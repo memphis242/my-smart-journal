@@ -268,6 +268,15 @@ class HomeViewModel(
             }
     }
 
+    /**
+     * The screen came into view: reload when the last load failed (for example after signing in
+     * again) or when the day changed since, so the range still ends today.
+     */
+    fun onVisible() {
+        val state = mutableList.value
+        if (state.error != null || state.bounds != presetBounds(state.range, services.today())) refresh()
+    }
+
     /** Polls `GET /queue` at the pace the queue needs, until the caller's scope is cancelled. */
     suspend fun pollQueue() {
         while (true) {
