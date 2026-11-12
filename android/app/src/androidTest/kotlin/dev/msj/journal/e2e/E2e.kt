@@ -118,3 +118,9 @@ fun ComposeTestRule.countOf(tag: String): Int =
     onNodeWithTag(tag, useUnmergedTree = false).fetchSemanticsNode().config[CountKey]
 
 fun SemanticsNodeInteraction.isEnabled(): Boolean = !fetchSemanticsNode().config.contains(SemanticsProperties.Disabled)
+
+/** Nodes whose test tag starts with [prefix] (rows tagged with their entry id). */
+fun hasTagPrefix(prefix: String): SemanticsMatcher =
+    SemanticsMatcher("test tag starts with $prefix") { node ->
+        node.config.getOrNull(SemanticsProperties.TestTag)?.startsWith(prefix) == true
+    }
