@@ -591,10 +591,12 @@ msj-release install /root/msj-release-<id>.tar.gz
 What it does:
 
 1. Builds `/opt/msj/releases/<id>/venv` from `/usr/bin/python3.14`.
-2. Installs torch **from the PyTorch CPU index only**, so no CUDA wheels are
-   ever pulled.
-3. Installs the wheel with its `semantic` extra.
-4. Freezes the environment (`requirements.freeze`) and checks that no
+2. Installs every dependency from the release's hashed lock
+   (`requirements/deploy.txt`, exported from `backend/uv.lock`) with
+   `--require-hashes`. torch is the `+cpu` build from the PyTorch CPU index,
+   so no CUDA wheels are ever pulled.
+3. Installs the journal's wheel without dependencies, then runs `pip check`.
+4. Records the environment (`requirements.freeze`) and checks that no
    `nvidia-*` package slipped in.
 5. Downloads bge-small-en-v1.5 at its pinned revision into `/var/lib/msj/hf`.
    This is the only time the box talks to the Hugging Face Hub; the services
@@ -768,11 +770,11 @@ never overwrites `/etc/msj/config.toml`. If the release's
 
 `msj-release install`:
 
-- **Refuses** to deploy while a processing batch is running, because stopping
-  the worker would abandon the in-flight RunPod job. Wait, or pass `--force`.
-- **Pins** every dependency to the live release's frozen versions, so a
-  deploy changes only the journal itself. If the new code needs newer
-  packages, pip reports a conflict; rerun with `--refresh-deps --force`.
+- **Deploys safely mid-batch:** stopping the worker cancels the in-flight
+  RunPod job and requeues it without using an attempt; the new worker runs it.
+- **Installs exactly the locked dependencies.** To change them, edit
+  `backend/pyproject.toml`, run `scripts/lock.sh` on the PC, commit, and
+  build a new release; `build-release.sh` refuses a stale lock.
 - **Snapshots** the database to `/srv/msj/backup/pre-migrate/` before
   migrating. It keeps the last five snapshots and the last four releases.
 
@@ -1127,11 +1129,11 @@ no Vultr agent for disk alerts; `msj-health` covers the disk.
 - **`msj-cli create-token` logs every client out**, including the Android app.
 - **`__Host-` cookies require HTTPS on the real hostname.** Sign-in by IP
   address or plain HTTP fails, by design.
-- **Deploying during a batch abandons a RunPod job** that keeps running, and
-  billing, on RunPod's side. `msj-release` refuses unless `--force`.
-- **No lock file in the repository.** The first install resolves today's
-  newest versions; every later install pins to the previous release's freeze.
-  `--refresh-deps` re-resolves everything, so test that on a quiet day.
+- **A worker stop blocked on the network** (a RunPod request already in
+  flight, up to 30 s) can outlast `TimeoutStopSec=30`; systemd then kills it
+  and the job's lease expires before it is retried (up to `lease_s`).
+- **A Dependabot dependency PR fails the `lock` gate** until `scripts/lock.sh`
+  is run on its branch to refresh the hashed exports.
 - **The AlmaLinux 10 image needs an x86-64-v3 CPU.** AMD EPYC High
   Performance hosts qualify. If an image ever fails to boot on another plan,
   that is the first suspect. AlmaLinux also publishes a v2 build.

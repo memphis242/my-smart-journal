@@ -20,8 +20,9 @@ EnvironmentFile=/srv/msj/secrets/app.env
 ExecStart=/opt/msj/current/venv/bin/msj worker
 Restart=on-failure
 RestartSec=5
-# A stop during a batch abandons the in-flight provider call; the job lease
-# lets the next worker take it over. msj-release refuses to deploy mid-batch.
+# On SIGTERM the worker stops claiming jobs, cancels the in-flight provider
+# call (RunPod /cancel), requeues that job without using an attempt, releases
+# the batch lease and exits 0, normally well within this timeout.
 TimeoutStopSec=30
 MemoryHigh=1280M
 MemoryMax=1536M

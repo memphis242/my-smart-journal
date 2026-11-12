@@ -60,6 +60,10 @@ podman run --rm -v "$stage/caddy:/out:Z" docker.io/library/caddy:2-builder \
 "$stage/caddy/caddy" list-modules | grep -q '^dns.providers.cloudflare' || die "the built Caddy lacks dns.providers.cloudflare"
 caddy_version=$("$stage/caddy/caddy" version | cut -d' ' -f1)
 
+log "hashed dependency lock"
+scripts/lock.sh --check || die "backend/uv.lock or its exports are out of date; run scripts/lock.sh and commit"
+install -D -m 644 backend/requirements/deploy.txt "$stage/requirements/deploy.txt"
+
 cp -a deploy "$stage/deploy"
 cat >"$stage/RELEASE" <<EOF
 id=$id

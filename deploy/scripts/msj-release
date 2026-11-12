@@ -2,7 +2,7 @@
 #
 # Install, activate and roll back releases of the journal on the box.
 #
-#   msj-release install <msj-release-*.tar.gz> [--refresh-deps] [--force]
+#   msj-release install <msj-release-*.tar.gz> [--force]
 #   msj-release rollback [--restore-db]
 #   msj-release list
 #
@@ -12,11 +12,11 @@
 # /opt/msj/releases/<id>; /opt/msj/current is a symlink to the live one, so a
 # rollback is a symlink flip plus, when the schema moved, a database restore.
 #
-# Dependencies: the repository has no lock file, so each install uses the
-# live release's frozen environment (requirements.freeze) as pip constraints.
-# A deploy then changes only the journal itself unless --refresh-deps asks for
-# fresh dependency resolution. torch always comes from the PyTorch CPU index;
-# the install fails if any CUDA package slips in.
+# Dependencies come from the release's hashed lock export
+# (requirements/deploy.txt, generated from backend/uv.lock by scripts/lock.sh),
+# installed with --require-hashes, so every box gets byte-identical packages.
+# torch is pinned to its +cpu build from the PyTorch CPU index; the install
+# still fails if any CUDA package slips in.
 set -Eeuo pipefail
 MSJ_JOB=msj-release
 # shellcheck source=lib/common.sh
@@ -28,7 +28,7 @@ readonly PRE_MIGRATE_DIR="$MSJ_BACKUP_DIR/pre-migrate"
 readonly KEEP_RELEASES=4
 readonly KEEP_PRE_MIGRATE=5
 
-usage() { msj_die "usage: msj-release install <tarball> [--refresh-deps] [--force] | rollback [--restore-db] | list"; }
+usage() { msj_die "usage: msj-release install <tarball> [--force] | rollback [--restore-db] | list"; }
 
 pip_in() { "$1/venv/bin/python" -m pip --disable-pip-version-check --no-input "${@:2}"; }
 
@@ -74,10 +74,9 @@ cmd_list() {
 }
 
 cmd_install() {
-  local tarball="" refresh=0 force=0 arg
+  local tarball="" force=0 arg
   for arg in "$@"; do
     case $arg in
-      --refresh-deps) refresh=1 ;;
       --force) force=1 ;;
       -*) usage ;;
       *) tarball=$arg ;;
@@ -100,6 +99,7 @@ cmd_install() {
   local wheels=("$incoming"/wheel/*.whl)
   (( ${#wheels[@]} == 1 )) && [[ -f ${wheels[0]} ]] || msj_die "$tarball must contain exactly one wheel under wheel/"
   [[ -f $incoming/web/index.html ]] || msj_die "$tarball has no web/index.html; the web bundle did not build"
+  [[ -f $incoming/requirements/deploy.txt ]] || msj_die "$tarball has no requirements/deploy.txt (the hashed dependency lock); rebuild it with deploy/scripts/build-release.sh"
 
   dir="$MSJ_RELEASES/$id"
   if [[ -e $dir ]]; then
@@ -117,24 +117,16 @@ cmd_install() {
   "$PYTHON" -m venv "$dir/venv"
   pip_in "$dir" install --upgrade pip >/dev/null
 
-  # Constraints: the live release's frozen environment, minus the journal
-  # itself, unless asked to refresh.
-  local constraints="$dir/constraints.txt" current_freeze="$MSJ_CURRENT/requirements.freeze"
-  : >"$constraints"
-  if (( ! refresh )) && [[ -f $current_freeze ]]; then
-    grep -v -i -E '^(my[-_]smart[-_]journal)( |=|@)' "$current_freeze" >"$constraints" || true
-    msj_log "pinning dependencies to $(readlink -f "$MSJ_CURRENT")/requirements.freeze"
-  fi
-
-  # torch first, from the CPU index only, so nothing on PyPI can pull in the
-  # CUDA build (several GB of nvidia-* wheels).
-  local torch_pin
-  torch_pin=$(grep -m1 -E '^torch==' "$constraints" || echo torch)
-  pip_in "$dir" install --index-url "$TORCH_CPU_INDEX" "$torch_pin"
-  grep -q -E '^torch==' "$constraints" || pip_in "$dir" freeze | grep -m1 -E '^torch==' >>"$constraints"
-
-  pip_in "$dir" install --extra-index-url "$TORCH_CPU_INDEX" -c "$constraints" "${wheel}[semantic]" \
-    || msj_die "pip install of $(basename "$wheel") failed (output above). If pip reports a conflict with the pinned versions, the new code needs newer packages: rerun with --refresh-deps --force."
+  # Every dependency from the hashed lock; --no-deps because the lock is the
+  # complete set, so pip never resolves anything itself. The +cpu torch build
+  # exists only on the PyTorch CPU index, so nothing on PyPI can substitute it.
+  pip_in "$dir" install --require-hashes --no-deps --extra-index-url "$TORCH_CPU_INDEX" \
+    -r "$dir/requirements/deploy.txt" \
+    || msj_die "installing the locked dependencies from $dir/requirements/deploy.txt failed (output above). A hash mismatch means a download was altered or the lock is stale: rebuild the release from a commit where scripts/lock.sh --check passes."
+  pip_in "$dir" install --no-deps --no-index "$wheel" \
+    || msj_die "installing $(basename "$wheel") failed (output above)"
+  pip_in "$dir" check \
+    || msj_die "pip check found missing or conflicting dependencies in $dir (above); the lock export does not match the wheel's requirements. Run scripts/lock.sh, commit, and rebuild the release."
   pip_in "$dir" freeze >"$dir/requirements.freeze"
   if grep -q -i -E '^nvidia-' "$dir/requirements.freeze"; then
     msj_die "CUDA packages were installed into $dir (see requirements.freeze); the CPU-only torch pin did not hold. Remove $dir and investigate before deploying."
@@ -153,8 +145,8 @@ cmd_install() {
       || msj_die "could not download the embedding model (above); check outbound HTTPS to huggingface.co and rerun install with --force"
   fi
 
-  if batch_running && (( ! force )); then
-    msj_die "a processing batch is running now; deploying would abandon its in-flight RunPod job. Wait for it (journal queue view) or rerun with --force. The release is built at $dir; rerun install with --force to activate it."
+  if batch_running; then
+    msj_log "a processing batch is running; stopping the worker cancels its in-flight RunPod job and requeues it, and the new worker picks it up"
   fi
 
   local previous stamp snap
