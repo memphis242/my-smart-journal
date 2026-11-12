@@ -96,7 +96,8 @@ def test_remote_audio_reservation_expires_and_logs_reclamation(
         "created_at": time.time() - 3601,
     }
 
-    assert store._write_owner_alive(reservation) is False
+    # The reservation dict stands in for a sqlite3.Row; the method only indexes it by column name.
+    assert store._write_owner_alive(reservation) is False  # type: ignore[arg-type]
     assert "Reclaiming stale audio write reservation" in caplog.text
 
 
@@ -111,7 +112,7 @@ def test_recent_remote_audio_reservation_remains_protected(tmp_path: Path) -> No
         "created_at": time.time(),
     }
 
-    assert store._write_owner_alive(reservation) is True
+    assert store._write_owner_alive(reservation) is True  # type: ignore[arg-type]
 
 
 def test_patch_supersedes_old_revision_jobs_and_status_filter_excludes_them(

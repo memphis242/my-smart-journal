@@ -5,21 +5,23 @@ from typing import Any
 
 
 def render(
-    entries: list[dict[str, Any]], *, format: str, include: dict[str, bool], order: str
+    entries: list[dict[str, Any]], *, output_format: str, include: dict[str, bool], order: str
 ) -> tuple[bytes, str, str]:
     ordered = sorted(
         entries,
         key=lambda item: (item["entry_date"], item["created_at"], item["id"]),
         reverse=order == "desc",
     )
-    if format == "json":
+    if output_format == "json":
         data = [_json_entry(item, include) for item in ordered]
         return json.dumps(data, ensure_ascii=False, indent=2).encode(), "application/json", "json"
     blocks = [
-        _markdown_entry(item, include) if format == "markdown" else _text_entry(item, include)
+        _markdown_entry(item, include)
+        if output_format == "markdown"
+        else _text_entry(item, include)
         for item in ordered
     ]
-    if format == "markdown":
+    if output_format == "markdown":
         return "\n\n---\n\n".join(blocks).encode(), "text/markdown", "md"
     return "\n\n--------------------\n\n".join(blocks).encode(), "text/plain; charset=utf-8", "txt"
 

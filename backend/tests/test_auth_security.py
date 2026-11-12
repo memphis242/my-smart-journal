@@ -30,7 +30,9 @@ def test_tokens_use_private_hmac_secret_and_reject_legacy_digest(tmp_path: Path)
     secret_path = tmp_path / "token.secret"
     assert secret_path.stat().st_mode & 0o777 == 0o600
     assert len(secret_path.read_bytes()) == 32
-    assert store.token_hash().startswith("hmac-sha256$")
+    token_hash = store.token_hash()
+    assert token_hash is not None
+    assert token_hash.startswith("hmac-sha256$")
     assert len((store.token_hash() or "").split("$")) == 3
     assert verify_token(store, token)
     assert not verify_token(store, "invalid")

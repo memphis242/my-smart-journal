@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from msj.config import Settings, TaskRoute
+from msj.config import Settings, TaskKind, TaskRoute
 from msj.providers import InferenceProvider, Message, revision_messages
 
 
@@ -117,7 +117,7 @@ def test_artifact_hash_matches_prompt_used_before_provider_returns(
         class PromptRecordingFake:
             def generate(
                 self,
-                kind: Any,
+                kind: TaskKind,
                 route: TaskRoute,
                 source: str,
                 *,
@@ -130,7 +130,7 @@ def test_artifact_hash_matches_prompt_used_before_provider_returns(
                     monkeypatch.setattr(pipeline, "files", lambda _: UpdatedResources())
                 return delegate.generate(kind, route, source, candidate=candidate, audio=audio)
 
-        assert Runner(store, settings, PromptRecordingFake()).run_batch()["failed"] == 0
+        assert Runner(store, settings, PromptRecordingFake()).run_batch()["failed"] == 0  # type: ignore[arg-type]
     reviews = [
         artifact
         for artifact in store.get_entry(entry["id"], history=True)["artifacts"]

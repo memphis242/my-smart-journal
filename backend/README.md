@@ -4,17 +4,20 @@ This is a private, single-user FastAPI journal service implementing [API v1](../
 
 ## Setup
 
-Use Python 3.14. Keep the environment and build output outside the source tree:
+Use Python 3.14 on Linux. `pyproject.toml` declares the dependencies; `uv.lock` pins every
+package with hashes, and `requirements/*.txt` are hashed pip exports of it (see
+[Dependency lock](#dependency-lock)). Keep environments and build output outside the source
+tree. For development, let the check script build a venv from the lock:
 
 ```sh
-export PYTHONDONTWRITEBYTECODE=1
-python3.14 -m venv /workspace/build/my-smart-journal-backend-web-api/.venv
-/workspace/build/my-smart-journal-backend-web-api/.venv/bin/python -m pip wheel --no-deps --wheel-dir /workspace/build/my-smart-journal-backend-web-api/wheels backend
-/workspace/build/my-smart-journal-backend-web-api/.venv/bin/python -m pip install /workspace/build/my-smart-journal-backend-web-api/wheels/my_smart_journal-0.1.0-py3-none-any.whl
-/workspace/build/my-smart-journal-backend-web-api/.venv/bin/python -m pip install pytest pytest-xdist pytest-asyncio ruff mypy types-jsonschema
+scripts/check.sh --setup        # from the repository root; creates $MSJ_BUILD_DIR/.venv
 ```
 
-Add `/workspace/build/my-smart-journal-backend-web-api/.venv/bin` to `PATH` or use the full path to `msj`. Run the verification commands below from `backend/`. Leave `PYTHONDONTWRITEBYTECODE=1` set to keep bytecode out of the checkout.
+`MSJ_BUILD_DIR` defaults to `/workspace/build/my-smart-journal-<branch>` when
+`/workspace/build` exists, else `${TMPDIR:-/tmp}/my-smart-journal-check`. The venv has every
+extra (dev and semantic, with CPU-only torch) and the package installed in editable mode. Add
+its `bin/` to `PATH` or call `msj` by full path, and keep `PYTHONDONTWRITEBYTECODE=1` set so
+bytecode stays out of the checkout.
 
 ## Configuration
 
@@ -45,7 +48,7 @@ msj create-token
 msj serve --host 127.0.0.1 --port 8765
 ```
 
-The service binds to loopback by default. Send the token as `Authorization: Bearer <token>`. `msj worker` runs a batch immediately and then sleeps for `batch_interval_s` between passes. To process all currently available dependency waves immediately, call `msj run-batch` or `POST /api/v1/batches/run`.
+The service binds to loopback by default. Send the token as `Authorization: Bearer <token>`. `msj worker` runs a batch immediately and then sleeps for `batch_interval_s` between passes. On SIGTERM (or Ctrl-C) the worker stops claiming jobs, cancels the in-flight inference request (a RunPod job is cancelled on its endpoint), returns that job to the queue without using an attempt, releases the batch lease and exits 0, normally within a few seconds; local embedding work is not interruptible and finishes first. A second signal exits immediately (130). The next start resumes the queue at once. To process all currently available dependency waves immediately, call `msj run-batch` or `POST /api/v1/batches/run`.
 
 The API is rooted at `/api/v1`; `/api/v1/health` is public. Other API operations accept a bearer token or an opaque browser session cookie. `POST /api/v1/session` exchanges a token for an HttpOnly, SameSite=Strict, 30-day cookie; only a hash of its random session ID is stored in SQLite. Cookies are Secure by default; set `MSJ_INSECURE_COOKIES=1` for loopback HTTP development. Cookie-authenticated POST/PATCH/DELETE requests require `X-MSJ-CSRF: 1`. `GET /api/v1/session` checks authentication and `DELETE /api/v1/session` signs out. Login attempts are limited per client address and return `RATE_LIMITED` with `Retry-After`; invalid tokens return `BAD_TOKEN`. Running `msj create-token` revokes all sessions. Processing errors remain attached to failed jobs and are visible through the jobs API. Retryable failures can be explicitly retried through the API.
 
@@ -190,16 +193,84 @@ before migration and restart them using the upgraded package.
 
 ## Verify
 
-From `backend/`, after installing development dependencies:
+`scripts/check.sh` (repository root) runs every gate in parallel, writes one log per gate to
+`$MSJ_BUILD_DIR/check-logs/`, prints a PASS/FAIL table with each log's path, shows the tail of
+every failed log, and exits non-zero naming the failed gates. CI
+(`.github/workflows/ci.yml`) runs the same gates.
 
 ```sh
-export PYTHONDONTWRITEBYTECODE=1
-/workspace/build/my-smart-journal-backend-web-api/.venv/bin/python -m pytest -q -n auto -p no:cacheprovider --basetemp=/workspace/build/my-smart-journal-backend-web-api/pytest
-/workspace/build/my-smart-journal-backend-web-api/.venv/bin/ruff check --no-cache .
-/workspace/build/my-smart-journal-backend-web-api/.venv/bin/mypy --strict --cache-dir /workspace/build/my-smart-journal-backend-web-api/mypy src
+scripts/check.sh                 # all backend gates
+scripts/check.sh --web           # plus the web client's typecheck, lint, tests, build, audit
+scripts/check.sh --e2e           # plus Playwright against the mock build (needs Chromium)
+scripts/check.sh --offline       # skip the gates that need the network (audits)
+scripts/check.sh --only tests,mypy
+scripts/check.sh --list
 ```
 
-Tests use temporary databases, explicit fake routes and fake embedders for semantic coverage, and httpx MockTransport; real HTTP transports are blocked in the suite. Serve, worker, and batch processes may share one database. Atomic claims, lease tokens, and revision checks prevent duplicate publication or stale results after an edit. SQLite serializes writes; inference runs outside database transactions. This MVP scans the journal for the first three search tiers and is intended for one user's corpus.
+| Gate | What it checks |
+|---|---|
+| `ruff` | Lint rules selected in `pyproject.toml`; every ignore has its reason there. Tests have lower standards via per-file ignores. Existing functions above the complexity limits carry explicit `noqa` codes; new code meets the defaults. |
+| `format` | `ruff format --check` |
+| `mypy` | `mypy --strict` over `src` and `tests` (tests with a relaxed override), pydantic plugin |
+| `basedpyright` | Second type checker, strict on `src` |
+| `deptry` | Missing, unused and transitive-only dependencies |
+| `lock` | `uv.lock` matches `pyproject.toml`, and `requirements/*.txt` match the lock |
+| `scripts` | shellcheck on `scripts/*.sh`, actionlint on the workflows |
+| `audit` | pip-audit (OSV, `--strict`) on both hashed exports |
+| `tests` | Unit and property-based (hypothesis) tests with branch coverage; fails below `fail_under` |
+| `integration` | Process-level tests: real `msj serve`/`msj worker` subprocesses over loopback HTTP |
+
+Pytest runs with every warning as an error, strict markers and config, and no cache directory.
+Integration tests carry the `integration` marker and are deselected by default; run them with
+`pytest -m integration`. Hypothesis uses the `dev` profile (`HYPOTHESIS_PROFILE=ci` runs more
+examples) and keeps its caches and example database in `$MSJ_HYPOTHESIS_DIR` (check.sh: the build directory;
+otherwise a temporary directory, without the example database).
+Direct runs from `backend/`, with the venv's `bin/` on `PATH`:
+
+```sh
+export PYTHONDONTWRITEBYTECODE=1 B=/path/to/build RUFF_CACHE_DIR=$B/ruff-cache COVERAGE_FILE=$B/coverage/.coverage
+pytest -n auto --basetemp=$B/pytest/unit --cov       # unit + property, coverage report
+pytest -n 16 -m integration --basetemp=$B/pytest/integration
+mypy --cache-dir $B/mypy-cache && basedpyright && ruff check src tests && deptry src
+MSJ_TEST_REAL_EMBEDDER=1 HF_HUB_OFFLINE=1 pytest tests/test_embedding.py   # opt-in real-model smoke test
+```
+
+Coverage follows `msj` subprocesses, so `pytest --cov` followed by
+`pytest -m integration --cov --cov-append` reports the combined figure.
+
+Tests use temporary databases, explicit fake routes and fake embedders for semantic coverage, and httpx MockTransport; real HTTP transports are blocked in the suite, except loopback in integration tests, so no test reaches an inference provider. Serve, worker, and batch processes may share one database. Atomic claims, lease tokens, and revision checks prevent duplicate publication or stale results after an edit. SQLite serializes writes; inference runs outside database transactions. This MVP scans the journal for the first three search tiers and is intended for one user's corpus.
+
+## Dependency lock
+
+`pyproject.toml` is the source of truth; never edit `uv.lock` or `requirements/*.txt` by hand.
+The lock covers Linux only and takes torch from the CPU-only PyTorch index (no CUDA or `nvidia-*`
+wheels). Exports:
+
+- `requirements/deploy.txt`: runtime, the `semantic` extra and the `build` group (hatchling),
+  for production installs;
+- `requirements/dev.txt`: every extra and the `build` group, for development and CI.
+
+```sh
+scripts/lock.sh             # after editing dependencies in pyproject.toml
+scripts/lock.sh --upgrade   # upgrade every package within the declared constraints
+scripts/lock.sh --check     # the `lock` gate: fails when the lock or an export is stale
+```
+
+The script needs `uv` (the dev venv has it; or set `UV=/path/to/uv`). Dependabot updates
+`uv.lock`; run `scripts/lock.sh` on its branch to refresh the exports before merging.
+
+Production install from the lock, with pip only (no network access to anything but the two
+indexes, every file hash-checked, and the package built offline from the locked hatchling):
+
+```sh
+python3.14 -m venv /path/to/venv
+/path/to/venv/bin/pip install --require-hashes --no-deps \
+    --extra-index-url https://download.pytorch.org/whl/cpu -r backend/requirements/deploy.txt
+/path/to/venv/bin/pip install --no-deps --no-build-isolation --no-index ./backend
+/path/to/venv/bin/pip check
+```
+
+## Data and backups
 
 Back up the SQLite database using its backup API or a consistent WAL-aware snapshot together with the audio directory. Data-directory permissions are restricted to the owner. Encryption at rest is deferred behind the `Store` boundary; no encryption is performed. Keep data outside the source checkout so no new gitignore rule is required.
 

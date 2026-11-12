@@ -18,6 +18,7 @@ class SafeMessageError(Exception):
 
 
 # Only schema-owned names may reach diagnostic logs; arbitrary mapping keys are private.
+# A whitespace-separated block keeps the long name list readable.
 _FIELDS = frozenset(
     """
 body query path header cookie text title tags entry_date entry_ids purpose period format
@@ -29,7 +30,7 @@ top_k tasks transcribe cleanup summarize extract compile expect_model endpoint_i
 max_tokens batch_interval_s max_attempts retry_base_s lease_s provider_timeout_s
 poll_initial_s poll_max_s runpod_max_payload_bytes runpod_status_max_failures
 upload_limit_bytes fuzzy_threshold
-""".split()
+""".split()  # noqa: SIM905
 )
 
 

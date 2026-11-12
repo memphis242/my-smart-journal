@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -21,9 +21,14 @@ import httpx
 
 from .config import Settings, TaskKind, TaskRoute
 from .diagnostics import SafeMessageError
+from .shutdown import ShutdownRequested, StopSignal
 
 _logger = logging.getLogger(__name__)
 _ERROR_BODY_LIMIT = 8 * 1024
+# How often an in-flight OpenAI-compatible request checks for a shutdown request, and how
+# long a shutdown waits for RunPod to confirm a cancellation (systemd allows 30 s to stop).
+_STOP_POLL_S = 0.2
+_SHUTDOWN_CANCEL_TIMEOUT_S = 10.0
 _SAFE_PROVIDER_CODES = frozenset(
     {"ENDPOINT_PAUSED", "QUOTA_LIMIT", "RATE_LIMITED", "INVALID_API_KEY", "MODEL_NOT_FOUND"}
 )
@@ -204,7 +209,9 @@ def _parse_chat(value: Any) -> Generation:
             raise SafeProviderError("LLM worker returned invalid JSON") from None
     if isinstance(value, list) and len(value) == 1:
         return _parse_chat(value[0])
-    if isinstance(value, dict) and "choices" not in value and "body" in value:
+    if not isinstance(value, dict):
+        raise SafeProviderError("LLM response lacks choices[0].message.content")
+    if "choices" not in value and "body" in value:
         return _parse_chat(value["body"])
     try:
         choice = value["choices"][0]
@@ -290,10 +297,12 @@ class InferenceProvider:
         http: httpx.Client,
         *,
         openai_transport: httpx.AsyncBaseTransport | None = None,
+        stop: StopSignal | None = None,
     ) -> None:
         self._settings = settings
         self._http = http
         self._openai_transport = openai_transport
+        self._stop = stop
 
     def generate(
         self,
@@ -305,6 +314,8 @@ class InferenceProvider:
         audio: bytes | None = None,
         messages: Sequence[Message] | None = None,
     ) -> Generation:
+        if self._stop is not None and self._stop.is_set():
+            raise ShutdownRequested("Worker is shutting down; the job was not submitted")
         match route.provider:
             case "fake":
                 generation = self._fake(kind, route, source, candidate, audio, messages)
@@ -315,9 +326,9 @@ class InferenceProvider:
         return ensure_model(generation, route)
 
     @staticmethod
-    def _fake(
+    def _fake(  # noqa: PLR0917
         kind: TaskKind,
-        route: TaskRoute,
+        route: TaskRoute,  # noqa: ARG004 - same signature as the other provider adapters
         source: str,
         candidate: str | None,
         audio: bytes | None,
@@ -364,7 +375,7 @@ class InferenceProvider:
                 )
         return Generation(text, "fake")
 
-    def _runpod(
+    def _runpod(  # noqa: C901, PLR0912, PLR0915, PLR0917
         self,
         kind: TaskKind,
         route: TaskRoute,
@@ -426,7 +437,9 @@ class InferenceProvider:
         interval = self._settings.poll_initial_s
         status_failures = 0
 
-        def cancel() -> None:
+        def cancel(timeout: float | None = None) -> None:
+            if timeout is None:
+                timeout = min(30, self._settings.provider_timeout_s)
             try:
                 _ = _request_json(
                     self._http,
@@ -435,7 +448,7 @@ class InferenceProvider:
                     endpoint_id=route.endpoint_id or "",
                     provider_kind=route.provider,
                     headers=headers,
-                    timeout=min(30, self._settings.provider_timeout_s),
+                    timeout=timeout,
                 )
             except ProviderError:
                 raise SafeProviderError(
@@ -475,7 +488,20 @@ class InferenceProvider:
                     pending = False
                     cancel()
                     raise SafeProviderError("RunPod job timed out; cancellation requested")
-                time.sleep(min(interval, remaining))
+                if self._wait_for_stop(min(interval, remaining)):
+                    pending = False
+                    try:
+                        cancel(min(_SHUTDOWN_CANCEL_TIMEOUT_S, self._settings.provider_timeout_s))
+                    except ProviderError:
+                        _logger.warning(
+                            "RunPod %s job %s: cancellation for worker shutdown could not be "
+                            "confirmed; check the endpoint's queue in the RunPod console",
+                            kind,
+                            job_id,
+                        )
+                    else:
+                        _logger.info("RunPod %s job %s cancelled for worker shutdown", kind, job_id)
+                    raise ShutdownRequested("RunPod job cancelled for worker shutdown")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     continue
@@ -543,7 +569,7 @@ class InferenceProvider:
             )
         return Generation(text, model)
 
-    def _openai(
+    def _openai(  # noqa: PLR0917
         self,
         kind: TaskKind,
         route: TaskRoute,
@@ -554,7 +580,9 @@ class InferenceProvider:
     ) -> Generation:
         try:
             return asyncio.run(
-                self._openai_request(kind, route, source, candidate, audio, messages)
+                self._until_stopped(
+                    self._openai_request(kind, route, source, candidate, audio, messages)
+                )
             )
         except TimeoutError:
             raise SafeProviderError(
@@ -562,7 +590,32 @@ class InferenceProvider:
                 f"{self._settings.provider_timeout_s:g} seconds"
             ) from None
 
-    async def _openai_request(
+    def _wait_for_stop(self, seconds: float) -> bool:
+        """Sleep between polls; return True as soon as a shutdown is requested."""
+        if self._stop is None:
+            time.sleep(seconds)
+            return False
+        return self._stop.wait(seconds)
+
+    async def _until_stopped(self, request: Coroutine[Any, Any, Generation]) -> Generation:
+        """Await a request, cancelling it when a shutdown is requested."""
+        task = asyncio.ensure_future(request)
+        if self._stop is None:
+            return await task
+        while not task.done():
+            _ = await asyncio.wait({task}, timeout=_STOP_POLL_S)
+            if not task.done() and self._stop.is_set():
+                _ = task.cancel()
+                try:
+                    return await task
+                except asyncio.CancelledError:
+                    _logger.info("OpenAI-compatible request cancelled for worker shutdown")
+                    raise ShutdownRequested(
+                        "OpenAI-compatible request cancelled for worker shutdown"
+                    ) from None
+        return task.result()
+
+    async def _openai_request(  # noqa: C901, PLR0917
         self,
         kind: TaskKind,
         route: TaskRoute,

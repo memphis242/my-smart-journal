@@ -13,7 +13,7 @@ from msj.auth import create_token
 from msj.batch import BatchCoordinator
 from msj.config import TASKS, Settings, TaskKind, TaskRoute
 from msj.pipeline import Runner
-from msj.providers import Generation, InferenceProvider
+from msj.providers import Generation, InferenceProvider, Provider
 
 
 class UnexpectedFailureProvider:
@@ -66,7 +66,7 @@ def test_unexpected_job_errors_do_not_abort_batch_or_disclose_text(
             client,
             headers,
             settings,
-            UnexpectedFailureProvider(delegate, exception_type(private)),
+            UnexpectedFailureProvider(delegate, exception_type(private)),  # type: ignore[arg-type]
         )
     assert result == {"processed": 7, "failed": 1}
     jobs: list[dict[str, Any]] = client.get("/api/v1/jobs", headers=headers).json()
@@ -214,7 +214,7 @@ def _run_batch_and_wait(
     client: TestClient,
     headers: dict[str, str],
     settings: Settings,
-    provider: InferenceProvider | UnexpectedFailureProvider | None = None,
+    provider: Provider | None = None,
 ) -> dict[str, Any]:
     started = client.post("/api/v1/batches/run", headers=headers)
     assert started.status_code == 202

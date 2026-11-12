@@ -1,6 +1,7 @@
 """End-to-end API behavior with SQLite and deterministic fake inference."""
 
 import json
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,7 @@ from msj.pipeline import Runner
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> tuple[TestClient, str]:
+def client(tmp_path: Path) -> Iterator[tuple[TestClient, str]]:
     app = create_app(
         Settings(
             data_dir=tmp_path,

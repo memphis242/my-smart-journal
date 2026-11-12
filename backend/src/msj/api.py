@@ -71,6 +71,35 @@ def _valid_query(query: str) -> bool:
     )
 
 
+def _json(data: bytes | str) -> Any:
+    """Parse a JSON request value whose strings are all valid Unicode text.
+
+    JSON escapes can encode lone surrogates (for example "\\ud800"), which decode into
+    Python strings that neither SQLite nor the UTF-8 response encoder accept. Such input
+    raises UnicodeEncodeError, a ValueError, so callers report it like any invalid JSON.
+    """
+    value = json.loads(data)
+    pending = [value]
+    while pending:
+        match pending.pop():
+            case str() as text:
+                _require_text(text)
+            case dict() as mapping:
+                for key, child in mapping.items():
+                    _require_text(key)
+                    pending.append(child)
+            case list() as items:
+                pending.extend(items)
+            case _:
+                pass
+    return value
+
+
+def _require_text(value: str) -> None:
+    if not value.isascii():
+        _ = value.encode("utf-8")
+
+
 def _validate_date_bounds(from_date: str | None, to_date: str | None) -> None:
     for value in (from_date, to_date):
         if value is None:
@@ -226,6 +255,8 @@ class _PrivateErrorMiddleware:
                     started = True
                 case "http.response.body":
                     complete = not message.get("more_body", False)
+                case _:
+                    pass
             if message["type"] == "http.response.start" and (
                 scope.get("path", "") == "/api" or scope.get("path", "").startswith("/api/")
             ):
@@ -237,7 +268,7 @@ class _PrivateErrorMiddleware:
 
         try:
             await self.app(scope, receive, track_send)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - last-resort handler keeps exception values private
             _log_request_failure(scope, exc)
             if not started:
                 response = _problem(
@@ -250,7 +281,7 @@ class _PrivateErrorMiddleware:
                 await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:  # noqa: C901, PLR0915
     from .config import load_settings
 
     actual_settings = settings or load_settings()
@@ -426,7 +457,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 headers={"Retry-After": str(retry)},
             )
         try:
-            payload = json.loads(await _body(request, 4096))
+            payload = _json(await _body(request, 4096))
             token = payload.get("token") if isinstance(payload, dict) else None
         except ValueError, AttributeError, RecursionError:
             token = None
@@ -484,13 +515,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(status_code=204)
 
     @app.post("/api/v1/entries", status_code=201, dependencies=[Depends(authorized)])
-    async def create_entry(request: Request) -> dict[str, Any]:
+    async def create_entry(request: Request) -> dict[str, Any]:  # noqa: C901, PLR0912
         content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
         max_request_bytes = actual_settings.upload_limit_bytes + 16_384
         body = await _body(request, max_request_bytes)
         if content_type == "application/json":
             try:
-                payload = EntryCreate.model_validate(json.loads(body))
+                payload = EntryCreate.model_validate(_json(body))
             except ValueError, RecursionError:
                 raise APIProblem(
                     422, "Validation Error", "Provide non-empty text and valid entry fields."
@@ -541,7 +572,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     413, "Payload Too Large", "Audio exceeds the configured upload limit."
                 )
             try:
-                tags_value = json.loads(str(form.get("tags", "[]")))
+                tags_value = _json(str(form.get("tags", "[]")))
             except ValueError, RecursionError:
                 raise APIProblem(
                     422, "Validation Error", "Multipart tags must be a JSON array."
@@ -557,6 +588,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise APIProblem(
                     413, "Payload Too Large", "Audio exceeds the configured upload limit."
                 )
+            entry_date: str | None = None
             entry_date_value = form.get("entry_date")
             if entry_date_value is not None:
                 try:
@@ -572,13 +604,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 extension=extension,
                 title=str(form.get("title")) if form.get("title") else None,
                 tags=tags_value,
-                entry_date=entry_date if entry_date_value else None,
+                entry_date=entry_date,
             )
         finally:
             await form.close()
 
     @app.get("/api/v1/entries", dependencies=[Depends(authorized)])
-    def list_entries(
+    def list_entries(  # noqa: PLR0917
         from_date: Annotated[str | None, Query(alias="from")] = None,
         to_date: Annotated[str | None, Query(alias="to")] = None,
         tag: Annotated[list[str] | None, Query()] = None,
@@ -624,7 +656,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return entry | summary_fields(entry)
 
     @app.get("/api/v1/entries/{entry_id}/neighbors", dependencies=[Depends(authorized)])
-    def entry_neighbors(
+    def entry_neighbors(  # noqa: PLR0917
         entry_id: str,
         from_date: Annotated[str | None, Query(alias="from")] = None,
         to_date: Annotated[str | None, Query(alias="to")] = None,
@@ -666,7 +698,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.patch("/api/v1/entries/{entry_id}", dependencies=[Depends(authorized)])
     async def patch_entry(entry_id: str, request: Request) -> dict[str, Any]:
         try:
-            changes = json.loads(await _body(request, actual_settings.upload_limit_bytes + 16_384))
+            changes = _json(await _body(request, actual_settings.upload_limit_bytes + 16_384))
         except ValueError, RecursionError:
             raise APIProblem(400, "Bad Request", "Body must be valid JSON.") from None
         try:
@@ -702,7 +734,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return store.retry_job(job_id)
 
     @app.get("/api/v1/search", dependencies=[Depends(authorized)])
-    async def search(
+    async def search(  # noqa: PLR0917
         q: str,
         from_date: Annotated[str | None, Query(alias="from")] = None,
         to_date: Annotated[str | None, Query(alias="to")] = None,
@@ -725,7 +757,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or len(set(selected)) != len(selected)
                 or any(value not in range(1, 6) for value in selected)
             ):
-                raise ValueError
+                raise ValueError  # noqa: TRY301 - joins the shared invalid-request path below
         except ValueError, RecursionError:
             raise APIProblem(
                 422,
@@ -761,17 +793,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def stream() -> Iterator[bytes]:
             try:
                 for event in events:
-                    if "results" in event:
-                        event = event | {
+                    enriched = (
+                        event
+                        | {
                             "results": [
                                 result | {"entry": summaries[result["entry_id"]]}
                                 for result in event["results"]
                             ]
                         }
+                        if "results" in event
+                        else event
+                    )
                     yield (
-                        json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+                        json.dumps(enriched, ensure_ascii=False, separators=(",", ":")) + "\n"
                     ).encode()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - a started stream ends with an error event
                 _log_request_failure({"method": "GET", "route": "/api/v1/search"}, exc)
                 yield (
                     json.dumps(
@@ -839,13 +875,13 @@ def _retrieve_sync(
     return {"items": items, "unavailable": unavailable}
 
 
-def _install_additional_routes(
+def _install_additional_routes(  # noqa: C901, PLR0915
     app: FastAPI, store: Store, settings: Settings, authorized: Any
 ) -> None:
     @app.post("/api/v1/retrieve", dependencies=[Depends(authorized)])
     async def retrieve(request: Request) -> dict[str, Any]:
         try:
-            payload = json.loads(await _body(request, 65_536))
+            payload = _json(await _body(request, 65_536))
             query, k, filters = (
                 payload["query"],
                 payload.get("k", 20),
@@ -858,7 +894,7 @@ def _install_additional_routes(
                 or type(k) is not int
                 or not 1 <= k <= 100
             ):
-                raise ValueError
+                raise ValueError  # noqa: TRY301 - joins the shared invalid-request path below
         except ValueError, TypeError, KeyError, AttributeError, RecursionError:
             raise APIProblem(
                 422,
@@ -890,7 +926,7 @@ def _install_additional_routes(
     @app.post("/api/v1/export", dependencies=[Depends(authorized)])
     async def export_entries(request: Request) -> Response:
         try:
-            payload = json.loads(await _body(request, 65_536))
+            payload = _json(await _body(request, 65_536))
             ids, format_name = payload["entry_ids"], payload["format"]
             include, order = payload.get("include", {}), payload.get("order", "desc")
             if (
@@ -905,7 +941,7 @@ def _install_additional_routes(
                 )
                 or order not in {"asc", "desc"}
             ):
-                raise ValueError
+                raise ValueError  # noqa: TRY301 - joins the shared invalid-request path below
         except ValueError, TypeError, KeyError, RecursionError:
             raise APIProblem(
                 422,
@@ -925,13 +961,14 @@ def _install_additional_routes(
         def render_selected() -> tuple[bytes, str, str]:
             return render(
                 [export_item(by_id[entry_id]) for entry_id in dict.fromkeys(ids)],
-                format=format_name,
+                output_format=format_name,
                 include=include,
                 order=order,
             )
 
         content, media_type, extension = await run_in_threadpool(render_selected)
-        filename = f"journal-export-{date.today().isoformat()}.{extension}"
+        # The server's calendar day names the file; it is a label, not a timestamp.
+        filename = f"journal-export-{date.today().isoformat()}.{extension}"  # noqa: DTZ011
         return Response(
             content=content,
             media_type=media_type,
@@ -968,7 +1005,7 @@ def _install_additional_routes(
     @app.post("/api/v1/compilations", status_code=202, dependencies=[Depends(authorized)])
     async def create_compilation(request: Request) -> dict[str, Any]:
         try:
-            payload = json.loads(await _body(request, 65_536))
+            payload = _json(await _body(request, 65_536))
             ids, purpose, period = payload["entry_ids"], payload["purpose"], payload["period"]
             if (
                 not isinstance(ids, list)
@@ -980,7 +1017,7 @@ def _install_additional_routes(
                 or not isinstance(period, str)
                 or not period.strip()
             ):
-                raise ValueError
+                raise ValueError  # noqa: TRY301 - joins the shared invalid-request path below
         except ValueError, TypeError, KeyError, RecursionError:
             raise APIProblem(
                 422,
