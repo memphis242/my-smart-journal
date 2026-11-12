@@ -450,6 +450,9 @@ class Store:
                         "DELETE FROM file_write_reservations WHERE path=?",
                         (str(audio_relative),),
                     )
+                # Read the response inside the transaction: once it commits, nothing
+                # can fail, so an error always means the entry was not saved.
+                created = self.read_entry(db, entry_id, history=False)
         except Exception as original_error:
             if audio_relative is not None:
                 try:
@@ -468,7 +471,8 @@ class Store:
                 if pending is not None:
                     raise AudioCleanupPending(audio_relative.name, pending[1]) from original_error
             raise
-        return self.get_entry(entry_id)
+        assert created["id"] == entry_id
+        return created
 
     @staticmethod
     def read_entry(db: sqlite3.Connection, entry_id: str, history: bool) -> dict[str, Any]:

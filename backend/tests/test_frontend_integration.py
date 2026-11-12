@@ -74,3 +74,33 @@ def test_worker_stale_threshold() -> None:
     assert not worker_stale((now - timedelta(seconds=3)).isoformat(), 2)
     assert worker_stale((now - timedelta(seconds=11)).isoformat(), 2)
     assert not worker_stale((now - timedelta(seconds=12)).isoformat(), 5)
+
+
+def test_create_entry_does_not_fail_after_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read failing after the entry commits must not turn a saved entry into a 500."""
+    import sqlite3
+
+    from msj.storage import Store
+
+    app = create_app(
+        Settings(
+            data_dir=tmp_path,
+            embedding={"provider": "fake"},
+            tasks={kind: TaskRoute(provider="fake") for kind in TASKS},
+        )
+    )
+    token = create_token(app.state.store)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    def locked(*_args: object, **_kwargs: object) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    with TestClient(app, raise_server_exceptions=False) as http:
+        monkeypatch.setattr(Store, "get_entry", locked)
+        created = http.post("/api/v1/entries", headers=headers, json={"text": "Saved once"})
+        monkeypatch.undo()
+        listed = http.get("/api/v1/entries", headers=headers).json()["items"]
+    assert created.status_code == 201, created.text
+    assert [item["id"] for item in listed] == [created.json()["id"]]
