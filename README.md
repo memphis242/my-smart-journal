@@ -24,5 +24,5 @@ The [backend](backend/README.md) provides authenticated entries, browser session
 search/retrieval, exports and compilations. Run `msj serve` and `msj worker` as
 separate processes. HTTP batch requests are durable; the worker picks them up
 within seconds. See the [API contract](docs/api-v1-contract.md) and
-[VPS deployment](docs/deploy-vps.md) for token re-issue migration, pinned/offline
+[VPS deployment](docs/deploy/RUNBOOK.md) for token re-issue migration, pinned/offline
 embedding setup and hardened service examples.

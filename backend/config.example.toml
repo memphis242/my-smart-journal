@@ -43,9 +43,9 @@ expect_model = "turbo" # faster-whisper worker reports the requested model alias
 
 [tasks.cleanup]
 provider = "runpod"
-endpoint_id = "your-phi-endpoint-id"
+endpoint_id = "your-gemma-endpoint-id"
 model = "any"
-expect_model = "Phi-4-mini"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
 
 [tasks.review]
 provider = "runpod"
