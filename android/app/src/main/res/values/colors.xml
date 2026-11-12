@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="paper">#FFF4F2EC</color>
+    <color name="launcher_paper">#FFF4F2EC</color>
+    <color name="launcher_ink">#FF2350A0</color>
+</resources>
