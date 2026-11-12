@@ -1,7 +1,7 @@
 package dev.msj.journal.core.outbox
 
-import dev.msj.journal.core.api.DetailLine
 import dev.msj.journal.core.api.Delivery
+import dev.msj.journal.core.api.DetailLine
 
 /*
  * The durable outbox: every new entry is saved on the phone first and uploaded
