@@ -1,0 +1,8 @@
+# The journal: Caddy, the API and the worker. Never enabled at boot - the data
+# volume is LUKS-encrypted and locked after every reboot, so msj-unlock starts
+# this target once a human has typed the passphrase. Stopping it stops all
+# three (they are PartOf it).
+[Unit]
+Description=My Smart Journal (Caddy, API, worker)
+Wants=caddy.service msj-serve.service msj-worker.service
+After=caddy.service msj-serve.service msj-worker.service

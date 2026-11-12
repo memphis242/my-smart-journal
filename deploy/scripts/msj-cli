@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+#
+# Run the live release's msj command as the service account, with the same
+# environment the services get:
+#
+#   msj-cli create-token     (prints a new bearer token; revokes the old one)
+#   msj-cli run-batch
+#   msj-cli migrate
+#
+# Never run /opt/msj/current/venv/bin/msj as root directly: files it creates
+# in the data directory would be root-owned and the services could not open
+# them.
+set -Eeuo pipefail
+MSJ_JOB=msj-cli
+# shellcheck source=lib/common.sh
+. /usr/local/lib/msj/common.sh
+
+msj_require_root
+msj_require_unlocked
+msj_app "$@"

@@ -1,0 +1,11 @@
+# Daily 07:15 UTC. Give its Healthchecks.io check a grace period over a day.
+[Unit]
+Description=Journal TLS certificate expiry check timer
+
+[Timer]
+OnCalendar=*-*-* 07:15:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

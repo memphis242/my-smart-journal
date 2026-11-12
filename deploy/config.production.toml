@@ -1,0 +1,80 @@
+# Production configuration for the Vultr box. Installed to /etc/msj/config.toml
+# (root:msj 0640) by bootstrap.sh; MSJ_CONFIG_FILE points at it.
+# Derived from backend/config.example.toml with the RunPod endpoints filled
+# in (docs/phase0-runpod.md). No credentials here: RUNPOD_API_KEY comes from
+# /srv/msj/secrets/app.env.
+#
+# Every language-model task runs on the Gemma endpoint; Whisper does
+# transcription. expect_model is what each worker reports, and a mismatch
+# fails the job with both names in the error.
+
+batch_interval_s = 86400
+worker_tick_s = 2
+# Caddy connects from loopback; trust X-Forwarded-* from it alone.
+forwarded_allow_ips = "127.0.0.1,::1"
+bearer_rate_limit = 10
+bearer_rate_window_s = 60
+# Keep in step with request_body max_size in /etc/caddy/Caddyfile.
+upload_limit_bytes = 52428800
+# Behind TLS: the session cookie is __Host-msj_session (Secure, Path=/).
+insecure_cookies = false
+login_rate_limit = 10
+login_rate_window_s = 60
+max_attempts = 3
+retry_base_s = 30
+provider_timeout_s = 900
+lease_s = 1200
+poll_initial_s = 1
+poll_max_s = 10
+runpod_max_payload_bytes = 9500000
+runpod_status_max_failures = 3
+
+[embedding]
+provider = "sentence-transformers"
+model = "BAAI/bge-small-en-v1.5"
+revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+device = "cpu"
+chunk_tokens = 256
+chunk_overlap = 32
+min_score = 0.35
+top_k = 20
+
+[review]
+max_turns = 3
+enabled_for = ["cleanup", "summarize", "extract"]
+
+[tasks.transcribe]
+provider = "runpod"
+endpoint_id = "b92qs7e2v6wi3n"
+model = "turbo"
+expect_model = "turbo"
+
+[tasks.cleanup]
+provider = "runpod"
+endpoint_id = "rcybvy10rvnu2q"
+model = "any"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
+
+[tasks.review]
+provider = "runpod"
+endpoint_id = "rcybvy10rvnu2q"
+model = "any"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
+
+[tasks.summarize]
+provider = "runpod"
+endpoint_id = "rcybvy10rvnu2q"
+model = "any"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
+
+[tasks.extract]
+provider = "runpod"
+endpoint_id = "rcybvy10rvnu2q"
+model = "any"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
+
+[tasks.compile]
+provider = "runpod"
+endpoint_id = "rcybvy10rvnu2q"
+model = "Gemma-4-26B-A4B"
+expect_model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
