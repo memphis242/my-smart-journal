@@ -122,6 +122,8 @@ class SignInViewModel(
                     throw cancelled
                 } catch (error: TokenVaultException) {
                     fail(null, UserError.unexpected("Save the access token", error).copy(code = "TOKEN_STORE_FAILED"))
+                } catch (error: Exception) {
+                    fail(null, UserError.unexpected("Sign in", error))
                 }
             }
     }
@@ -200,7 +202,12 @@ class SignInViewModel(
         }
 
         val token = input.token.trim()
-        val api = services.connections.create(server.base, token.ifEmpty { "-" })
+        // The health check needs no token; a random placeholder keeps error scrubbing from matching real text.
+        val api =
+            services.connections.create(
+                server.base,
+                token.ifEmpty { "placeholder-" + java.util.UUID.randomUUID() },
+            )
         setStep(CheckStep.SERVER, StepState.RUNNING)
         try {
             api.health()

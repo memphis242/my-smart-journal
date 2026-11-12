@@ -137,7 +137,9 @@ fun JournalApp(
             latestConsumeLaunch()
             when (action) {
                 LaunchAction.Record -> nav.navigate(RecorderRoute) { launchSingleTop = true }
-                is LaunchAction.Write -> nav.navigate(ComposerRoute(action.sharedText)) { launchSingleTop = true }
+
+                // Every share opens its own composer, so a second share never replaces unsaved text.
+                is LaunchAction.Write -> nav.navigate(ComposerRoute(action.sharedText?.let(services.sharedText::put)))
             }
         }
         // Uploads restart whenever the app comes to the foreground (for example after NetBird reconnects).
@@ -232,8 +234,8 @@ fun JournalApp(
                 })
             }
             composable<ComposerRoute> { entry ->
-                val shared = entry.toRoute<ComposerRoute>().sharedText
-                val vm = appViewModel { s, handle -> ComposerViewModel(s, handle, shared) }
+                val sharedId = entry.toRoute<ComposerRoute>().sharedId
+                val vm = appViewModel { s, handle -> ComposerViewModel(s, handle, sharedId?.let(s.sharedText::take)) }
                 ComposerScreen(vm, today = services.today(), onClose = { saved -> savedNotice(saved, "Entry") })
             }
             composable<RecorderRoute> {

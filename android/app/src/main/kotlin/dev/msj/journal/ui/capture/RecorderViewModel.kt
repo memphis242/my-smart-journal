@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.msj.journal.AppServices
 import dev.msj.journal.audio.VoiceRecorder
+import dev.msj.journal.capture.recordingStagingDir
 import dev.msj.journal.core.dates.isoDate
 import dev.msj.journal.ui.UserError
 import kotlinx.coroutines.CancellationException
@@ -61,7 +62,7 @@ class RecorderViewModel(
     private val recorder = VoiceRecorder(services.context)
     private val captureId: String = handle[KEY_ID] ?: UUID.randomUUID().toString().also { handle[KEY_ID] = it }
     private val format = VoiceRecorder.preferredFormat()
-    private val recordingDir = File(services.context.cacheDir, "recordings")
+    private val recordingDir = recordingStagingDir(services.context)
     private val file = File(recordingDir, "$captureId.${format.extension}")
     private var ticker: Job? = null
 
@@ -130,6 +131,8 @@ class RecorderViewModel(
             fail(error)
             return
         }
+        // The entry belongs to the day the recording started, even when it is saved after midnight.
+        handle[KEY_DATE] = isoDate(services.today())
         mutableUi.update {
             it.copy(
                 phase = RecorderPhase.Recording(0L, emptyList(), paused = false, pausedByBackground = false),
@@ -203,7 +206,7 @@ class RecorderViewModel(
                     durationMs = review.durationMs,
                     title = normalizeTitle(current.title),
                     tags = parseTags(current.tags),
-                    entryDate = isoDate(services.today()),
+                    entryDate = handle[KEY_DATE] ?: isoDate(services.today()),
                 )
                 handle.remove<Long>(KEY_DURATION)
                 mutableUi.update { it.copy(saving = false, phase = RecorderPhase.Saved) }
@@ -266,9 +269,13 @@ class RecorderViewModel(
     }
 
     private fun removeStaleRecordings() {
-        // Leftovers of recordings that were never saved. One that cannot be deleted only costs
-        // cache space and is tried again on the next recording, so the result is not needed.
-        recordingDir.listFiles()?.filter { it != file }?.forEach { stale -> stale.delete() }
+        // Leftovers of recordings that were never saved, a week after their last change; younger ones
+        // may belong to another recorder screen still open. One that cannot be deleted only costs space
+        // and is tried again on the next recording, so the result is not needed.
+        val cutoff = services.clock() - STALE_AFTER_MS
+        recordingDir.listFiles()?.filter { it != file && it.lastModified() < cutoff }?.forEach { stale ->
+            stale.delete()
+        }
     }
 
     override fun onCleared() {
@@ -287,7 +294,9 @@ class RecorderViewModel(
         const val KEY_DURATION = "duration_ms"
         const val KEY_TITLE = "title"
         const val KEY_TAGS = "tags"
+        const val KEY_DATE = "entry_date"
         const val TICK_MS = 100L
+        const val STALE_AFTER_MS = 7L * 24 * 60 * 60 * 1000
         const val LEVELS = 48
     }
 }

@@ -3,12 +3,12 @@ package dev.msj.journal.session
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.security.keystore.StrongBoxUnavailableException
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.security.GeneralSecurityException
 import java.security.KeyStore
+import java.security.ProviderException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -45,20 +45,31 @@ class TokenVault(
         ) : Loaded
     }
 
+    /** Encrypts and saves [token]. Every Keystore or file failure surfaces as [TokenVaultException]. */
     fun store(token: String) {
         assert(token.isNotBlank()) { "the token to store is not blank" }
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        try {
-            cipher.init(Cipher.ENCRYPT_MODE, keyForEncryption())
-        } catch (_: GeneralSecurityException) {
-            // A key the Keystore can no longer use (for example invalidated): replace it once.
-            deleteKey()
+        val sealed =
             try {
-                cipher.init(Cipher.ENCRYPT_MODE, keyForEncryption())
-            } catch (again: GeneralSecurityException) {
-                throw TokenVaultException("Encrypt the access token with a new Keystore key", again)
+                seal(token)
+            } catch (_: Exception) {
+                // A key the Keystore can no longer use (invalidated, corrupt blob): replace it once.
+                try {
+                    deleteKey()
+                    seal(token)
+                } catch (again: GeneralSecurityException) {
+                    throw TokenVaultException("Encrypt the access token with a new Keystore key", again)
+                } catch (again: ProviderException) {
+                    throw TokenVaultException("Encrypt the access token with a new Keystore key", again)
+                } catch (again: IOException) {
+                    throw TokenVaultException("Encrypt the access token with a new Keystore key", again)
+                }
             }
-        }
+        writeAtomically(sealed)
+    }
+
+    private fun seal(token: String): ByteArray {
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, keyForEncryption())
         val iv = cipher.iv
         assert(iv.size == GCM_IV_BYTES) { "GCM IV is $GCM_IV_BYTES bytes" }
         val sealed = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
@@ -70,10 +81,22 @@ class TokenVault(
                 .put(iv)
                 .put(sealed)
                 .array()
-        writeAtomically(payload)
+        return payload
     }
 
-    fun load(): Loaded {
+    /** Never throws: a token that cannot be read for any reason is [Loaded.Unreadable] with the cause class. */
+    fun load(): Loaded =
+        try {
+            loadOrThrow()
+        } catch (error: GeneralSecurityException) {
+            Loaded.Unreadable("The phone's key store refused the token key (${error.javaClass.simpleName}).")
+        } catch (error: ProviderException) {
+            Loaded.Unreadable("The phone's key store failed (${error.javaClass.simpleName}).")
+        } catch (error: IOException) {
+            Loaded.Unreadable("The phone's key store could not be read (${error.javaClass.simpleName}).")
+        }
+
+    private fun loadOrThrow(): Loaded {
         if (!file.isFile) return Loaded.Absent
         val payload =
             try {
@@ -105,7 +128,13 @@ class TokenVault(
                 IOException("delete returned false for ${file.name}"),
             )
         }
-        deleteKey()
+        try {
+            deleteKey()
+        } catch (error: GeneralSecurityException) {
+            throw TokenVaultException("Delete the access token key", error)
+        } catch (error: IOException) {
+            throw TokenVaultException("Delete the access token key", error)
+        }
     }
 
     private fun writeAtomically(payload: ByteArray) {
@@ -147,8 +176,9 @@ class TokenVault(
         return try {
             generator.init(spec(strongBox = true))
             generator.generateKey()
-        } catch (_: StrongBoxUnavailableException) {
-            // No StrongBox on this device (emulators, many phones): the TEE-backed Keystore protects the key instead.
+        } catch (_: ProviderException) {
+            // No StrongBox (StrongBoxUnavailableException, a ProviderException) or StrongBox failed to
+            // generate: the TEE-backed Keystore protects the key instead.
             generator.init(spec(strongBox = false))
             generator.generateKey()
         }

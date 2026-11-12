@@ -5,8 +5,10 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
 import dev.msj.journal.core.net.PrivateAddresses
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetAddress
 import java.net.UnknownHostException
@@ -31,9 +33,11 @@ object LocalNetworkAccess {
      * or times out answers false: the connection attempt that follows reports
      * the lookup failure with its own code.
      */
-    suspend fun hostIsPrivate(host: String): Boolean =
-        withContext(Dispatchers.IO) {
-            withTimeoutOrNull(LOOKUP_TIMEOUT_MS) {
+    suspend fun hostIsPrivate(host: String): Boolean {
+        // The lookup blocks and cannot be interrupted, so it runs outside the caller's scope and is
+        // simply abandoned when it takes too long.
+        val lookup =
+            lookups.async {
                 try {
                     InetAddress.getAllByName(host).any(PrivateAddresses::isPrivate)
                 } catch (_: UnknownHostException) {
@@ -41,8 +45,11 @@ object LocalNetworkAccess {
                 } catch (_: SecurityException) {
                     false
                 }
-            } ?: false
-        }
+            }
+        return withTimeoutOrNull(LOOKUP_TIMEOUT_MS) { lookup.await() } ?: false
+    }
+
+    private val lookups = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private const val LOOKUP_TIMEOUT_MS = 5_000L
 }

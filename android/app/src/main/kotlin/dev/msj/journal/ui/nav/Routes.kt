@@ -23,8 +23,8 @@ data class EditorRoute(
 
 @Serializable
 data class ComposerRoute(
-    /** Text shared from another app, to start the entry with. */
-    val sharedText: String? = null,
+    /** Id of text shared from another app (see SharedTextStore); the text itself is too large for a route. */
+    val sharedId: String? = null,
 )
 
 @Serializable

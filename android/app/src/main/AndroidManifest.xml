@@ -43,10 +43,15 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
-            <meta-data
-                android:name="android.app.shortcuts"
-                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- The launcher shortcuts (Record, Write) start the app through this alias. It is not
+             exported, so other apps cannot open the recorder; MainActivity honors those two actions
+             only when it was started through here. -->
+        <activity-alias
+            android:name=".CaptureShortcut"
+            android:exported="false"
+            android:targetActivity=".MainActivity" />
 
         <!-- WorkManager is configured by JournalApplication (Configuration.Provider), not at startup. -->
         <provider

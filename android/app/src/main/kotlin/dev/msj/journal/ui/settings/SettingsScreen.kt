@@ -25,6 +25,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import dev.msj.journal.AppServices
+import dev.msj.journal.capture.recordingStagingDir
 import dev.msj.journal.core.api.ApiException
 import dev.msj.journal.session.LocalNetworkAccess
 import dev.msj.journal.session.SessionManager
@@ -45,6 +46,7 @@ import dev.msj.journal.ui.components.stateName
 import dev.msj.journal.ui.theme.Journal
 import dev.msj.journal.ui.theme.Space
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -52,6 +54,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class TestResult { IDLE, RUNNING, PASSED, FAILED }
 
@@ -89,16 +92,25 @@ class SettingsViewModel(
         }
     }
 
-    /** Deletes unsent entries and recordings, then the token, its key and the server address. */
+    /**
+     * Deletes unsent entries and recordings, recordings not saved yet, then the token, its key and
+     * the server address. It runs to the end even if the screen goes away meanwhile.
+     */
     fun signOut() {
         viewModelScope.launch {
-            try {
-                services.outbox.wipe()
-                services.session.signOut()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                mutableSignOutError.value = UserError.unexpected("Sign out", error).copy(code = "SIGN_OUT_FAILED")
+            withContext(NonCancellable) {
+                try {
+                    services.outbox.wipe()
+                    val staging = recordingStagingDir(services.context)
+                    check(
+                        !staging.exists() || staging.deleteRecursively(),
+                    ) { "Deleting unsaved recordings in ${staging.name} failed" }
+                    services.session.signOut()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    mutableSignOutError.value = UserError.unexpected("Sign out", error).copy(code = "SIGN_OUT_FAILED")
+                }
             }
         }
     }

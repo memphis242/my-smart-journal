@@ -48,8 +48,23 @@ class SessionManager(
 
     init {
         scope.launch(Dispatchers.IO) {
-            mutableState.value = restore()
-            restored.complete(Unit)
+            try {
+                mutableState.value = restore()
+            } catch (error: Exception) {
+                // Never leave the app (or a waiting upload) stuck in Loading: start signed out and say why.
+                mutableState.value =
+                    State.SignedOut(
+                        lastServer = null,
+                        problem =
+                            UserError
+                                .unexpected(
+                                    "Restore the saved sign-in",
+                                    error,
+                                ).copy(code = "SESSION_RESTORE_FAILED"),
+                    )
+            } finally {
+                restored.complete(Unit)
+            }
         }
     }
 
@@ -68,8 +83,7 @@ class SessionManager(
         withContext(Dispatchers.IO) {
             restored.await()
             vault.store(token)
-            prefs.serverBase = server.base
-            prefs.serverIsPrivate = serverIsPrivate
+            prefs.setServer(server.base, serverIsPrivate)
             mutableState.value = State.SignedIn(server.base, server.host, factory.create(server.base, token))
         }
     }

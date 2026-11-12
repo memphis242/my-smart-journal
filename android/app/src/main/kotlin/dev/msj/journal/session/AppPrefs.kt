@@ -37,6 +37,20 @@ class AppPrefs(
         get() = prefs.getString(KEY_RANGE, null)
         set(value) = prefs.edit { if (value == null) remove(KEY_RANGE) else putString(KEY_RANGE, value) }
 
+    /** Records the server and its address class together, synchronously, so they cannot disagree after a crash. */
+    fun setServer(
+        base: String,
+        isPrivate: Boolean,
+    ) {
+        val committed =
+            prefs
+                .edit()
+                .putString(KEY_SERVER, base)
+                .putBoolean(KEY_SERVER_PRIVATE, isPrivate)
+                .commit()
+        check(committed) { "Saving the server address failed: SharedPreferences.commit() returned false" }
+    }
+
     /** Forgets the server; keeps the theme, which is a property of the phone, not of the account. */
     fun clearSession() {
         val committed =

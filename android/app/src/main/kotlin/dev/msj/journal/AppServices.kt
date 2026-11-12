@@ -1,6 +1,7 @@
 package dev.msj.journal
 
 import android.content.Context
+import dev.msj.journal.capture.SharedTextStore
 import dev.msj.journal.outbox.OutboxRepository
 import dev.msj.journal.session.AppPrefs
 import dev.msj.journal.session.ConnectionFactory
@@ -18,6 +19,8 @@ class AppServices(
     val clock: () -> Long = System::currentTimeMillis,
     /** The user's local calendar day. */
     val today: () -> LocalDate = LocalDate::now,
+    /** Text shared from other apps, handed to the composer by id. */
+    val sharedText: SharedTextStore = SharedTextStore(),
 )
 
 /** Implemented by the Application; view-model factories and workers reach the services through it. */
