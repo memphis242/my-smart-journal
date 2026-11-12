@@ -1,8 +1,8 @@
 package dev.msj.journal.outbox
 
 import dev.msj.journal.core.outbox.OutboxRecord
-import java.io.File
 import kotlinx.coroutines.flow.Flow
+import java.io.File
 
 /**
  * The durable outbox as the UI sees it. Every write is a single database

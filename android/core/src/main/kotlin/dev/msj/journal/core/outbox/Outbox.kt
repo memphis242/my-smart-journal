@@ -23,6 +23,8 @@ import dev.msj.journal.core.api.DetailLine
  *                         |  failed NOT_SENT / retryable RECEIVED --> RETRY_WAIT --due--> (claimable)
  *                         |  failed MAYBE_SENT / interrupted -------> UNCERTAIN --reconcile--> SENT | (claimable)
  *                         |  failed permanent (4xx) ----------------> FAILED --user retry--> PENDING
+ *   PENDING / RETRY_WAIT / UNCERTAIN --unsendable (local check before claim)--> FAILED
+ *   RETRY_WAIT / UNCERTAIN --user retry--> due now (UNCERTAIN is still reconciled first)
  *   any state except UPLOADING --user discard--> (deleted)
  */
 
@@ -133,6 +135,28 @@ public sealed interface OutboxEvent {
 
     /** The user asked to try again now. Allowed from FAILED, RETRY_WAIT, UNCERTAIN and PENDING. */
     public data object UserRetry : OutboxEvent
+
+    /**
+     * A local check before the claim found that the record cannot be sent as
+     * it is (for example its recording is gone). Allowed from PENDING,
+     * RETRY_WAIT and UNCERTAIN; moves to FAILED without counting an attempt.
+     */
+    public data class Unsendable(
+        /** One of [OutboxCodes]. */
+        val code: String,
+        val message: String,
+        val hint: String?,
+        val details: List<DetailLine>,
+    ) : OutboxEvent
+}
+
+/** Codes the outbox produces itself, for [OutboxError.code]. */
+public object OutboxCodes {
+    /** The recording file is missing or changed size since it was saved. */
+    public const val RECORDING_MISSING: String = "RECORDING_MISSING"
+
+    /** An upload was cut short (app killed, work cancelled) with its outcome unknown. */
+    public const val UPLOAD_INTERRUPTED: String = "UPLOAD_INTERRUPTED"
 }
 
 /** How a failed attempt is handled. */

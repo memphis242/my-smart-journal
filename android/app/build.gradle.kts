@@ -1,6 +1,6 @@
-import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -85,6 +85,16 @@ android {
     testOptions {
         execution = "ANDROIDX_TEST_ORCHESTRATOR"
         animationsDisabled = true
+        // Robolectric needs the merged resources and manifest of the app.
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all { test ->
+            test.enableAssertions = true
+            // Robolectric reaches into FileDescriptor internals, which recent JDKs no longer expose by default.
+            test.jvmArgs(
+                "--add-exports=java.base/jdk.internal.access=ALL-UNNAMED",
+                "--add-opens=java.base/java.io=ALL-UNNAMED",
+            )
+        }
     }
 
     packaging {
@@ -100,6 +110,12 @@ kotlin {
         extraWarnings.set(true)
         // Kotlin assert() compiles to JVM assertions: enabled in debuggable builds, removed by R8 in release.
         freeCompilerArgs.add("-Xassertions=jvm")
+        // Room's generated Kotlin (KSP) trips these two style diagnostics of extraWarnings, and
+        // allWarningsAsErrors cannot be scoped to hand-written sources, so they are off module-wide.
+        freeCompilerArgs.addAll(
+            "-Xwarning-level=REDUNDANT_VISIBILITY_MODIFIER:disabled",
+            "-Xwarning-level=CAN_BE_VAL:disabled",
+        )
     }
 }
 
@@ -140,6 +156,9 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(kotlin("test-junit"))
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.androidx.work.testing)
 
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)
