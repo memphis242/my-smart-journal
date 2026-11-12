@@ -1,0 +1,60 @@
+# Caddy configuration for the journal. Installed to /etc/caddy/Caddyfile by
+# bootstrap.sh; nothing in it is specific to one deployment. The values come
+# from the environment (caddy.service):
+#   MSJ_HOSTNAME   the journal's name, e.g. journal.example.com (/etc/msj/host.env)
+#   MSJ_BIND_IP    the box's NetBird address, 100.x.y.z         (/etc/msj/host.env)
+#   CF_API_TOKEN   Cloudflare token, Zone:DNS:Edit on one zone (/srv/msj/secrets/caddy.env)
+#
+# Validate after editing: caddy validate --config /etc/caddy/Caddyfile
+# (with the same environment, e.g. via: set -a; . /etc/msj/host.env; ...)
+{
+	# No admin API: nothing on the box can reconfigure Caddy at runtime.
+	admin off
+	persist_config off
+	# Certificates and the ACME account key live on the encrypted volume.
+	storage file_system /srv/msj/caddy
+	# Listen only on the NetBird address, never on the public interface. With
+	# the firewalls, this is the third independent reason the public internet
+	# cannot reach the app.
+	default_bind {$MSJ_BIND_IP}
+	# There is no port 80 to redirect from, and no HTTP-01 challenge.
+	auto_https disable_redirects
+	servers {
+		# HTTP/1.1 and HTTP/2 over TCP only; no UDP listener for HTTP/3.
+		protocols h1 h2
+	}
+}
+
+{$MSJ_HOSTNAME} {
+	tls {
+		# DNS-01: proves control of the name through the DNS provider's API,
+		# so the box needs no inbound port for the certificate. To use another
+		# provider, build Caddy with its module and change this line (see
+		# RUNBOOK "DNS provider").
+		dns cloudflare {env.CF_API_TOKEN}
+		# Check the challenge record through public resolvers: NetBird
+		# manages this box's resolv.conf.
+		resolvers 1.1.1.1 1.0.0.1
+	}
+
+	# 50 MiB upload_limit_bytes + 16 KiB multipart metadata allowance.
+	# Change this together with upload_limit_bytes in /etc/msj/config.toml.
+	request_body {
+		max_size 52445184
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	# The API listens on loopback; uvicorn trusts X-Forwarded-* only from
+	# 127.0.0.1 (forwarded_allow_ips), so client addresses (for the sign-in
+	# rate limit) are the real NetBird peers.
+	reverse_proxy 127.0.0.1:8765 {
+		# Search streams NDJSON; send each line as soon as it is written.
+		flush_interval -1
+	}
+
+	# No access log: request lines carry entry ids and search terms.
+}

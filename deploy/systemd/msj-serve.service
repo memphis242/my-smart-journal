@@ -1,0 +1,64 @@
+# The HTTP API and the web UI, on loopback only; Caddy terminates TLS in front.
+# Installed to /etc/systemd/system by bootstrap.sh. Not enabled: msj.target
+# (started by msj-unlock) pulls it in.
+[Unit]
+Description=My Smart Journal API and web UI
+# The data directory is on the encrypted volume. While it is locked this
+# fails the start with a clear "Assertion failed" instead of creating an
+# unencrypted /srv/msj/data on the boot disk.
+AssertPathIsMountPoint=/srv/msj
+After=network-online.target
+Wants=network-online.target
+PartOf=msj.target
+After=msj-migrate.service
+
+[Service]
+Type=simple
+User=msj
+Group=msj
+# Non-secret settings (paths, HF offline mode) from the boot disk; the RunPod
+# key from the encrypted volume. The API never calls RunPod, but sharing one
+# environment keeps msj-cli and both units identical.
+EnvironmentFile=/etc/msj/msj.env
+EnvironmentFile=/srv/msj/secrets/app.env
+ExecStart=/opt/msj/current/venv/bin/msj serve --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+# Measured peak for one process with torch-cpu and bge-small loaded and
+# encoding is about 0.9 GB (msj-serve answering a semantic search). The limits are for blame, not budgeting: a runaway
+# process is throttled, then killed inside its own cgroup, instead of the
+# kernel OOM killer picking a victim.
+MemoryHigh=1280M
+MemoryMax=1536M
+# The API needs no outbound network at all: it serves on loopback, and the
+# embedding model loads from the local cache (HF_HUB_OFFLINE=1). Deny
+# everything else so a compromised API process cannot reach the internet.
+IPAddressDeny=any
+IPAddressAllow=localhost
+# ---- Sandbox (verify with: systemd-analyze security <unit>) ----
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/msj/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitCORE=0

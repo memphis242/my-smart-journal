@@ -1,0 +1,11 @@
+# Nightly at 03:30 UTC. Persistent=true runs a missed backup at the next boot, where it refuses (volume locked) and reports; msj-unlock then starts a catch-up run.
+[Unit]
+Description=Journal nightly backup to restic on B2 timer
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

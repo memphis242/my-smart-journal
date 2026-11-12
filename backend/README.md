@@ -182,7 +182,7 @@ Set `MSJ_WEB_DIR` to a built UI directory containing `index.html`. Hashed assets
 under `assets/` receive immutable caching; extensionless UI routes return the SPA index. Missing chunks, paths with extensions, and dot segments return 404. UI
 responses include the contract's strict self-only CSP, nosniff, no-referrer, and
 microphone permission policy. Leave it unset to serve only the API. See
-[VPS deployment](../docs/deploy-vps.md) and [deployment examples](../deploy/)
+[VPS deployment](../docs/deploy/RUNBOOK.md) and [deployment examples](../deploy/)
 for loopback systemd services and a Caddy TLS reverse proxy.
 
 Migration 008 rebuilds the search projection once from completed review outputs. Numbered
