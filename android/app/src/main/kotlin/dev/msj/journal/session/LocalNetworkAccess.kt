@@ -1,6 +1,5 @@
 package dev.msj.journal.session
 
-import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -19,7 +18,8 @@ import java.net.UnknownHostException
  * only when the server's address is private.
  */
 object LocalNetworkAccess {
-    const val PERMISSION: String = Manifest.permission.ACCESS_LOCAL_NETWORK
+    /** `Manifest.permission.ACCESS_LOCAL_NETWORK` (API 37), spelled out so older releases can name it too. */
+    const val PERMISSION: String = "android.permission.ACCESS_LOCAL_NETWORK"
 
     val applies: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN
 

@@ -3,7 +3,6 @@ package dev.msj.journal.ui
 import android.app.Activity
 import android.app.UiModeManager
 import android.content.res.Configuration
-import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
@@ -11,6 +10,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.toArgb
+import androidx.core.graphics.drawable.toDrawable
 import dev.msj.journal.session.AppPrefs
 import dev.msj.journal.session.ThemeMode
 import dev.msj.journal.ui.theme.DarkColors
@@ -42,7 +42,7 @@ class ThemeController(
             (activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                 Configuration.UI_MODE_NIGHT_YES
         val dark = mode == ThemeMode.DARK || (mode == ThemeMode.SYSTEM && systemDark)
-        activity.window.setBackgroundDrawable(ColorDrawable((if (dark) DarkColors else LightColors).bg.toArgb()))
+        activity.window.setBackgroundDrawable((if (dark) DarkColors else LightColors).bg.toArgb().toDrawable())
     }
 
     /** Switches to the other mode from the one on screen and remembers it. */

@@ -280,7 +280,6 @@ class RecorderViewModel(
                 // The screen is gone; the partial file is removed with the next recording's cleanup.
             }
         }
-        super.onCleared()
     }
 
     private companion object {

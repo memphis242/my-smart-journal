@@ -5,4 +5,12 @@
     <issue id="GradleDependency" severity="ignore" />
     <issue id="NewerVersionAvailable" severity="ignore" />
     <issue id="AndroidGradlePluginVersion" severity="ignore" />
+    <!-- Kotlin assert() is compiled with -Xassertions=jvm (see build.gradle.kts): the argument is not
+         evaluated when assertions are off, so the cost this check warns about does not exist here. -->
+    <issue id="ExpensiveAssertion" severity="ignore" />
+    <!-- Slots are named for their role (actions, trailing, themeSwitch) and follow the Compose
+         convention of `modifier` as the first optional parameter; one generic `content` slot would
+         make call sites ambiguous. -->
+    <issue id="ComposableLambdaParameterNaming" severity="ignore" />
+    <issue id="ComposableLambdaParameterPosition" severity="ignore" />
 </lint>
