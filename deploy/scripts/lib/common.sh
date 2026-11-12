@@ -12,7 +12,7 @@
 # Constants used by the scripts that source this file, not by it.
 # shellcheck disable=SC2034
 readonly MSJ_MOUNT=/srv/msj                  # LUKS volume mount point
-readonly MSJ_DATA_DIR=/srv/msj/data          # MSJ_DATA_DIR: journal.db, audio/, token.secret
+readonly MSJ_DATA=/srv/msj/data          # MSJ_DATA_DIR: journal.db, audio/, token.secret
 readonly MSJ_SECRETS_DIR=/srv/msj/secrets    # root-only env files
 readonly MSJ_BACKUP_DIR=/srv/msj/backup      # local snapshots (nightly, pre-migrate)
 readonly MSJ_RESTORE_DIR=/srv/msj/restore    # restore drill and manual restores
@@ -130,8 +130,14 @@ msj_ping_on_exit() {
   trap _msj_ping_exit EXIT
 }
 
+# Scripts that need cleanup on exit set MSJ_CLEANUP to a function name instead
+# of installing their own EXIT trap: a trap that runs cleanup first would
+# replace the exit status with cleanup's, turning a failure into a success.
 _msj_ping_exit() {
   local status=$? body
+  if [[ -n ${MSJ_CLEANUP:-} ]]; then
+    "$MSJ_CLEANUP" || msj_warn "cleanup ($MSJ_CLEANUP) failed"
+  fi
   if [[ -n $_msj_hc_url ]]; then
     if (( status == 0 )); then
       body=${msj_ok_summary:-ok}
@@ -152,9 +158,9 @@ _msj_ping_exit() {
 msj_snapshot_db() {
   local dest=$1 partial check
   partial="$dest.partial"
-  [[ -f $MSJ_DATA_DIR/journal.db ]] || msj_die "$MSJ_DATA_DIR/journal.db does not exist; run msj-release install first, or restore it"
+  [[ -f $MSJ_DATA/journal.db ]] || msj_die "$MSJ_DATA/journal.db does not exist; run msj-release install first, or restore it"
   msj_as_service_user rm -f "$partial"
-  msj_as_service_user sqlite3 "$MSJ_DATA_DIR/journal.db" ".backup '$partial'"
+  msj_as_service_user sqlite3 "$MSJ_DATA/journal.db" ".backup '$partial'"
   check=$(msj_as_service_user sqlite3 "$partial" 'PRAGMA integrity_check;' 2>&1) || true
   if [[ $check != ok ]]; then
     msj_die "PRAGMA integrity_check on the snapshot of journal.db did not return ok (first lines: ${check:0:300}). The live database may be damaged. Nothing was replaced; stop and follow RUNBOOK 'Restore'."
@@ -187,5 +193,5 @@ msj_app() {
 
 # Read one value from the live database, read-only, as the service account.
 msj_db_query() {
-  msj_as_service_user sqlite3 -readonly "$MSJ_DATA_DIR/journal.db" "$1"
+  msj_as_service_user sqlite3 -readonly "$MSJ_DATA/journal.db" "$1"
 }

@@ -90,6 +90,7 @@ EOF
 harden_host() {
   install -d /etc/systemd/coredump.conf.d
   printf '[Coredump]\nStorage=none\nProcessSizeMax=0\n' >/etc/systemd/coredump.conf.d/msj.conf
+  install -d /etc/sysctl.d
   printf 'fs.suid_dumpable = 0\nvm.swappiness = 10\n' >/etc/sysctl.d/90-msj.conf
   sysctl -q -p /etc/sysctl.d/90-msj.conf
   if rpm -q abrt >/dev/null 2>&1; then
@@ -166,16 +167,12 @@ install_files() {
 }
 
 setup_selinux() {
-  # Caddy runs confined as httpd_t. These are the labels the Caddy RPM would
-  # set, plus its storage on the encrypted volume.
-  local spec
-  for spec in '/usr/local/bin/caddy:httpd_exec_t' '/etc/caddy(/.*)?:httpd_config_t' \
-              '/srv/msj/caddy(/.*)?:httpd_var_lib_t' '/srv/msj/swapfile:swapfile_t'; do
-    semanage fcontext -a -t "${spec##*:}" "${spec%:*}" 2>/dev/null \
-      || semanage fcontext -m -t "${spec##*:}" "${spec%:*}"
-  done
-  # httpd_t must reach the DNS provider's API and the app on 127.0.0.1:8765.
-  [[ $(getsebool httpd_can_network_connect) == *' on' ]] || setsebool -P httpd_can_network_connect on
+  # The swapfile needs swapfile_t or swapon fails with a bare "permission
+  # denied". Everything else runs under the default labels (/opt/msj is bin_t
+  # and usr_t; services run as unconfined_service_t inside their systemd
+  # sandboxes).
+  semanage fcontext -l | grep -q '^/srv/msj/swapfile ' \
+    || semanage fcontext -a -t swapfile_t /srv/msj/swapfile
   restorecon -F /usr/local/bin/caddy
   restorecon -RF /etc/caddy /opt/msj /var/lib/msj
 }
@@ -212,7 +209,7 @@ cmd_volume() {
   msj_require_root
   msj_require_unlocked
   install -d -m 755 -o root -g root "$MSJ_MOUNT"
-  install -d -m 700 -o "$MSJ_USER" -g "$MSJ_USER" "$MSJ_DATA_DIR"
+  install -d -m 700 -o "$MSJ_USER" -g "$MSJ_USER" "$MSJ_DATA"
   install -d -m 700 -o root -g root "$MSJ_SECRETS_DIR" "$RESTIC_CACHE_DIR"
   install -d -m 700 -o caddy -g caddy /srv/msj/caddy
   install -d -m 710 -o root -g "$MSJ_USER" "$MSJ_BACKUP_DIR"

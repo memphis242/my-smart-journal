@@ -46,7 +46,7 @@ done
 curl -fsS -m 5 -o /dev/null "$MSJ_SERVE_URL/api/v1/health" \
   || fail "msj-serve does not answer $MSJ_SERVE_URL/api/v1/health"
 
-wt0_ip=$(ip -4 -o addr show dev wt0 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+wt0_ip=$(ip -4 -o addr show dev wt0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true)
 if [[ -z $wt0_ip ]]; then
   fail "wt0 has no IPv4 address: NetBird is down (netbird status)"
 else
@@ -75,7 +75,8 @@ for mount in / "$MSJ_MOUNT"; do
 done
 
 if (( ${#failures[@]} > 0 )); then
-  msj_die "${#failures[@]} check(s) failed: $(IFS=';'; printf '%s' "${failures[*]}")"
+  joined=$(printf '%s; ' "${failures[@]}")
+  msj_die "${#failures[@]} check(s) failed: ${joined%; }"
 fi
 msj_ok_summary="all checks passed"
 msj_log "$msj_ok_summary"

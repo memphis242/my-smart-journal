@@ -34,7 +34,7 @@ pip_in() { "$1/venv/bin/python" -m pip --disable-pip-version-check --no-input "$
 
 batch_running() {
   local now
-  [[ -f $MSJ_DATA_DIR/journal.db ]] || return 1
+  [[ -f $MSJ_DATA/journal.db ]] || return 1
   now=$(date -u +%s)
   [[ $(msj_db_query "SELECT count(*) FROM batch_state WHERE id=1 AND batch_id IS NOT NULL AND lease_until > $now;") != 0 ]]
 }
@@ -44,7 +44,7 @@ migration_count() { msj_as_service_user sqlite3 -readonly "$1" 'SELECT count(*) 
 wait_healthy() {
   local i seen age
   for i in $(seq 1 90); do
-    if curl -fsS -m 2 -o /dev/null "$MSJ_SERVE_URL/api/v1/health"; then
+    if curl -fsS -m 2 -o /dev/null "$MSJ_SERVE_URL/api/v1/health" 2>/dev/null; then
       seen=$(msj_db_query 'SELECT worker_last_seen_at FROM batch_state WHERE id=1;' 2>/dev/null || true)
       if [[ -n $seen ]]; then
         age=$(( $(date -u +%s) - $(date -d "$seen" +%s) ))
@@ -111,6 +111,8 @@ cmd_install() {
   msj_log "building $dir"
   mv "$incoming" "$dir"
   trap - RETURN
+  local wheel
+  wheel="$dir/wheel/$(basename "${wheels[0]}")"
   chmod 755 "$dir"
   "$PYTHON" -m venv "$dir/venv"
   pip_in "$dir" install --upgrade pip >/dev/null
@@ -131,8 +133,8 @@ cmd_install() {
   pip_in "$dir" install --index-url "$TORCH_CPU_INDEX" "$torch_pin"
   grep -q -E '^torch==' "$constraints" || pip_in "$dir" freeze | grep -m1 -E '^torch==' >>"$constraints"
 
-  pip_in "$dir" install --extra-index-url "$TORCH_CPU_INDEX" -c "$constraints" "${wheels[0]}[semantic]" \
-    || msj_die "pip could not install the release with the pinned dependencies. If the new version needs newer packages, rerun with --refresh-deps."
+  pip_in "$dir" install --extra-index-url "$TORCH_CPU_INDEX" -c "$constraints" "$wheel[semantic]" \
+    || msj_die "pip install of $(basename "$wheel") failed (output above). If pip reports a conflict with the pinned versions, the new code needs newer packages: rerun with --refresh-deps --force."
   pip_in "$dir" freeze >"$dir/requirements.freeze"
   if grep -q -i -E '^nvidia-' "$dir/requirements.freeze"; then
     msj_die "CUDA packages were installed into $dir (see requirements.freeze); the CPU-only torch pin did not hold. Remove $dir and investigate before deploying."
@@ -160,7 +162,7 @@ cmd_install() {
   [[ -n $previous ]] && printf '%s\n' "$previous" >"$dir/PREVIOUS"
 
   systemctl stop msj-worker.service msj-serve.service
-  if [[ -f $MSJ_DATA_DIR/journal.db ]]; then
+  if [[ -f $MSJ_DATA/journal.db ]]; then
     install -d -m 710 -o root -g "$MSJ_USER" "$MSJ_BACKUP_DIR"
     install -d -m 700 -o "$MSJ_USER" -g "$MSJ_USER" "$PRE_MIGRATE_DIR"
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -188,8 +190,10 @@ cmd_install() {
     keep=$((keep + 1))
     (( keep >= KEEP_RELEASES )) && rm -rf -- "$old"
   done < <(find "$MSJ_RELEASES" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-)
-  find "$PRE_MIGRATE_DIR" -name '*.db' -printf '%T@ %p\n' 2>/dev/null | sort -rn \
-    | tail -n +$((KEEP_PRE_MIGRATE + 1)) | cut -d' ' -f2- | xargs -r rm -f --
+  if [[ -d $PRE_MIGRATE_DIR ]]; then
+    find "$PRE_MIGRATE_DIR" -name '*.db' -printf '%T@ %p\n' | sort -rn \
+      | tail -n +$((KEEP_PRE_MIGRATE + 1)) | cut -d' ' -f2- | xargs -r rm -f --
+  fi
 
   msj_log "release $id is live"
 }
@@ -207,7 +211,7 @@ cmd_rollback() {
 
   if (( ! restore )) && [[ -n $snap && -f $snap ]]; then
     local live_n snap_n
-    live_n=$(migration_count "$MSJ_DATA_DIR/journal.db")
+    live_n=$(migration_count "$MSJ_DATA/journal.db")
     snap_n=$(migration_count "$snap")
     if [[ $live_n != "$snap_n" ]]; then
       msj_die "release $(basename "$current") applied $((live_n - snap_n)) migration(s); the previous code may not run on the new schema. Rerun with --restore-db to restore $snap (writes since that snapshot are lost; they stay in the replaced copy under $MSJ_BACKUP_DIR/replaced-*)."
@@ -224,9 +228,9 @@ cmd_rollback() {
     # replaced journal.db would be replayed into it and corrupt it.
     local f
     for f in journal.db journal.db-wal journal.db-shm; do
-      [[ -e $MSJ_DATA_DIR/$f ]] && mv "$MSJ_DATA_DIR/$f" "$aside/"
+      [[ -e $MSJ_DATA/$f ]] && mv "$MSJ_DATA/$f" "$aside/"
     done
-    install -m 600 -o "$MSJ_USER" -g "$MSJ_USER" "$snap" "$MSJ_DATA_DIR/journal.db"
+    install -m 600 -o "$MSJ_USER" -g "$MSJ_USER" "$snap" "$MSJ_DATA/journal.db"
     msj_log "restored $snap (previous live database kept in $aside)"
   fi
   activate "$previous"

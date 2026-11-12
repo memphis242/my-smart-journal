@@ -54,9 +54,9 @@ fi
 
 # The app refuses a group- or world-readable key, and a data directory that is
 # not 700 msj is a sign the volume was restored or edited by hand.
-if [[ -d $MSJ_DATA_DIR ]]; then
-  owner=$(stat -c '%U:%a' "$MSJ_DATA_DIR")
-  [[ $owner == "$MSJ_USER:700" ]] || msj_warn "$MSJ_DATA_DIR is $owner, expected $MSJ_USER:700 (chown $MSJ_USER:$MSJ_USER $MSJ_DATA_DIR; chmod 700 $MSJ_DATA_DIR)"
+if [[ -d $MSJ_DATA ]]; then
+  owner=$(stat -c '%U:%a' "$MSJ_DATA")
+  [[ $owner == "$MSJ_USER:700" ]] || msj_warn "$MSJ_DATA is $owner, expected $MSJ_USER:700 (chown $MSJ_USER:$MSJ_USER $MSJ_DATA; chmod 700 $MSJ_DATA)"
 fi
 
 (( start )) || { msj_log "unlocked; services not started (--no-start)"; exit 0; }
@@ -64,7 +64,7 @@ fi
 systemctl start msj.target
 msj_log "started msj.target; waiting for the API"
 for _ in $(seq 1 60); do
-  curl -fsS -m 2 -o /dev/null "$MSJ_SERVE_URL/api/v1/health" && break
+  curl -fsS -m 2 -o /dev/null "$MSJ_SERVE_URL/api/v1/health" 2>/dev/null && break
   sleep 1
 done
 curl -fsS -m 2 -o /dev/null "$MSJ_SERVE_URL/api/v1/health" \

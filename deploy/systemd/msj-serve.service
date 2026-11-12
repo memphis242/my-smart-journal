@@ -25,7 +25,7 @@ ExecStart=/opt/msj/current/venv/bin/msj serve --host 127.0.0.1 --port 8765
 Restart=on-failure
 RestartSec=5
 # Measured peak for one process with torch-cpu and bge-small loaded and
-# encoding is about 0.8 GB. The limits are for blame, not budgeting: a runaway
+# encoding is about 0.9 GB (msj-serve answering a semantic search). The limits are for blame, not budgeting: a runaway
 # process is throttled, then killed inside its own cgroup, instead of the
 # kernel OOM killer picking a victim.
 MemoryHigh=1280M

@@ -19,6 +19,9 @@ MSJ_UNIT=msj-restore-drill.service
 # shellcheck source=lib/common.sh
 . /usr/local/lib/msj/common.sh
 
+cleanup() { [[ -z ${work:-} ]] || rm -rf -- "$work"; }
+MSJ_CLEANUP=cleanup
+
 msj_require_root
 msj_ping_on_exit HC_DRILL_URL
 msj_require_unlocked
@@ -29,12 +32,10 @@ work=$(mktemp -d -p "$MSJ_RESTORE_DIR" drill.XXXXXX)
 # 711 so the service account can reach the restored data directory (itself
 # 700 msj) for step 6, while the restored secrets stay root-only.
 chmod 711 "$work"
-cleanup() { rm -rf -- "$work"; }
-trap 'cleanup; _msj_ping_exit' EXIT
 
 restic restore latest --retry-lock 30m --tag msj --target "$work"
 
-restored_data="$work$MSJ_DATA_DIR"
+restored_data="$work$MSJ_DATA"
 db="$work$MSJ_BACKUP_DIR/nightly/journal.db"
 [[ -f $db ]] || msj_die "the latest snapshot has no $MSJ_BACKUP_DIR/nightly/journal.db; check that msj-backup ran successfully (journalctl -u msj-backup.service)"
 
@@ -71,7 +72,7 @@ done < <(q "SELECT content FROM artifacts WHERE kind='raw_audio' AND content NOT
 (( missing == 0 )) || msj_die "$missing audio file(s) referenced by the restored database are missing from the snapshot"
 audio=$(q "SELECT count(*) FROM artifacts WHERE kind='raw_audio';")
 
-for f in "$MSJ_SECRETS_DIR/backup.env" "$MSJ_SECRETS_DIR/msj.env" /etc/msj/config.toml /etc/msj/host.env; do
+for f in "$MSJ_SECRETS_DIR/backup.env" "$MSJ_SECRETS_DIR/app.env" /etc/msj/config.toml /etc/msj/host.env; do
   [[ -f $work$f ]] || msj_die "$f is not in the snapshot; a total-loss restore would have to recreate it by hand"
 done
 
