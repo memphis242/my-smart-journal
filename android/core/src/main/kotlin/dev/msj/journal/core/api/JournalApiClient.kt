@@ -5,6 +5,7 @@ import dev.msj.journal.core.ndjson.NdjsonReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.ProducerScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
@@ -74,8 +75,13 @@ public class JournalApiClient(
     private val streamClient: OkHttpClient =
         readClient
             .newBuilder()
-            .apply { if (readClient.readTimeoutMillis in 1 until STREAM_READ_TIMEOUT_MS) readTimeout(STREAM_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
-            .build()
+            .apply {
+                if (readClient.readTimeoutMillis in
+                    1 until STREAM_READ_TIMEOUT_MS
+                ) {
+                    readTimeout(STREAM_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                }
+            }.build()
 
     // ------------------------------------------------------------------ session
 
@@ -276,6 +282,7 @@ public class JournalApiClient(
                     } catch (e: NdjsonLineError) {
                         throw failure(streamLineInvalid(op, reader.lineNumber, e), e)
                     } catch (e: IOException) {
+                        ensureActive()
                         throw failure(streamInterrupted(op, it.code, e), e)
                     } ?: break
                 val event =
@@ -422,7 +429,9 @@ public class JournalApiClient(
                         call: Call,
                         e: IOException,
                     ) {
-                        continuation.resumeWithException(failure(transportError(op, server.host, probe.requestStarted, e), e))
+                        continuation.resumeWithException(
+                            failure(transportError(op, server.host, probe.requestStarted, e), e),
+                        )
                     }
 
                     override fun onResponse(
@@ -479,7 +488,9 @@ public class JournalApiClient(
         return ApiError(
             kind = ErrorKind.RESPONSE,
             code = ClientCodes.NOT_A_JOURNAL_SERVER,
-            message = "${op.operation} failed: $server answered, but not like a journal server (expected {\"status\":\"ok\"}).",
+            message =
+                "${op.operation} failed: $server answered, but not like a journal server " +
+                    "(expected {\"status\":\"ok\"}).",
             hint = Hints.forCode(ClientCodes.NOT_A_JOURNAL_SERVER, null),
             details = details,
             status = response.code,
@@ -506,6 +517,7 @@ public class JournalApiClient(
 
     private fun scrub(error: ApiError): ApiError {
         if (token.isEmpty()) return error
+
         fun String.clean(): String = replace(token, REDACTED)
         return error.copy(
             message = error.message.clean(),
@@ -557,7 +569,11 @@ public class JournalApiClient(
             val error = line.error?.let { SearchEvent.StreamError(it.status, it.code, it.detail) }
             return SearchEvent.Done(line.elapsedMs, error)
         }
-        if ("tier" !in record) throw SerializationException("expected a tier or completion line, found keys ${record.keys}")
+        if ("tier" !in
+            record
+        ) {
+            throw SerializationException("expected a tier or completion line, found keys ${record.keys}")
+        }
         val line = JSON.decodeFromJsonElement(TierLine.serializer(), record)
         if (line.tier !in 1..MAX_TIER) throw SerializationException("tier must be in 1..$MAX_TIER, found ${line.tier}")
         return SearchEvent.Tier(line.tier, line.name, line.results, line.elapsedMs, line.unavailable)

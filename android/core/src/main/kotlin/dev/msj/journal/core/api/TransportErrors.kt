@@ -57,12 +57,23 @@ internal fun causeChain(error: Throwable): String {
     return bounded(lines.joinToString("\n"), DETAIL_CHARS)
 }
 
-private fun chainOf(error: Throwable): List<Throwable> = generateSequence(error) { it.cause?.takeIf { cause -> cause !== it } }.take(CHAIN_LIMIT).toList()
+private fun chainOf(error: Throwable): List<Throwable> =
+    generateSequence(error) {
+        it.cause?.takeIf { cause ->
+            cause !==
+                it
+        }
+    }.take(CHAIN_LIMIT).toList()
 
-private fun isTimeout(chain: List<Throwable>): Boolean = chain.any { it is SocketTimeoutException || it is InterruptedIOException }
+private fun isTimeout(chain: List<Throwable>): Boolean =
+    chain.any {
+        it is SocketTimeoutException ||
+            it is InterruptedIOException
+    }
 
 private fun isConnectFailure(chain: List<Throwable>): Boolean =
-    chain.any { it is ConnectException || it is NoRouteToHostException || it is PortUnreachableException } || isTimeout(chain)
+    chain.any { it is ConnectException || it is NoRouteToHostException || it is PortUnreachableException } ||
+        isTimeout(chain)
 
 private fun isTlsFailure(
     chain: List<Throwable>,
@@ -80,20 +91,39 @@ internal fun transportError(
     val chain = chainOf(error)
     val (code, message) =
         when {
-            chain.any { it is UnknownHostException } ->
+            chain.any { it is UnknownHostException } -> {
                 ClientCodes.HOST_NOT_FOUND to "the server name '$host' could not be found"
-            chain.any { it is UnknownServiceException && it.message?.contains("CLEARTEXT", ignoreCase = true) == true } ->
-                ClientCodes.CLEARTEXT_NOT_PERMITTED to "this app does not allow unencrypted http:// connections to '$host'"
-            isTlsFailure(chain, started) ->
+            }
+
+            chain.any {
+                it is UnknownServiceException && it.message?.contains(
+                    "CLEARTEXT",
+                    ignoreCase = true,
+                ) == true
+            } -> {
+                ClientCodes.CLEARTEXT_NOT_PERMITTED to
+                    "this app does not allow unencrypted http:// connections to '$host'"
+            }
+
+            isTlsFailure(chain, started) -> {
                 ClientCodes.TLS_FAILED to "the secure connection to '$host' could not be set up"
-            !started && isConnectFailure(chain) ->
+            }
+
+            !started && isConnectFailure(chain) -> {
                 ClientCodes.HOST_UNREACHABLE to "could not connect to '$host'"
-            !started ->
+            }
+
+            !started -> {
                 ClientCodes.NETWORK_ERROR to "the request could not be sent"
-            isTimeout(chain) ->
+            }
+
+            isTimeout(chain) -> {
                 ClientCodes.TIMEOUT to "the server did not answer in time"
-            else ->
+            }
+
+            else -> {
                 ClientCodes.CONNECTION_LOST to "the connection to the server was lost"
+            }
         }
     return ApiError(
         kind = ErrorKind.NETWORK,

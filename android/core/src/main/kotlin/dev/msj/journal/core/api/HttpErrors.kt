@@ -151,7 +151,11 @@ internal fun httpError(
         )
     if (problem?.title != null && problem.detail != null) details += DetailLine("Title", problem.title)
     if (problem?.type != null && problem.type != "about:blank") details += DetailLine("Type", problem.type)
-    if (problem != null && problem.fieldErrors.isNotEmpty()) details += DetailLine("Fields", problem.fieldErrors.joinToString("\n"))
+    if (problem != null &&
+        problem.fieldErrors.isNotEmpty()
+    ) {
+        details += DetailLine("Fields", problem.fieldErrors.joinToString("\n"))
+    }
     if (retryAfterS != null) details += DetailLine("Retry after", "$retryAfterS s")
     if (problem == null && text.isNotEmpty()) details += DetailLine("Body", bounded(text, BODY_EXCERPT_CHARS))
     return ApiError(

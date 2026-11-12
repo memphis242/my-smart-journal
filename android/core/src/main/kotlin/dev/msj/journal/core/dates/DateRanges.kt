@@ -28,7 +28,8 @@ public data class DateBounds(
     public val fromIso: String? get() = from?.let(::isoDate)
     public val toIso: String? get() = to?.let(::isoDate)
 
-    public fun contains(date: LocalDate): Boolean = (from == null || !date.isBefore(from)) && (to == null || !date.isAfter(to))
+    public fun contains(date: LocalDate): Boolean =
+        (from == null || !date.isBefore(from)) && (to == null || !date.isAfter(to))
 }
 
 /**

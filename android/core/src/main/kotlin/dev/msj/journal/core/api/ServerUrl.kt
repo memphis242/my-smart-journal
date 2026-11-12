@@ -82,6 +82,9 @@ public class ServerUrl private constructor(
                 )
             }
             val authority = withScheme.substringAfter("://").substringBefore('/')
+            if (authority.isEmpty()) {
+                return invalid("The address has no host name.", "Type it as $EXAMPLE.", "Address" to text)
+            }
             if (authority.contains('@')) {
                 return invalid(
                     "The address contains a user name or password before '@'.",
@@ -107,7 +110,14 @@ public class ServerUrl private constructor(
                 )
             }
             val segments = parsed.encodedPathSegments.filter { it.isNotEmpty() }
-            val mount = if (segments.takeLast(API_SUFFIX.size) == API_SUFFIX) segments.dropLast(API_SUFFIX.size) else segments
+            val mount =
+                if (segments.takeLast(API_SUFFIX.size) ==
+                    API_SUFFIX
+                ) {
+                    segments.dropLast(API_SUFFIX.size)
+                } else {
+                    segments
+                }
             val builder = parsed.newBuilder().encodedPath("/")
             for (segment in mount) builder.addEncodedPathSegment(segment)
             // A trailing empty segment keeps the base path slash-terminated.
