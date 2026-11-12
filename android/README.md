@@ -9,7 +9,10 @@ The backend runs on a VPS that is reachable only over the NetBird mesh VPN, at a
 - **NetBird:** the phone needs the NetBird app installed and connected. The app has no VPN code of its own. When NetBird is off, sign-in reports `HOST_NOT_FOUND` or `HOST_UNREACHABLE`, with a hint to connect NetBird. New entries wait in the outbox and upload on their own when the server can be reached again.
 - **Trust:** the system CA store is all the app trusts, with no custom CA and no user-installed CAs. Android 17 enables Certificate Transparency for apps targeting API 37, and Let's Encrypt certificates carry the SCTs it needs.
 - **HTTPS only:** release builds refuse plain HTTP everywhere. Debug builds allow plain HTTP only to `10.0.2.2` and `127.0.0.1` (the emulator's view of the development machine), through `app/src/debug/res/xml/network_security_config.xml`.
-- **Android 17 local-network permission:** apps targeting API 37 need the runtime permission `ACCESS_LOCAL_NETWORK` (Settings: Nearby devices) to reach local-network addresses. Android does not document which ranges count. A NetBird peer has a `100.64.0.0/10` address, so the app checks the server's address at sign-in. If the address is private (RFC 1918, `100.64.0.0/10`, link-local or IPv6 ULA), the app asks for the permission with a reason. If the permission is missing later, the list page shows a notice with an Allow button.
+- **Android 17 local-network permission:** apps targeting API 37 need the runtime permission `ACCESS_LOCAL_NETWORK` (Settings: Nearby devices) to reach local-network addresses. Android does not document which ranges count.
+  - **Measured on the emulator:** without the grant, a connection to `10.0.2.2` is silently dropped (a connect timeout, not a refusal). With the grant it works, and after a revoke it times out again.
+  - **What the app does:** a NetBird peer has a `100.64.0.0/10` address, so the app checks the server's address at sign-in. If the address is private (RFC 1918, `100.64.0.0/10`, link-local or IPv6 ULA), it asks for the permission with a reason.
+  - **Later:** if the permission is missing after sign-in, the list page shows a notice with an Allow button.
 
 ## Toolchain
 
@@ -89,8 +92,15 @@ Debug builds keep Kotlin warnings as warnings. Kotlin `assert()` is compiled wit
 
 ```sh
 cd android
-scripts/e2e.sh            # add --keep to leave the backend and emulator running
+scripts/e2e.sh                     # backend + emulator + all instrumented tests, then stops both
+scripts/e2e.sh --keep              # leave the backend and emulator running afterwards
+scripts/e2e.sh --no-grant          # do not grant ACCESS_LOCAL_NETWORK (negative control: tests time out)
+scripts/e2e.sh -- -Pandroid.testInstrumentationRunnerArguments.class=dev.msj.journal.e2e.SignInTest
+scripts/e2e.sh -- -Pandroid.testInstrumentationRunnerArguments.msjScreenshots=1 \
+                  -Pandroid.testInstrumentationRunnerArguments.class=dev.msj.journal.e2e.ScreenshotTour
 ```
+
+Reports, logcat and the backend and emulator logs are copied to `<build root>/e2e-results/<timestamp>`. The screenshot tour writes its PNGs on the device under `/sdcard/Android/data/dev.msj.journal.debug/files/shots/`; pull them with `adb pull` while the emulator is still up (`--keep`).
 
 These are the parts it uses:
 
@@ -99,7 +109,10 @@ These are the parts it uses:
   - `MSJ_CONFIG_FILE=web/e2e-real/fake-backend.toml` (every model task on the deterministic fake provider) and `MSJ_DATA_DIR` under the build root;
   - `msj migrate`, `msj create-token` (written owner-only, never printed);
   - `msj serve --host 127.0.0.1 --port 18780` and `msj worker`.
-- **`scripts/emulator.sh create|start|stop|status|wait`:** AVD `msj-api37` from `system-images;android-37.0;google_apis_playstore;x86_64`. The AVD and the emulator's user data live in the build root. The emulator runs headless (`-no-window`) with KVM, and the script disables animations once it has booted.
+- **`scripts/emulator.sh create|start|stop|status|wait`:** AVD `msj-api37` from `system-images;android-37.0;google_apis_playstore;x86_64` (pixel_6 profile, 3 GB RAM). The AVD and the emulator's user data live in the build root.
+  - It runs headless (`-no-window -no-boot-anim -no-snapshot`) with KVM and boots in about 15 s.
+  - Once booted, the script disables animations and keeps the screen awake and unlocked.
+  - GPU mode: it uses `-gpu swangle_indirect`. On this SELinux-enforcing host, `swiftshader_indirect` (and `guest`/`host`) crash qemu about 20 s after start, because SELinux denies `execheap` to SwiftShader's JIT. Override with `MSJ_EMULATOR_GPU`; add flags with `MSJ_EMULATOR_EXTRA_ARGS`.
 - **Ports:** `MSJ_E2E_PORT` (default 18780) and `MSJ_EMULATOR_PORT` (default 5584, serial `emulator-5584`). Gradle is limited to that one emulator through `ANDROID_SERIAL`.
 - **Reaching the backend:** the emulator reaches the host at `http://10.0.2.2:18780`. The tests get that URL as the instrumentation argument `msjServerUrl`, and read the token from `/data/local/tmp/msj-e2e-token` through the shell user.
 
