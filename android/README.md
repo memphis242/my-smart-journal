@@ -134,6 +134,12 @@ The instrumented tests (`app/src/androidTest`) find nodes by test tags and read 
   - a rejected upload is listed with its code and can be discarded;
   - sign-out wipes the session.
 - `TokenVaultTest`: the Keystore round trip, wipe, and a lost key.
+- `ShortcutAndBuildTest`:
+  - the shortcuts are published for this package through the alias;
+  - Record opens the recorder only through the alias;
+  - the debug build enforces assertions.
+- `BackendReachabilityTest`: the harness smoke test (health, and the token accepted).
+- `ScreenshotTour`: opt-in (`msjScreenshots=1`). It captures every main screen in light and dark for review and checks nothing.
 
 ## Install on the phone (Samsung Galaxy S26 Ultra, One UI 9 / Android 17)
 
@@ -173,9 +179,12 @@ The launcher icon has Record and Write shortcuts (long-press it).
 
 ## Verified on the emulator, and what needs the phone
 
-This section summarizes the latest verification run; see the final report for the exact commands and results.
+Verified on the API 37 emulator (Play Store image, headless) against the real backend with fake model routes:
 
-Verified on the API 37 emulator against the real backend: every journey listed above.
+- **Instrumented suite:** two consecutive cold-start runs of `scripts/e2e.sh` (backend setup, emulator boot, tests, teardown) passed 22 of 22 tests, every class listed above.
+- **Local-network permission:** with the grant withheld (`--no-grant`), connections to `10.0.2.2` time out. With it, they succeed.
+- **Visual review:** the screenshot tour, in light and dark.
+- **Quality gate:** `scripts/check.sh` passes on the same commit.
 
 Needs the physical phone:
 
