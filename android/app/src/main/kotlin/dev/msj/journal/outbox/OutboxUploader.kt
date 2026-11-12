@@ -22,6 +22,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 import kotlin.random.Random
 
 /**
@@ -92,8 +93,43 @@ internal class OutboxUploader(
                 }
                 return Next.CONTINUE
             }
+            if (OutboxMachine.keepsStopping(record)) {
+                // Not on the server, and every recent attempt was cut short: another try would most likely be too.
+                if (transition(record.id, keepsStoppingEvent(record), OutboxState.UNCERTAIN) != null) failed++
+                return Next.CONTINUE
+            }
         }
         return upload(record, claimedEntryIds)
+    }
+
+    private fun keepsStoppingEvent(record: OutboxRecord): OutboxEvent.Unsendable {
+        val sizeBytes =
+            when (val payload = record.payload) {
+                is OutboxPayload.Audio -> {
+                    payload.sizeBytes
+                }
+
+                is OutboxPayload.Text -> {
+                    payload.text
+                        .toByteArray(Charsets.UTF_8)
+                        .size
+                        .toLong()
+                }
+            }
+        val sizeMb = "%.1f".format(Locale.ROOT, sizeBytes / BYTES_PER_MB)
+        return OutboxEvent.Unsendable(
+            code = OutboxCodes.UPLOAD_KEEPS_STOPPING,
+            message =
+                "Upload stopped: sending this $sizeMb MB entry was cut short ${record.consecutiveInterruptions} " +
+                    "times in a row (${record.attempts} attempts in all), so it is not retried automatically.",
+            hint = "Connect to a faster network (for example Wi-Fi with the VPN up), then press Retry.",
+            details =
+                listOf(
+                    DetailLine("Size (bytes)", sizeBytes.toString()),
+                    DetailLine("Interrupted attempts in a row", record.consecutiveInterruptions.toString()),
+                    DetailLine("Attempts", record.attempts.toString()),
+                ),
+        )
     }
 
     private suspend fun upload(
@@ -214,8 +250,14 @@ internal class OutboxUploader(
     private suspend fun purge() {
         val nowMs = clock()
         store.purgeSentBefore(nowMs - OutboxMachine.SENT_RETENTION_MS).forEach(::deleteRecording)
-        val orphans = files.saveLock.withLock { files.deleteOrphans(store.audioPaths()) }
-        if (orphans > 0) Log.w(TAG, "Deleted $orphans outbox file(s) that no record referenced")
+        val sweep = files.saveLock.withLock { files.deleteOrphans(store.audioPaths(), nowMs) }
+        if (sweep.deleted > 0 || sweep.spared > 0) {
+            Log.w(
+                TAG,
+                "Outbox files without a record (a save was cut short): deleted ${sweep.deleted} older than a day, " +
+                    "kept ${sweep.spared} younger",
+            )
+        }
     }
 
     private fun deleteRecording(record: OutboxRecord) {
@@ -231,5 +273,6 @@ internal class OutboxUploader(
     private companion object {
         const val TAG = "MsjOutbox"
         const val PAGE_SIZE = 500
+        const val BYTES_PER_MB = 1024.0 * 1024.0
     }
 }

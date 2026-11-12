@@ -14,6 +14,14 @@ interface OutboxRepository {
     val unsent: Flow<List<OutboxRecord>>
 
     /**
+     * When a record last became SENT (uploaded or found on the server), or
+     * null while none is kept. It changes on every completed upload, so a
+     * screen can refresh from the server even when uploads finish too fast
+     * for [unsent] to show the intermediate counts.
+     */
+    val lastSentAtMs: Flow<Long?>
+
+    /**
      * Saves a text entry. [id] is the capture's client UUID: inserting the same
      * id twice is a no-op, so a repeated Save cannot create a second entry.
      * Returns true when a new record was inserted.

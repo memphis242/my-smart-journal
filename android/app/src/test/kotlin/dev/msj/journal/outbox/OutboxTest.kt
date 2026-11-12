@@ -122,7 +122,10 @@ class OutboxTest {
             assertEquals(OutboxState.RETRY_WAIT, first.state)
             assertEquals(now + OutboxMachine.BASE_BACKOFF_MS, first.nextAttemptAtMs)
             assertEquals(OutboxState.PENDING, record("r2").state)
-            assertEquals(first.nextAttemptAtMs, store.earliestFutureAttemptAt(now))
+            // r2 is PENDING, so the uploader wakes as soon as allowed.
+            assertEquals(now, store.nextWakeupAt(now))
+            assertTrue(repository.discard("r2"))
+            assertEquals(first.nextAttemptAtMs, store.nextWakeupAt(now))
         }
 
     @Test
@@ -454,8 +457,138 @@ class OutboxTest {
 
             assertIs<ListenableWorker.Result.Success>(result)
             assertEquals(OutboxState.SENT, record("r1").state)
-            assertEquals(OutboxState.RETRY_WAIT, record("r2").state)
+            // A 5xx may come after the server committed the entry, so it is reconciled first.
+            assertEquals(OutboxState.UNCERTAIN, record("r2").state)
             assertEquals(record("r2").nextAttemptAtMs, scheduler.wakeupAtMs)
+        }
+
+    @Test
+    fun workerSchedulesTheWakeupAfterAnUnexpectedFailure() =
+        runTest {
+            saveText("r1")
+            api.beforeCreate = { throw IllegalStateException("bug in the client") }
+
+            val result = buildWorker(ApiSource { api }).doWork()
+
+            assertIs<ListenableWorker.Result.Failure>(result)
+            assertEquals(OutboxState.UNCERTAIN, record("r1").state)
+            assertEquals(record("r1").nextAttemptAtMs, scheduler.wakeupAtMs)
+        }
+
+    @Test
+    fun workerRecoversInterruptedUploadsWhileSignedOut() =
+        runTest {
+            saveText("r1")
+            assertNotNull(store.transition("r1", OutboxEvent.Claim, now, 0.5) { it == OutboxState.PENDING })
+
+            val result = buildWorker(ApiSource { null }).doWork()
+
+            assertIs<ListenableWorker.Result.Success>(result)
+            assertEquals(OutboxState.UNCERTAIN, record("r1").state)
+            assertNull(scheduler.wakeupAtMs, "no wakeup while signed out")
+            assertTrue(repository.discard("r1"))
+        }
+
+    @Test
+    fun serverErrorAfterCommitIsReconciledWithoutASecondPost() =
+        runTest {
+            saveText("r1")
+            api.createThenFail = httpError(500, "INTERNAL_ERROR")
+
+            runUploader()
+            assertEquals(OutboxState.UNCERTAIN, record("r1").state)
+            now = record("r1").nextAttemptAtMs
+            runUploader()
+
+            assertEquals(1, api.createCalls.size)
+            assertEquals(OutboxState.SENT, record("r1").state)
+        }
+
+    @Test
+    fun aRecordInterruptedThreeTimesStopsUntilTheUserRetries() =
+        runTest {
+            saveText("r1")
+            repeat(OutboxMachine.MAX_CONSECUTIVE_INTERRUPTIONS) {
+                assertNotNull(store.transition("r1", OutboxEvent.Claim, now, 0.5) { it != OutboxState.UPLOADING })
+                assertEquals(1, store.recoverInterrupted(now))
+            }
+            now = record("r1").nextAttemptAtMs
+
+            runUploader()
+
+            val stopped = record("r1")
+            assertEquals(OutboxState.FAILED, stopped.state)
+            assertEquals(OutboxCodes.UPLOAD_KEEPS_STOPPING, stopped.lastError?.code)
+            assertEquals(1, api.listCalls, "it was reconciled first")
+            assertTrue(api.createCalls.isEmpty())
+
+            repository.retry("r1")
+            assertEquals(0, record("r1").consecutiveInterruptions)
+            runUploader()
+            assertEquals(OutboxState.SENT, record("r1").state)
+        }
+
+    @Test
+    fun twoInterruptionsStillUploadAfterAReconcileMiss() =
+        runTest {
+            saveText("r1")
+            repeat(OutboxMachine.MAX_CONSECUTIVE_INTERRUPTIONS - 1) {
+                assertNotNull(store.transition("r1", OutboxEvent.Claim, now, 0.5) { it != OutboxState.UPLOADING })
+                assertEquals(1, store.recoverInterrupted(now))
+            }
+            now = record("r1").nextAttemptAtMs
+
+            runUploader()
+
+            assertEquals(1, api.createCalls.size)
+            assertEquals(OutboxState.SENT, record("r1").state)
+        }
+
+    @Test
+    fun orphanRecordingsAreKeptForADay() =
+        runTest {
+            val young = File(outboxDir, "young.ogg").apply { writeBytes(ByteArray(4)) }
+            val old = File(outboxDir, "old.ogg").apply { writeBytes(ByteArray(4)) }
+            assertTrue(young.setLastModified(now - OutboxFiles.ORPHAN_GRACE_MS + 60_000))
+            assertTrue(old.setLastModified(now - OutboxFiles.ORPHAN_GRACE_MS - 60_000))
+            repository.enqueueAudio("a1", recording("rec.ogg"), "audio/ogg", 1_000, null, emptyList(), "2026-11-08")
+            api.beforeCreate = { throw ApiException(networkError(Delivery.NOT_SENT, ClientCodes.HOST_UNREACHABLE)) }
+
+            runUploader()
+
+            assertTrue(young.exists())
+            assertFalse(old.exists())
+            assertTrue(File(outboxDir, "a1.ogg").exists(), "a referenced recording is never an orphan")
+        }
+
+    @Test
+    fun lastSentAtTracksTheLatestUpload() =
+        runTest {
+            assertNull(repository.lastSentAtMs.first())
+            saveText("r1")
+            runUploader()
+            assertEquals(now, repository.lastSentAtMs.first())
+        }
+
+    @Test
+    fun theOutboxDatabaseSecureDeletesAndWipesOnDisk() =
+        runTest {
+            val onDisk = OutboxDatabase.open(context)
+            try {
+                onDisk.openHelper.writableDatabase.query("PRAGMA secure_delete").use { cursor ->
+                    assertTrue(cursor.moveToFirst())
+                    assertEquals(1, cursor.getInt(0))
+                }
+                val diskRepository = RoomOutboxRepository(onDisk, files, scheduler, clock)
+                diskRepository.enqueueText("d1", "Private words.", null, emptyList(), "2026-11-08")
+
+                diskRepository.wipe()
+
+                assertTrue(diskRepository.unsent.first().isEmpty())
+            } finally {
+                onDisk.close()
+                assertTrue(context.deleteDatabase(OutboxDatabase.FILE_NAME))
+            }
         }
 
     private fun buildWorker(apiSource: ApiSource): UploadWorker {

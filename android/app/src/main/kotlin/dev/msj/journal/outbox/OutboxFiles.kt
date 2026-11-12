@@ -107,15 +107,30 @@ class OutboxFiles(
         return !file.exists() || file.delete()
     }
 
+    /** Outcome of [deleteOrphans]: unreferenced files deleted, and younger ones kept for now. */
+    data class OrphanSweep(
+        val deleted: Int,
+        val spared: Int,
+    )
+
     /**
-     * Deletes files in the outbox directory that no record references (left by
-     * a save cut short before its record was committed). Call it holding
-     * [saveLock]. Returns the number deleted.
+     * Deletes files in the outbox directory that no record references and that
+     * were last modified at least [ORPHAN_GRACE_MS] before [nowMs]. Such a file
+     * is left by a save cut short between moving the recording in and
+     * committing its record; it may be the only copy of the recording, so it
+     * is kept for a day before it goes. Call it holding [saveLock].
      */
-    fun deleteOrphans(referencedPaths: Set<String>): Int {
+    fun deleteOrphans(
+        referencedPaths: Set<String>,
+        nowMs: Long,
+    ): OrphanSweep {
         assert(saveLock.isLocked) { "orphans are swept under the save lock" }
         val referenced = referencedPaths.map { File(it).canonicalPath }.toSet()
-        return listFiles().filter { it.canonicalPath !in referenced }.count { it.delete() }
+        val (old, young) =
+            listFiles()
+                .filter { it.canonicalPath !in referenced }
+                .partition { nowMs - it.lastModified() >= ORPHAN_GRACE_MS }
+        return OrphanSweep(deleted = old.count { it.delete() }, spared = young.size)
     }
 
     /** Deletes every recording; returns whether the directory is empty afterwards. */
@@ -150,9 +165,12 @@ class OutboxFiles(
         }
     }
 
-    private companion object {
-        const val BUFFER_BYTES = 64 * 1024
-        const val HEX_DIGITS = "0123456789abcdef"
-        val SAFE_NAME = Regex("^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
+    companion object {
+        /** How long an unreferenced recording is kept before the sweep deletes it. */
+        const val ORPHAN_GRACE_MS: Long = 24L * 60 * 60 * 1000
+
+        private const val BUFFER_BYTES = 64 * 1024
+        private const val HEX_DIGITS = "0123456789abcdef"
+        private val SAFE_NAME = Regex("^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
     }
 }
