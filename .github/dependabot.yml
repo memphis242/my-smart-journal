@@ -19,6 +19,10 @@ updates:
     groups:
       web:
         patterns: ["*"]
+    # typescript-eslint does not support TypeScript 7 yet; hold the 6.x line until it does.
+    ignore:
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
