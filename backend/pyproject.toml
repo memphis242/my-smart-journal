@@ -11,7 +11,7 @@ dependencies = [
     # Imported directly (concurrency, datastructures, exceptions, requests, types).
     "starlette",
     "uvicorn[standard]",
-    "pydantic>=2",
+    "pydantic>=2.14.4",
     # Imported directly for PydanticCustomError; pydantic pins the exact version.
     "pydantic-core",
     "pydantic-settings",
